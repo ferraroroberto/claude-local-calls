@@ -218,7 +218,89 @@ light stuff instant on the Mac.
 
 ---
 
-## 8. Bottom line
+## 8. Cost comparison — local vs Gemini 3.1 Flash Lite vs Claude Sonnet 4.6
+
+### 8.1 Published API prices (April 2026, per 1 M tokens)
+
+| Model | Input | Output | Notes |
+|---|---|---|---|
+| **Gemini 3.1 Flash Lite Preview** | $0.25 | $1.50 | 1 M ctx, multimodal, thinking tokens billed as output. |
+| **Claude Sonnet 4.6** | $3.00 | $15.00 | 1 M ctx at standard price. |
+| Sonnet 4.6 (Batch API) | $1.50 | $7.50 | 50 % off, async only. |
+| Sonnet 4.6 (prompt cache hit) | $0.30 | $15.00 | Cache hit = 10 % of input price; huge for agent loops that replay context. |
+
+### 8.2 Effective cost on a typical agent turn
+
+Agents are input-heavy (system prompt + tool results fed back in).
+Assuming a **5 : 1 input : output** ratio:
+
+| Option | Blended $/M tokens | Relative to Flash Lite |
+|---|---|---|
+| Gemini 3.1 Flash Lite | **$0.46** | 1× |
+| Sonnet 4.6 (no cache) | **$5.00** | ~11× |
+| Sonnet 4.6 (batch) | $2.50 | ~5.4× |
+| Sonnet 4.6 (80 % cache hit) | ~$3.20 | ~7× |
+| **Local (electricity only)** | **$0.002 – $0.01** | ~50–500× cheaper |
+
+### 8.3 Electricity on the user's hardware
+
+- **Mac mini M4 (16 GB), 24/7:** idle ≈ 5 W, inference burst 30–65 W.
+  All-in ≈ **US$15 – 20 / year** at typical rates — basically free.
+- **PC (RTX 5060 Ti 180 W + CPU/RAM, ~250 W loaded):** ~**$3 – 8 / month**
+  if running ~4 h/day under load; ~$15 – 25 / month if on 24/7. Sleep or
+  Wake-on-LAN keeps this realistic.
+- **Per-token electricity:** literature consistently lands on
+  **$0.001 – $0.01 per 1 M tokens** for consumer GPUs like the 5060 Ti on
+  API-style (short-context) workloads; RAG-32k workloads push that to
+  $0.14 – $0.22 / MTok because of prompt-processing overhead.
+
+### 8.4 Break-even math (hardware treated as sunk cost — you already own both)
+
+| Cloud alternative | $ saved per 1 M tokens by going local | Tokens/day to save $1 |
+|---|---|---|
+| Sonnet 4.6 (no cache) | ~$5.00 | 200 k |
+| Sonnet 4.6 (cached / batch) | ~$2.50 | 400 k |
+| Flash Lite | ~$0.46 | 2.2 M |
+
+Translation: against **Sonnet**, any serious agent use pays back
+immediately — you save roughly $5 per million tokens you don't send.
+Against **Flash Lite**, you need sustained volume (several million tokens
+a day) before electricity savings dominate; below that it's essentially
+free to just call Google.
+
+If you amortize the 5060 Ti alone (~$430, 3-year life = ~$143/yr) the
+break-evens don't move much: you cover its depreciation by displacing
+~30 M tokens of Sonnet or ~310 M tokens of Flash Lite per year.
+
+### 8.5 What electricity doesn't price in
+
+1. **Quality gap.** For agent work the ranking is roughly
+   **Sonnet 4.6 > Qwen3-Coder-Next (local) > Gemini 3.1 Flash Lite**.
+   Flash Lite is built for speed and cost, not long-horizon tool loops;
+   don't assume same-tier performance just because the price looks
+   attractive. Sonnet's lead on complex multi-tool flows is the main
+   reason to pay its rate.
+2. **Latency / throughput.** 5060 Ti does ~30 tok/s on 14 B Q4, ~20–40
+   tok/s on Qwen3-Coder-Next via offload. Sonnet and Flash Lite don't
+   care if you fire 50 parallel requests — local does.
+3. **Ops cost.** Model swaps, GGUF updates, driver pain, VRAM-tuning,
+   template bugs for tool-calling — none of this shows up on the power
+   bill but it's the real cost of local.
+4. **Privacy / air-gap.** Local wins by definition when the data can't
+   leave the box.
+
+### 8.6 Practical recommendation by traffic tier
+
+| Daily volume | Best fit |
+|---|---|
+| < 500 k tokens/day | **Flash Lite**. Ops-free, ~$0.25/day ceiling. Local adds complexity for no meaningful saving. |
+| 500 k – 5 M / day | **Hybrid**: cheap turns on Flash Lite or local Qwen3.5-9B (Mac), hard turns on Sonnet. |
+| > 5 M / day, steady | **Local Qwen3-Coder-Next on the PC** as the default; Sonnet as a scalpel for the hardest turns. The electricity math becomes obviously dominant. |
+| Privacy-sensitive | Local regardless of volume. |
+
+---
+
+## 9. Bottom line
 
 - **Best agent model you can realistically run:** Qwen3-Coder-Next
   (80B-A3B) — but only on the PC with CPU offload onto the 128 GB RAM.
@@ -265,3 +347,11 @@ light stuff instant on the Mac.
 - [Best Mac Mini for Running Local LLMs and OpenClaw — Starmorph](https://blog.starmorph.com/blog/best-mac-mini-for-local-llms)
 - [Mac Mini OpenClaw Setup Guide — startwithopenclaw.com](https://startwithopenclaw.com/mac-mini/)
 - [I run local LLMs in one of the world's priciest energy markets — XDA](https://www.xda-developers.com/run-local-llms-one-worlds-priciest-energy-markets/)
+- [Gemini 3.1 Flash Lite — Google blog](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-1-flash-lite/)
+- [Gemini Developer API pricing — Google AI](https://ai.google.dev/gemini-api/docs/pricing)
+- [Gemini 3.1 Flash Lite Preview — OpenRouter](https://openrouter.ai/google/gemini-3.1-flash-lite-preview)
+- [Claude API pricing — Anthropic docs](https://platform.claude.com/docs/en/about-claude/pricing)
+- [Claude Sonnet 4.6 — OpenRouter](https://openrouter.ai/anthropic/claude-sonnet-4.6)
+- [Anthropic API pricing guide 2026 — Finout](https://www.finout.io/blog/anthropic-api-pricing)
+- [Local LLMs vs Cloud APIs TCO 2026 — SitePoint](https://www.sitepoint.com/local-llms-vs-cloud-api-cost-analysis-2026/)
+- [Private LLM Inference on Consumer Blackwell GPUs (arXiv)](https://arxiv.org/html/2601.09527v1)

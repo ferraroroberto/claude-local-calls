@@ -360,17 +360,102 @@ Updated ordering for your specific hardware, agent-oriented workload, and the Fl
 
 ---
 
-## 10. Bottom line
+## 10. The recommended 3-tier stack (final answer)
 
-- **Best agent model you can realistically run:** Qwen3-Coder-Next
-  (80B-A3B) — but only on the PC with CPU offload onto the 128 GB RAM.
-- **Best small model:** Qwen3.5-9B (Mac) or gpt-oss-20B (PC, if agentic
-  scaffold tolerates a non-Qwen chat template).
-- **Mac mini's honest role:** 24/7 always-on light endpoint, not the
-  agent brain. Its 16 GB unified memory is the hard ceiling.
-- **PC's honest role:** the actual LLM workhorse. The 5060 Ti is the
-  budget sweet spot for 2026 local-LLM builds; the 128 GB RAM is what
-  makes 80B-MoE models usable on it.
+This is the concrete setup: **1st choice / 2nd choice / 3rd choice** for
+each tier, so you can pick a default and have fallbacks lined up before
+you start downloading weights.
+
+### Tier 1 — The PC (primary brain for openclaw)
+
+Heavy agent turns land here. The PC has 16 GB VRAM + 128 GB DDR5 —
+enough for a mid-sized MoE model with CPU offload.
+
+| Rank | Model | Size (total / active) | Why | Expected tok/s | Serve with |
+|---|---|---|---|---|---|
+| 🥇 **1st** | **GLM-4.5-Air** | 106 B / 12 B MoE | Explicitly trained for agent + coding workflows (ARC). Comfortable RAM fit (~55–60 GB at Q4). Works out-of-the-box with Claude Code / Cline / openclaw-class scaffolds. Best quality-to-fit ratio on your hardware. | 8–15 | `llama.cpp --jinja` or vLLM |
+| 🥈 **2nd** | **Qwen3-Coder-Next** | 80 B / 3 B MoE | Lighter active param count → faster. 256 K context. Very mature tool-calling via Hermes template. Use when GLM-Air is too slow or for longer contexts. | 20–40 | `llama.cpp --jinja`, vLLM, or Ollama |
+| 🥉 **3rd** | **DeepSeek R1 distill 32B** | 32 B dense | Keep as a "reasoning" endpoint for planning-heavy turns. Not agent-tuned, but strong at analytical thinking. Fits VRAM at Q4 with partial offload. | 18–25 | `llama.cpp` or Ollama |
+
+**Default openclaw endpoint:** GLM-4.5-Air. Swap to Qwen3-Coder-Next if
+you hit tool-parsing bugs or need faster throughput.
+
+### Tier 2 — The Mac mini (always-on light endpoint)
+
+Runs 24/7 at ~5 W idle. Role: fast small-model for routing, classification,
+simple tool calls, and as a fallback when the PC is asleep. Hard-capped
+at ~9 B dense models by the 16 GB unified memory.
+
+| Rank | Model | Size | Why | Expected tok/s | Serve with |
+|---|---|---|---|---|---|
+| 🥇 **1st** | **Qwen3.5-9B** | 9 B dense | Beats models 3× its size on reasoning. Solid tool-calling. Fits in ~6.6 GB Q4 → leaves headroom for context. Native MLX build is fastest on Apple Silicon. | 40–50 (MLX), 25–35 (Ollama) | **MLX-LM** or Ollama |
+| 🥈 **2nd** | **Qwen2.5-7B-Instruct** | 7 B dense | Older but battle-tested. Most reliable tool-calling behavior in the small-model tier. Use if Qwen3.5-9B shows edge-case bugs. | 35–45 | MLX-LM or Ollama |
+| 🥉 **3rd** | **Phi-4 / Gemma 3 (9B)** | ~9 B dense | Non-Qwen alternatives; useful if you want diversity in ensemble routing or hit a license concern. Gemma 3 is strong at multilingual. | 30–45 | MLX-LM or Ollama |
+
+**Default Mac role:** Qwen3.5-9B served via MLX. Mac also keeps the
+existing `claude-local-calls` proxy running so you can always reach
+Claude through your subscription.
+
+### Tier 3 — API fallback (for the hardest turns)
+
+When local models fail a turn, or on production-critical runs, bounce
+the request to a remote model. Explicitly **not Flash Lite** — that's
+what disappointed you; skip the trap of "cheaper Gemini" as the fallback.
+
+| Rank | Model | Price (blended 5:1) | Why | Use when |
+|---|---|---|---|---|
+| 🥇 **1st** | **Claude Sonnet 4.6** | ~$5.00 / MTok (or ~$3.20 with cache) | Highest-quality agent model in the lineup. With 1 M ctx and prompt caching, fits any openclaw workload. Worth the price for hard turns. | Any turn local models fail, or when quality matters more than cost. |
+| 🥈 **2nd** | **z.ai GLM-5.1 / GLM-4.6 API** | Dramatically cheaper than Sonnet (~$0.50–1.50 / MTok blended, varies) | Same GLM family as your Tier-1 local pick, so prompt portability is high. Much more agent-capable than Flash Lite. | Routine agent fallbacks when cost matters more than top-end quality. |
+| 🥉 **3rd** | **DeepSeek V3.2 API** | Cheap per MTok; strong reasoning | Excellent fallback for reasoning / planning turns specifically. Less agent-tuned than GLM or Sonnet. | Hard analytical turns; second-opinion check on locally-produced plans. |
+
+**Skip Gemini 3.1 Flash Lite as a fallback.** It's the model class that
+failed you originally — cheaper isn't better if quality is the problem.
+If you want Gemini specifically, step up to **Gemini 3 Flash** or
+**Gemini 3 Pro** tier where the agent reasoning actually holds.
+
+### 10.4 Routing logic (how the three tiers work together)
+
+A simple rule-of-thumb router, from cheapest to most expensive:
+
+1. **Classify / route / short completions** → **Mac mini (Qwen3.5-9B)**.
+   The Mac is always-on; no spin-up cost.
+2. **Default agent turns (tool calls, code edits, multi-step reasoning)**
+   → **PC (GLM-4.5-Air)**. Wake-on-LAN if asleep; keep it warm when
+   openclaw is active.
+3. **Failed turn, critical turn, or quality check** → **Sonnet 4.6 API**.
+   Budget this as "scalpel only" — it's 500× the electricity cost, so
+   use it deliberately.
+
+The `claude-local-calls` proxy on the Mac remains the single entry
+point: it can fan out to the PC or the API based on request metadata
+(e.g. model name, a header, or message length).
+
+### 10.5 Shopping list to actually get started
+
+| What | Where | Notes |
+|---|---|---|
+| GLM-4.5-Air GGUF | `unsloth/GLM-4.5-Air-GGUF` on HF | Grab Q4_K_M first; fall back to Q2_K_XL if RAM pressure shows. |
+| Qwen3-Coder-Next GGUF | `unsloth/Qwen3-Coder-Next-GGUF` on HF | Q4_K_M or Q2_K_XL. |
+| Qwen3.5-9B (MLX) | `mlx-community/Qwen3.5-9B-Instruct-4bit` on HF | Or `ollama pull qwen3.5:9b`. |
+| DeepSeek R1 32B distill | `unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF` on HF | Optional Tier-1 #3. |
+| llama.cpp | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) | Build with CUDA for the PC, Metal for the Mac. |
+| Ollama | ollama.com | Fast path if you don't want to compile anything. |
+| Anthropic API key | console.anthropic.com | For the Tier-3 fallback. |
+| z.ai API key | z.ai | Optional cheaper Tier-3. |
+
+---
+
+## 11. Bottom line
+
+- **1st choice, PC:** **GLM-4.5-Air** — the agent-tuned MoE that fits.
+- **2nd choice, Mac mini:** **Qwen3.5-9B via MLX** — always-on, cheap, fast.
+- **3rd choice, API fallback:** **Claude Sonnet 4.6** (with prompt caching).
+- **Don't use:** Gemini 3.1 Flash Lite for agent work (that's what
+  failed you), or anything >35 B dense on the Mac (won't fit).
+- **Mac mini's honest role:** 24/7 always-on light endpoint + routing
+  layer, not the agent brain.
+- **PC's honest role:** the actual LLM workhorse. 128 GB RAM is what
+  unlocks 100 B+ MoE models on a 16 GB GPU.
 - **Tool calling works today** in llama.cpp (Hermes template, `--jinja`),
   vLLM, and Ollama — pick the one that matches your comfort level.
 

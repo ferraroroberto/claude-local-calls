@@ -300,7 +300,67 @@ break-evens don't move much: you cover its depreciation by displacing
 
 ---
 
-## 9. Bottom line
+## 9. The wider Chinese open-source landscape — is there something *better* than Qwen3-Coder-Next for this box?
+
+Short answer: **yes, two serious contenders — MiniMax M2.x and GLM-4.5-Air — and one honorable mention (DeepSeek R1 distill 32B).** Each is worth trying before settling on Qwen.
+
+Context for why this matters: the user tried openclaw with Gemini 3.1 Flash Lite and found it disappointing. That's expected — Flash Lite is tuned for speed/cost, not long-horizon multi-tool loops. The models below are *explicitly* trained for agent/coding workloads, which is exactly what openclaw needs.
+
+### 9.1 GLM-4.5-Air — the realistic agent pick (Zhipu / z.ai)
+- **Size:** 106 B total / ~12 B active (MoE). GLM-4.6 (357 B) is too big; GLM-5 (744 B) is way too big. **Air is the variant that fits consumer hardware.**
+- **Designed for:** "Agentic, Reasoning, Coding" (ARC). Works out of the box with Claude Code, Cline, Roo Code, Kilo Code, OpenCode.
+- **Fit on the PC:** Q4 MoE quant ≈ 55–60 GB. With `-ot ".ffn_.*_exps.=CPU"` offload of MoE layers to the 128 GB DDR5 it runs end-to-end; expect **~8–15 tok/s** based on 3090+128GB reports.
+- **Context:** 128 K. Plenty for agent loops.
+- **Verdict:** strongest agent-optimized model that comfortably fits your RAM budget. If you want one local model to replace Flash Lite in openclaw, this is the first thing to try. GLM-4.6 (full) is better but painful on 16 GB VRAM.
+
+### 9.2 MiniMax M2 / M2.5 / M2.7 — the SWE-bench champion
+- **Size:** 230 B total / **10 B active** (MoE). Purpose-built for "max coding and agentic workflows."
+- **Benchmarks:** MiniMax M2.1 scored **74 % on SWE-bench Verified** — higher than most open models, closes in on Sonnet-class.
+- **Fit on the PC:** **tight.** The smallest quants need **≥121 GB RAM**; your 128 GB is the bare minimum and you'll be swapping nothing else. Expect **~14 tok/s at Q6** on consumer HW per independent testing.
+- **Engine:** SGLang is the recommended server; vLLM works too (`vllm>=...` recent). Native API runs ~100 tok/s so you'll feel the local gap.
+- **Verdict:** if pure agent/coding quality is the goal and you can live with 128 GB being nearly full, this is the upgrade path above GLM-Air. Start with M2.7 (latest, NVIDIA-optimized). If MiniMax open-weights M2.5 or M2.7 at a smaller Air-style size, that'll become the obvious pick.
+
+### 9.3 DeepSeek V3.2 (and R1 distills) — the reasoning specialist
+- **DeepSeek V3.2 full:** 671 B total, ~37 B active. Too big even for 128 GB at reasonable quality — on RTX 4090 (24 GB) you get 18–25 tok/s on the active set, on a 5060 Ti it'll be worse because of the tighter VRAM and offload bandwidth.
+- **DeepSeek R1 distilled models** (8 B / 14 B / **32 B**): these are what you actually want. The **32 B distill** fits the 5060 Ti at Q4 with partial offload and gives you reasoning-tuned behavior without paying 670 B model tax. Not as agent-tuned as GLM or MiniMax, but excellent on hard problem-solving turns.
+- **Verdict:** keep R1-32B-distill in the hybrid setup as a "reasoner" endpoint the agent can call for planning turns.
+
+### 9.4 Kimi K2 / Moonshot — skip for local
+- Trillion-param, runs at **~8.5 tok/s at Q3** even on a 3090+128GB class machine. Its party trick is 200–300 sequential tool calls without context rot, which is genuinely impressive — but not at 8 tok/s. **Use via API if you ever need its specific strength.**
+
+### 9.5 Summary table — what actually fits your PC (5060 Ti 16 GB + 128 GB DDR5)
+
+| Model | Total / active | Agent tuning | Realistic quant | Expected tok/s | Notes |
+|---|---|---|---|---|---|
+| **Qwen3-Coder-Next** | 80 B / 3 B | ★★★★★ (explicit) | Q4_K_M or Q2_K_XL | 20–40 | Already in doc. Strong all-rounder. |
+| **GLM-4.5-Air** | 106 B / 12 B | ★★★★★ (ARC) | Q4 MoE + offload | 8–15 | Best "comfortable fit" agent model. |
+| **MiniMax M2.7** | 230 B / 10 B | ★★★★★ (SWE-bench 74 %) | Q4 w/ full offload | ~14 | Top quality, tight on 128 GB RAM. |
+| **DeepSeek R1 distill 32B** | 32 B (dense) | ★★★ (reasoning) | Q4_K_M + offload | 18–25 | Great reasoner, not agent-specialist. |
+| **gpt-oss-20B MXFP4** | 20 B MoE | ★★★★ | native MXFP4 | **~488 short-ctx** | Fast fallback. Non-Qwen template. |
+| Qwen3.5-27B (dense) | 27 B | ★★★ | Q4 + offload | ~10 | Not really agent-tuned; skip. |
+| DeepSeek V3.2 full | 671 B / 37 B | ★★★★ | Q2 + heavy offload | ~5–8 | Too painful locally; use API. |
+| Kimi K2 | ~1 T MoE | ★★★★★ (tool chains) | Q3 + offload | ~8 | API only in practice. |
+
+### 9.6 Why did Flash Lite disappoint and what actually fixes it?
+
+Three causes, ordered by likelihood:
+1. **Model capability mismatch.** Flash Lite is sub-Sonnet-4.6 class; openclaw's tool-call reasoning sits near the ceiling of what Flash Lite can handle. **Fix:** try a model trained for agents — GLM-4.5-Air, MiniMax M2, or Qwen3-Coder-Next — or jump to Sonnet 4.6 for the hard turns.
+2. **Tool-call parsing quirks.** Gemini's function-call format is not identical to Anthropic's `tool_use` blocks; adapter bugs sometimes silently drop arguments. **Fix:** check openclaw's Gemini adapter, enable verbose logging on tool calls, compare to OpenAI-compatible endpoints where the format is better-trodden.
+3. **Prompt style.** Agent prompts written for Claude/GPT-4 class models often over-rely on implicit reasoning that smaller models miss. **Fix:** add explicit step/plan scaffolding in the system prompt if you stick with smaller models.
+
+### 9.7 Revised recommendation
+
+Updated ordering for your specific hardware, agent-oriented workload, and the Flash Lite disappointment:
+
+1. **Try GLM-4.5-Air locally first** — best balance of agent quality, hardware fit, and setup complexity. Serve via llama.cpp with `--jinja` or vLLM. This is the most likely win for openclaw.
+2. **A/B it against Qwen3-Coder-Next** — different strengths; Qwen is lighter, GLM is arguably smarter at long-horizon tool use. Pick per task.
+3. **Keep Sonnet 4.6 as the fallback API** — not Flash Lite. The quality gap is where your openclaw problem actually lives. If cost matters, use Sonnet only for turns that fail locally.
+4. **Don't bother with Flash Lite for agents.** If you want a cheap API backstop, **z.ai's GLM API** is the same GLM family at low rates, or **DeepSeek's API** for V3.2 — both are cheaper than Sonnet and much more agent-capable than Flash Lite.
+5. **MiniMax M2.7 is your upgrade target** if GLM-Air isn't enough. Plan for a RAM upgrade or comfortable 128 GB headroom before attempting it.
+
+---
+
+## 10. Bottom line
 
 - **Best agent model you can realistically run:** Qwen3-Coder-Next
   (80B-A3B) — but only on the PC with CPU offload onto the 128 GB RAM.
@@ -355,3 +415,18 @@ break-evens don't move much: you cover its depreciation by displacing
 - [Anthropic API pricing guide 2026 — Finout](https://www.finout.io/blog/anthropic-api-pricing)
 - [Local LLMs vs Cloud APIs TCO 2026 — SitePoint](https://www.sitepoint.com/local-llms-vs-cloud-api-cost-analysis-2026/)
 - [Private LLM Inference on Consumer Blackwell GPUs (arXiv)](https://arxiv.org/html/2601.09527v1)
+- [zai-org/GLM-4.6 (Hugging Face)](https://huggingface.co/zai-org/GLM-4.6)
+- [zai-org/GLM-4.5 (GitHub)](https://github.com/zai-org/GLM-4.5)
+- [zai-org/GLM-5 (GitHub)](https://github.com/zai-org/GLM-5)
+- [GLM-4.6 Run Locally Guide — Unsloth](https://docs.unsloth.ai/models/glm-4.6-how-to-run-locally)
+- [GLM-4.6: An Open-Source AI for Coding — IntuitionLabs](https://intuitionlabs.ai/articles/glm-4-6-open-source-coding-model)
+- [MiniMax-AI/MiniMax-M2 (GitHub)](https://github.com/MiniMax-AI/MiniMax-M2)
+- [MiniMaxAI/MiniMax-M2 (Hugging Face)](https://huggingface.co/MiniMaxAI/MiniMax-M2)
+- [MiniMax M2.7 on NVIDIA Platforms — NVIDIA blog](https://developer.nvidia.com/blog/minimax-m2-7-advances-scalable-agentic-workflows-on-nvidia-platforms-for-complex-ai-applications/)
+- [MiniMax M2 hardware requirements — Hardware Corner](https://www.hardware-corner.net/what-hardware-minimax-m2-7/)
+- [MiniMax-M2 vLLM Usage Guide](https://docs.vllm.ai/projects/recipes/en/latest/MiniMax/MiniMax-M2.html)
+- [How to Run DeepSeek V3.2 Locally — Pulse Mark](https://pulsemark.ai/run-deepseek-v3-2-locally-setup-guide-2026/)
+- [DeepSeek R1 Local Setup — Local AI Master](https://localaimaster.com/blog/deepseek-r1-local-setup-guide)
+- [Kimi K2 Thinking vs MiniMax M2 — kimi-k2.org](https://kimi-k2.org/blog/17-kimi-k2-thinking-vs-minimax-m2-en)
+- [Best Open Source LLM for Agent Workflow 2026 — SiliconFlow](https://www.siliconflow.com/articles/en/best-open-source-LLM-for-Agent-Workflow)
+- [Top Chinese Open-Source LLMs 2026 — Second Talent](https://www.secondtalent.com/resources/chinese-open-source-llms-ai-leaders/)

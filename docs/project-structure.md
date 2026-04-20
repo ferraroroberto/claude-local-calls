@@ -2,11 +2,13 @@
 
 An LLM-oriented map of `claude-local-calls`. Three views: a **component
 diagram** showing runtime data flow between clients, the hub, and the
-three backends (Claude subscription + two local llama-server
-processes); a **module diagram** showing the Python package layout and
-imports; and a **request lifecycle** sequence. Use this file as context
-when asking an LLM to modify the project — it shows which file owns
-what, and what talks to what.
+six backends (Claude subscription + five local llama-server processes:
+Qwen, GLM, Gemma 3 12B, Gemma 3 27B QAT, Gemma 3n E4B); a **module
+diagram** showing the Python package layout and imports; and a
+**request lifecycle** sequence. Use this file as context when asking
+an LLM to modify the project — it shows which file owns what, and what
+talks to what. For per-model specs, quantisation, and docs links see
+[model-comparison.md](model-comparison.md).
 
 ## Component diagram (runtime)
 
@@ -46,6 +48,9 @@ flowchart LR
     CLAUDE["claude -p CLI<br/>(Claude Code subscription)"]
     QWEN["llama-server :8081<br/>Qwen3.5-9B GGUF<br/>all layers on GPU"]
     GLM["llama-server :8082<br/>GLM-4.5-Air GGUF<br/>MoE experts on CPU"]
+    GEMMA12["llama-server :8083<br/>Gemma 3 12B IT GGUF<br/>all layers on GPU"]
+    GEMMA27["llama-server :8084<br/>Gemma 3 27B IT QAT GGUF<br/>partial GPU offload"]
+    GEMMAN["llama-server :8085<br/>Gemma 3n E4B IT GGUF<br/>all layers on GPU"]
 
     subgraph Dev["Dev / tests / scripts"]
         SMOKE["scripts/smoke_test.py<br/>iterate enabled_models()"]
@@ -77,6 +82,9 @@ flowchart LR
     CLI_WRAP -->|subprocess.run<br/>--output-format json| CLAUDE
     OAI_UP -->|POST /v1/chat/completions| QWEN
     OAI_UP -->|POST /v1/chat/completions| GLM
+    OAI_UP -->|POST /v1/chat/completions| GEMMA12
+    OAI_UP -->|POST /v1/chat/completions| GEMMA27
+    OAI_UP -->|POST /v1/chat/completions| GEMMAN
 
     APP --> V_WELCOME
     APP --> V_INSTALL
@@ -93,6 +101,9 @@ flowchart LR
     SP -->|Popen python -m src.server| SRV
     LP -->|Popen llama-server --model ...| QWEN
     LP -->|Popen llama-server --model ...| GLM
+    LP -->|Popen llama-server --model ...| GEMMA12
+    LP -->|Popen llama-server --model ...| GEMMA27
+    LP -->|Popen llama-server --model ...| GEMMAN
     LP -.reads.-> LLAMA_BIN
     LP -.reads.-> YAML_CACHE
 
@@ -108,7 +119,7 @@ flowchart LR
     classDef ui fill:#2a1d2a,stroke:#a47,color:#eee
     classDef backend fill:#2a281d,stroke:#a94,color:#eee
     class Clients ext
-    class CLAUDE,QWEN,GLM backend
+    class CLAUDE,QWEN,GLM,GEMMA12,GEMMA27,GEMMAN backend
     class Hub hub
     class UI ui
 ```
@@ -121,19 +132,19 @@ flowchart TB
     ROOT --> README["README.md"]
     ROOT --> REQ["requirements.txt"]
     ROOT --> LIC["LICENSE"]
-    ROOT --> LAUNCHERS["run_hub / run_qwen / run_glm / run_all<br/>.bat (Windows) + .sh (macOS)<br/>launch_app.bat / .sh"]
+    ROOT --> LAUNCHERS["run_hub / run_qwen / run_glm / run_gemma3_12b / run_gemma3_27b / run_gemma3n_e4b / run_all<br/>.bat (Windows) + .sh (macOS)<br/>launch_app.bat / .sh"]
 
     ROOT --> CFGDIR["config/"]
     CFGDIR --> C1["models.yaml<br/>hosts + models registry"]
 
     ROOT --> SRC["src/"]
-    SRC --> S1["server.py<br/>FastAPI hub + router"]
+    SRC --> S1["server.py<br/>FastAPI hub + router (five local backends + Claude)"]
     SRC --> S2["claude_cli.py<br/>claude -p wrapper"]
     SRC --> S3["openai_upstream.py<br/>llama-server client +<br/>Anthropic ↔ OpenAI shapes"]
     SRC --> S4["model_registry.py<br/>YAML loader + Model class"]
     SRC --> S5["host_profile.py<br/>pick active host row"]
     SRC --> S6["install.py<br/>checks + fix dispatch"]
-    SRC --> S7["run_backend.py<br/>hub|qwen|glm dispatcher"]
+    SRC --> S7["run_backend.py<br/>hub|qwen|glm|gemma3_12b|gemma3_27b|gemma3n_e4b dispatcher"]
     SRC --> S8["server_process.py<br/>hub Popen + kill-port"]
     SRC --> S9["llama_process.py<br/>per-model llama-server Popen"]
     SRC --> S10["landing.py<br/>HTML for GET /"]
@@ -166,10 +177,15 @@ flowchart TB
     ROOT --> MDLS["models/<br/>(gitignored)"]
     MDLS --> M1["Qwen3.5-9B-Q4_K_M.gguf"]
     MDLS --> M2["GLM-4.5-Air-Q4_K_M/<br/>multi-part GGUF"]
+    MDLS --> M3["gemma-3-12b-it-Q4_K_M.gguf"]
+    MDLS --> M4["gemma-3-27b-it-qat-Q4_0.gguf (QAT)"]
+    MDLS --> M5["gemma-3n-E4B-it-Q4_K_M.gguf"]
 
     ROOT --> DOCS["docs/"]
     DOCS --> D1["project-structure.md<br/>(this file)"]
-    DOCS --> D2["20260420-hub-with-qwen-and-glm.md<br/>post-mortem of the hub build"]
+    DOCS --> D2["model-comparison.md<br/>per-model specs + docs links"]
+    DOCS --> D3["20260420-hub-with-qwen-and-glm.md<br/>post-mortem of the hub build"]
+    DOCS --> D4["20260420-add-gemma-for-action-item-classification.md<br/>Gemma 3 12B + 27B-QAT plan + execution log"]
 ```
 
 ## Request lifecycle
@@ -198,7 +214,7 @@ sequenceDiagram
     F-->>C: 200 JSON {id, content, usage, stop_reason}
 ```
 
-### Local backend (model=qwen3.5-9b or glm-4.5-air)
+### Local backend (model=qwen3.5-9b, glm-4.5-air, gemma3-12b-it, gemma3-27b-it, gemma3n-e4b-it)
 
 ```mermaid
 sequenceDiagram
@@ -206,7 +222,7 @@ sequenceDiagram
     participant F as FastAPI hub (src/server.py)
     participant R as model_registry.resolve
     participant U as openai_upstream.call_openai_chat
-    participant L as llama-server :8081 or :8082
+    participant L as llama-server :8081/:8082/:8083/:8084/:8085
 
     C->>F: POST /v1/messages<br/>{model:"qwen3.5-9b", messages, ...}
     F->>R: resolve("qwen3.5-9b")
@@ -222,15 +238,18 @@ sequenceDiagram
 
 OpenAI-shape callers (`POST /v1/chat/completions`) skip the
 Anthropic translation hops on both paths — for Claude the hub wraps
-the envelope into OpenAI shape; for qwen/glm it's near-passthrough.
+the envelope into OpenAI shape; for the local llama-server backends
+(qwen/glm/gemma3-12b/gemma3-27b/gemma3n-e4b) it's near-passthrough.
 
 ## Key facts for LLM context
 
 - **Purpose.** Single local HTTP endpoint that speaks both Anthropic
-  and OpenAI shapes and routes by model name to three backends:
+  and OpenAI shapes and routes by model name to six backends:
   Claude subscription (via the `claude -p` CLI), local Qwen3.5-9B,
-  local GLM-4.5-Air. Lets clients (openclaw, anthropic/openai SDKs)
-  keep one `base_url` and swap models via a string.
+  local GLM-4.5-Air, local Gemma 3 12B IT, local Gemma 3 27B IT QAT,
+  local Gemma 3n E4B IT. Lets clients (openclaw, anthropic/openai
+  SDKs) keep one `base_url` and swap models via a string. See
+  [model-comparison.md](model-comparison.md) for per-model specs.
 - **One config, per-host filtering.**
   [`config/models.yaml`](../config/models.yaml) lists every model and
   every host. Each host has an `enabled` whitelist — the installer,
@@ -241,9 +260,11 @@ the envelope into OpenAI shape; for qwen/glm it's near-passthrough.
 - **Entry points.**
   - `python -m src.run_backend hub` (or `run_hub.bat` / `.sh`) — starts
     FastAPI on `0.0.0.0:8000`.
-  - `python -m src.run_backend qwen` / `glm` (or `run_qwen.*` /
-    `run_glm.*`) — starts the matching `llama-server` child with args
-    from `models.yaml`.
+  - `python -m src.run_backend qwen` / `glm` / `gemma3_12b` /
+    `gemma3_27b` / `gemma3n_e4b` (or `run_qwen.*` / `run_glm.*` /
+    `run_gemma3_12b.*` / `run_gemma3_27b.*` / `run_gemma3n_e4b.*`) —
+    starts the matching `llama-server` child with args from
+    `models.yaml`.
   - `python -m src.install [--fix]` — runs every health check, fixes
     the fixable; shared with the Streamlit Install tab.
   - `streamlit run app/app.py` (or `launch_app.bat` / `.sh`) — UI.

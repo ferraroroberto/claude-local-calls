@@ -11,8 +11,11 @@ start() {
   echo "  $name pid=$!"
 }
 
-echo "launching hub + qwen + glm (disabled backends will exit immediately)..."
+echo "launching hub + qwen + glm + gemma3-12b + gemma3-27b + gemma3n-e4b (disabled backends will exit immediately)..."
 start hub
 start qwen
 start glm
+start gemma3_12b
+start gemma3_27b
+start gemma3n_e4b
 wait

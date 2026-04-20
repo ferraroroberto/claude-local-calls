@@ -345,3 +345,104 @@ flag that reads pre-computed labels instead of calling an LLM.
   deferral as Qwen/GLM — OpenAI-shape callers get native tool
   calls from `llama-server --jinja`; the classifier doesn't need
   tool calls anyway.
+
+---
+
+## Execution log — 2026-04-20
+
+Everything in the plan above except the "classifier eval harness"
+(step 10) was applied. Two real-world deviations were needed;
+both were risks the plan already flagged.
+
+### What was done
+
+1. **`config/models.yaml`** — added `gemma3_12b` and `gemma3_27b`
+   blocks as specified, and extended `hosts.pc-cuda.enabled` to
+   `[qwen, glm, gemma3_12b, gemma3_27b]`. `mac-mini-m4.enabled`
+   left at `[qwen]`.
+2. **Launchers** — created
+   [run_gemma3_12b.bat](../run_gemma3_12b.bat) /
+   [run_gemma3_12b.sh](../run_gemma3_12b.sh) and
+   [run_gemma3_27b.bat](../run_gemma3_27b.bat) /
+   [run_gemma3_27b.sh](../run_gemma3_27b.sh), mirrors of the
+   Qwen / GLM ones. Extended [run_all.bat](../run_all.bat) and
+   [run_all.sh](../run_all.sh) to start both.
+3. **Tests** — added `test_gemma_per_host_filtering` in
+   [tests/test_model_registry.py](../tests/test_model_registry.py)
+   that asserts both gemma ids resolve on `pc-cuda` and do *not*
+   resolve on `mac-mini-m4`, and that their ports are 8083 / 8084.
+   No other test file changed (as the plan predicted).
+   Full suite: **16 passed**.
+4. **Downloads** — `gemma3-12b-it` pulled from
+   `unsloth/gemma-3-12b-it-GGUF` cleanly (6.8 GB on disk).
+   `gemma3-27b-it` on the first try failed against
+   `google/gemma-3-27b-it-qat-q4_0-gguf` with
+   `GatedRepoError: 401 … Access to model is restricted`. The
+   plan's **Risks / open questions** section named exactly this
+   outcome ("If Google pulls the official QAT repo, fall back to
+   `unsloth/gemma-3-27b-it-qat-GGUF`"). Switched the `hf_repo` +
+   `hf_pattern` + `model_path` to that mirror
+   (`gemma-3-27b-it-qat-Q4_0.gguf`, 14.5 GB on disk, same QAT
+   weights).
+5. **Smoke test** (hub + gemma3-12b + gemma3-27b running):
+
+   ```
+   passed : 3 — claude-haiku-4-5, gemma3-12b-it, gemma3-27b-it
+   skipped: 2 — qwen3.5-9b, glm-4.5-air
+   failed : 0
+   ```
+
+   Qwen and GLM were skipped because their backends weren't
+   started for this session — the smoke test skips unreachable
+   ports by design. Both Gemma backends returned `"pong"` in
+   ~3 output tokens through `/v1/messages`.
+6. **Docs** — updated
+   [project-structure.md](project-structure.md) (component +
+   module mermaids, request-lifecycle header, key-facts
+   bullets) and the [README](../README.md) (top bullet list,
+   ASCII architecture box, Layout tree, Setup disk budget,
+   Run table, Python example).
+
+### Deviations from the plan
+
+- **27B GGUF source.** Repo switched from
+  `google/gemma-3-27b-it-qat-q4_0-gguf` (gated, 401) to
+  `unsloth/gemma-3-27b-it-qat-GGUF` file
+  `gemma-3-27b-it-qat-Q4_0.gguf`. `model_path` became
+  `models/gemma-3-27b-it-qat-Q4_0.gguf`. A short comment was
+  added to the yaml block noting why.
+- **`--flash-attn` arg.** The vendored llama.cpp build (CUDA
+  Windows) rejects the bare flag:
+  `error: unknown value for --flash-attn: '--alias'`. It
+  requires a value (`on|off|auto`) in this version. Changed
+  the 27B args from `--flash-attn` to
+  `--flash-attn` + `on`. The plan flagged this exact
+  uncertainty ("whether `--flash-attn` is fully supported for
+  Gemma 3 in the llama.cpp build we vendored").
+- **Classifier eval harness (step 10)** — deliberately *not*
+  built yet. That step is described in the plan as sitting
+  outside the hub and requires a labelled CSV that does not
+  exist yet. The hub-integration piece of this plan is
+  complete; the eval work is the separate deliverable.
+
+### State at close
+
+- All four local models download OK on `pc-cuda`:
+  Qwen (5.3 GB), GLM (46.6 GB), Gemma 3 12B (6.8 GB),
+  Gemma 3 27B QAT (14.5 GB).
+- `python -m src.install` returns all rows **ok** with both
+  Gemmas present and ports 8083 / 8084 free.
+- 12B runs with full GPU offload (`-ngl 99`, `-c 16384`);
+  27B runs with partial offload (`-ngl 50`, `-c 4096`,
+  `--flash-attn on`). Both answer through the hub.
+- Four launchers + `run_all` + Streamlit Models-tab cards
+  appear for free via the registry.
+
+### Known follow-ups
+
+- The 27B's `-ngl 50 -c 4096` numbers are conservative. If
+  VRAM has headroom during a sustained load, try `-ngl 62`
+  (all layers) with `-c 2048` or `-c 4096 --no-mmap`. Tune
+  live from the Models-tab log tail.
+- Build the classifier eval harness (step 10) once the
+  labelled `action_items.csv` fixture is ready.

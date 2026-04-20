@@ -18,7 +18,7 @@ hosts:
   pc-cuda:
     platform: win32
     default: true
-    enabled: [qwen, glm]
+    enabled: [qwen, glm, gemma3_12b, gemma3_27b, gemma3n_e4b]
 
   mac-mini-m4:
     platform: darwin
@@ -73,3 +73,65 @@ models:
       - "16384"
       - "--alias"
       - "glm-4.5-air"
+
+  # --- Local Gemma 3 12B IT via llama.cpp (fast classifier tier) ---
+  gemma3_12b:
+    display_name: gemma3-12b-it
+    backend: openai
+    engine: llama-server
+    port: 8083
+    hf_repo: "unsloth/gemma-3-12b-it-GGUF"
+    hf_pattern: "gemma-3-12b-it-Q4_K_M.gguf"
+    model_path: "models/gemma-3-12b-it-Q4_K_M.gguf"
+    args:
+      - "--jinja"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "16384"
+      - "--alias"
+      - "gemma3-12b-it"
+
+  # --- Local Gemma 3 27B IT QAT via llama.cpp (quality tier; fits 16 GB VRAM) ---
+  # Google's official `google/gemma-3-27b-it-qat-q4_0-gguf` is a gated
+  # repo; the plan cites Unsloth's mirror as the pinned fallback. Same
+  # QAT weights, non-gated.
+  gemma3_27b:
+    display_name: gemma3-27b-it
+    backend: openai
+    engine: llama-server
+    port: 8084
+    hf_repo: "unsloth/gemma-3-27b-it-qat-GGUF"
+    hf_pattern: "gemma-3-27b-it-qat-Q4_0.gguf"
+    model_path: "models/gemma-3-27b-it-qat-Q4_0.gguf"
+    args:
+      - "--jinja"
+      - "-ngl"
+      - "50"
+      - "-c"
+      - "4096"
+      - "--flash-attn"
+      - "on"
+      - "--alias"
+      - "gemma3-27b-it"
+
+  # --- Local Gemma 3n E4B IT via llama.cpp (edge / mobile-class) ---
+  # Gemma 3n is Google's on-device family; E4B is the ~4B effective-
+  # parameter instruction-tuned variant. Small footprint, fits with
+  # plenty of headroom next to the larger gemma models.
+  gemma3n_e4b:
+    display_name: gemma3n-e4b-it
+    backend: openai
+    engine: llama-server
+    port: 8085
+    hf_repo: "unsloth/gemma-3n-E4B-it-GGUF"
+    hf_pattern: "gemma-3n-E4B-it-Q4_K_M.gguf"
+    model_path: "models/gemma-3n-E4B-it-Q4_K_M.gguf"
+    args:
+      - "--jinja"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "16384"
+      - "--alias"
+      - "gemma3n-e4b-it"

@@ -1,21 +1,32 @@
 # claude-local-calls
 
-A tiny local HTTP server that mimics the Anthropic Messages API (`POST /v1/messages`)
-but runs each request through the **`claude -p`** CLI on your machine, using
-your local Claude Code auth (your subscription) instead of an API key.
+A tiny local HTTP hub that routes `POST /v1/messages` (Anthropic shape) and
+`POST /v1/chat/completions` (OpenAI shape) to three backends by `model` name:
 
-Point any client — including the official `anthropic` SDK — at
-`http://127.0.0.1:8000` and your existing code keeps working, charged to
-your Claude account rather than API credits.
+- **claude-*** — forwarded to the **`claude -p`** CLI on your machine, using
+  your local Claude Code auth (your subscription) instead of an API key.
+- **qwen3.5-9b** — forwarded to a local `llama-server` running
+  [unsloth/Qwen3.5-9B-GGUF](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF)
+  on `127.0.0.1:8081`.
+- **glm-4.5-air** — forwarded to a local `llama-server` running
+  [unsloth/GLM-4.5-Air-GGUF](https://huggingface.co/unsloth/GLM-4.5-Air-GGUF)
+  on `127.0.0.1:8082` (MoE CPU offload — attention on GPU, expert tensors
+  on RAM).
 
-Inspired by the `_call_claude` pattern in `E:\automation\inspiration-system\src\enrichment.py`.
+Point any client — the official `anthropic` or `openai` SDKs, openclaw,
+a curl one-liner — at `http://127.0.0.1:8000` and swap backends by
+changing the `model` string. Claude requests bill your subscription;
+qwen/glm requests never leave the machine.
+
+Inspired by the `_call_claude` pattern in
+`E:\automation\inspiration-system\src\enrichment.py`.
 
 ## Scope & usage policy
 
 This is a **personal playground** for running your own experiments
-against your own Claude Code subscription on your own machine. It is
-**not** a hosted service, a multi-tenant proxy, or a way to share
-subscription access.
+against your own Claude Code subscription and your own local GPU on
+devices you personally own. It is **not** a hosted service, a
+multi-tenant proxy, or a way to share subscription access.
 
 To stay clearly within Anthropic's terms, please use it only as
 intended:
@@ -24,72 +35,143 @@ intended:
   agents, and tools on devices you personally own.
 - ✅ **Do** use it on a trusted LAN to reach your own second machine
   or VM (e.g. a local agent runtime).
-- ❌ **Don't** share the endpoint with other people — that would be
-  sharing subscription access, which Anthropic's
+- ✅ **Do** route non-Claude traffic to the local qwen/glm backends as
+  much as you like — those are your own weights on your own silicon.
+- ❌ **Don't** share the endpoint with other people — for Claude, that
+  would be sharing subscription access, which Anthropic's
   [Consumer Terms](https://www.anthropic.com/legal/consumer-terms)
   don't allow.
 - ❌ **Don't** port-forward it to the public internet or host it
   behind a domain.
 - ❌ **Don't** build a product, commercial service, or large automated
-  pipeline on top of it — for anything beyond personal experimentation
-  use the paid API, which the
+  pipeline on top of the Claude path — for anything beyond personal
+  experimentation use the paid API, which the
   [Usage Policy](https://www.anthropic.com/legal/aup) and Commercial
   Terms are designed for.
 - ❌ **Don't** hammer `claude -p` in tight loops; keep volume at
   human-in-the-loop speeds so you don't abuse the service or get
-  rate-limited.
+  rate-limited. The local backends are rate-limited only by your GPU.
 
 If your use case goes beyond "me, tinkering on my own machine,"
-switch to the Anthropic API. When in doubt, check
+switch to the Anthropic API for Claude. When in doubt, check
 [anthropic.com/legal](https://www.anthropic.com/legal/) or email
 `support@anthropic.com`. This repo is provided as-is, with no
 guarantee that it complies with Anthropic's terms for any particular
 use.
 
+## Architecture at a glance
+
+```
+openclaw / anthropic SDK / openai SDK / curl
+                    │
+                    ▼  http://<lan>:8000
+   ┌────────────── FastAPI hub (src/server.py) ───────────────┐
+   │  route by `model`:                                       │
+   │    claude-*       → call_claude()   (claude -p subprocess) │
+   │    qwen3.5-9b     → llama-server 127.0.0.1:8081            │
+   │    glm-4.5-air    → llama-server 127.0.0.1:8082            │
+   └──────────────────────────────────────────────────────────┘
+```
+
+See [docs/project-structure.md](docs/project-structure.md) for the full
+mermaid diagrams (components, modules, request lifecycle) and
+[docs/20260420-hub-with-qwen-and-glm.md](docs/20260420-hub-with-qwen-and-glm.md)
+for the post-mortem of how the hub got built.
+
 ## Layout
 
 ```
 claude-local-calls/
-├── .venv/                 # local virtualenv
+├── .venv/                    # local virtualenv
 ├── requirements.txt
-├── run_server.bat         # double-click to start the server
+├── run_hub.bat   / .sh       # start the FastAPI hub on :8000
+├── run_qwen.bat  / .sh       # start llama-server for Qwen on :8081
+├── run_glm.bat   / .sh       # start llama-server for GLM on :8082
+├── run_all.bat   / .sh       # start everything enabled on this host
+├── launch_app.bat / .sh      # Streamlit UI
+├── config/
+│   └── models.yaml           # host + model registry
 ├── src/
-│   ├── claude_cli.py      # subprocess wrapper around `claude -p`
-│   └── server.py          # FastAPI /v1/messages endpoint
-├── tests/
-│   └── test_server.py     # unit tests (monkeypatched — no real claude)
-└── scripts/
-    └── smoke_test.py      # end-to-end test via raw HTTP + anthropic SDK
+│   ├── server.py             # FastAPI hub (both shapes) + router
+│   ├── claude_cli.py         # subprocess wrapper around `claude -p`
+│   ├── openai_upstream.py    # httpx client for llama-server + shape translators
+│   ├── model_registry.py     # YAML loader
+│   ├── host_profile.py       # pick active host row
+│   ├── install.py            # first-run checks + --fix
+│   ├── run_backend.py        # hub|qwen|glm dispatcher
+│   ├── server_process.py     # hub Popen + kill-stray-on-port
+│   └── llama_process.py      # per-model llama-server Popen
+├── app/                      # Streamlit UI (welcome/install/server/models/…)
+├── scripts/
+│   ├── smoke_test.py
+│   ├── download_models.py    # huggingface_hub → models/
+│   └── install_llama_cpp.py  # CUDA-Windows / Metal-macOS release
+├── tests/                    # test_server / test_router / test_model_registry / test_install
+├── vendor/llama.cpp/         # prebuilt llama-server binary (gitignored)
+├── models/                   # downloaded GGUFs (gitignored)
+└── docs/
+    ├── project-structure.md
+    └── 20260420-hub-with-qwen-and-glm.md
 ```
 
 ## Setup
 
-Already done — venv exists at `.venv`, deps installed from `requirements.txt`.
-Requires the `claude` CLI on `PATH` (Claude Code).
+One command does everything — deps, llama.cpp binary, GGUF downloads
+for the models enabled for this host:
+
+```bat
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m src.install --fix
+```
+
+The installer reads [config/models.yaml](config/models.yaml), figures
+out which host row you are (by `CLAUDE_LOCAL_CALLS_HOST` env var, else
+hostname match, else `default: true`), and only downloads what that
+host's `enabled` list asks for. On the reference Windows PC that's
+Qwen (~6.6 GB) + GLM (~55 GB); on the Mac mini it's Qwen only.
+
+Plain check (no changes):
+
+```bat
+.venv\Scripts\python -m src.install
+```
+
+Or use the **Install** tab in the Streamlit UI — same checks, same
+fixes, one button per row.
+
+Requires the `claude` CLI on `PATH` (Claude Code) if any `claude-*`
+model is enabled for your host.
 
 ## Run
 
 ```bat
-run_server.bat
+run_hub.bat        :: FastAPI hub on :8000
+run_qwen.bat       :: llama-server for Qwen on :8081
+run_glm.bat        :: llama-server for GLM on :8082
+run_all.bat        :: start every backend enabled for this host
 ```
 
-or:
+Equivalent Python entrypoints:
 
 ```bat
-.venv\Scripts\python -m src.server
+.venv\Scripts\python -m src.run_backend hub
+.venv\Scripts\python -m src.run_backend qwen
+.venv\Scripts\python -m src.run_backend glm
 ```
 
-Server listens on `http://127.0.0.1:8000` locally and binds on `0.0.0.0`,
-so other machines on your LAN can also reach it.
+The hub binds on `0.0.0.0:8000`, so other machines on your LAN can
+also reach it. The llama-server backends bind on loopback — they're
+only reachable through the hub.
 
 ## LAN access
 
-The server binds on `0.0.0.0`, so any machine on the same network
+The hub binds on `0.0.0.0:8000`, so any machine on the same network
 (another laptop, a VM, an agent like openclaw running next to you) can
-call your subscription-backed API directly.
+use it.
 
-1. **Start the server** (either `run_server.bat` or the Streamlit
-   *Server* tab).
+1. **Start the hub** (either `run_hub.bat` / `.sh` or the Streamlit
+   *Server* tab). Start any local backends you need from
+   `run_qwen.*` / `run_glm.*` or the *Models* tab.
 2. **Find your LAN IP.** The Streamlit *Server* page shows it as a
    clickable **LAN** link. From a terminal:
 
@@ -99,11 +181,10 @@ call your subscription-backed API directly.
 
 3. **First run on Windows:** the firewall will prompt to allow Python
    through. Accept on **Private** networks only — never Public.
-4. **Point the remote client at the LAN URL** instead of loopback:
+4. **Point the remote client at the LAN URL:**
 
    ```python
    from anthropic import Anthropic
-
    client = Anthropic(
        api_key="local-dummy",
        base_url="http://192.168.1.42:8000",   # your LAN IP here
@@ -111,53 +192,100 @@ call your subscription-backed API directly.
    ```
 
 **Security caveats.** There is no authentication — anyone who can reach
-the port can spend your Claude quota. Only run this on trusted networks
-(home LAN, office LAN you own). Do **not** port-forward it to the public
-internet, and do not accept the firewall prompt on Public networks
-(cafés, airports, hotel Wi-Fi).
+the port can spend your Claude quota and burn your GPU. Only run this
+on trusted networks (home LAN, office LAN you own). Do **not**
+port-forward it to the public internet, and do not accept the firewall
+prompt on Public networks (cafés, airports, hotel Wi-Fi).
 
 ## Use it from Python
+
+Anthropic SDK, any backend:
 
 ```python
 from anthropic import Anthropic
 
 client = Anthropic(api_key="local-dummy", base_url="http://127.0.0.1:8000")
+
+# Claude via subscription
 msg = client.messages.create(
     model="claude-haiku-4-5",
+    max_tokens=128,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+
+# Local Qwen — no network, no cost
+msg = client.messages.create(
+    model="qwen3.5-9b",
+    max_tokens=128,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+
+# Local GLM — MoE via CPU offload
+msg = client.messages.create(
+    model="glm-4.5-air",
     max_tokens=128,
     messages=[{"role": "user", "content": "Hello"}],
 )
 print(msg.content[0].text)
 ```
 
-Or raw HTTP:
+OpenAI SDK (get native tool calls for qwen/glm via `llama-server --jinja`):
+
+```python
+from openai import OpenAI
+client = OpenAI(api_key="local-dummy", base_url="http://127.0.0.1:8000/v1")
+msg = client.chat.completions.create(
+    model="qwen3.5-9b",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(msg.choices[0].message.content)
+```
+
+Raw HTTP:
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/messages \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-haiku-4-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"glm-4.5-air","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+List enabled models:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/models
 ```
 
 ## Test
 
-Unit tests (fast, no real `claude` calls):
+Unit tests (fast, no real `claude` / GPU calls):
 
 ```bat
 .venv\Scripts\python -m pytest -q
 ```
 
-End-to-end smoke test (requires the server running):
+End-to-end smoke test (requires hub + whichever backends you care
+about running):
 
 ```bat
 .venv\Scripts\python scripts\smoke_test.py
 ```
 
+It iterates every enabled model from the registry, skips backends
+whose port isn't reachable, and reports per-model pass/fail.
+
 ## Limitations (intentional — lightweight)
 
 - No streaming. `stream: true` is accepted but returns a single response.
 - Multi-turn chats are flattened into a single prompt for `claude -p`.
-- Tool use, images, and extended thinking are not implemented.
-- Token counts reflect what `claude -p` reports in its JSON envelope.
+  (The local backends handle multi-turn natively through llama-server.)
+- Tool-use translation across Anthropic ↔ OpenAI shapes is not
+  implemented for qwen/glm. OpenAI-shape callers get native tool calls
+  from llama-server's `--jinja` templates; Anthropic-shape callers to
+  qwen/glm are text-only for now. Claude tool use passes through
+  unchanged.
+- Images / documents / extended thinking blocks are dropped at the
+  shape boundary.
+- Token counts reflect what each backend reports in its response.
 
 ## Backlog for improvement
 
@@ -165,86 +293,72 @@ Ordered roughly by payoff for API parity / developer experience.
 
 **High value — closes real compatibility gaps**
 
-- **Streaming (SSE).**
-  *What it is:* instead of waiting for the whole reply and returning it
-  in one JSON blob, the server sends the answer token-by-token over a
-  long-lived HTTP connection using Server-Sent Events. The client sees
-  text appear as it's generated — the "ChatGPT typing" effect. The
-  Anthropic API does this with a sequence of events
+- **Streaming (SSE).** Map `claude -p --output-format stream-json` and
+  llama-server's native SSE onto the Anthropic event shape
   (`message_start`, `content_block_delta`, `message_delta`,
-  `message_stop`); `client.messages.stream(...)` in the SDK expects it.
-  *What we'd do:* map `claude -p --output-format stream-json` onto that
-  event stream so streaming clients work unchanged.
-- **Anthropic-shaped error responses.**
-  *What it is:* the Anthropic API returns errors in a specific JSON
-  shape — `{"type":"error","error":{"type":"invalid_request_error","message":"..."}}`
-  — with specific HTTP status codes (`400`, `401`, `429`, `529`, ...).
-  The official SDK inspects this shape to decide whether to retry,
-  raise a typed exception, or surface a user-facing message. Today we
-  return FastAPI's default `{"detail": "..."}`, which the SDK treats as
-  an opaque failure. Matching the real shape makes the server a true
-  drop-in.
-- **Auth + version headers.**
-  *What they are:* the Anthropic API expects three headers on every
-  request — `x-api-key` (your credential), `anthropic-version` (which
-  API revision you're targeting), and optionally `anthropic-beta` (to
-  opt into preview features). The SDK sends them automatically. We
-  currently ignore all three, which works but means client code that
-  checks "did my version header round-trip?" will be surprised.
-  Accepting and echoing them (and optionally validating) avoids those
-  edge-case surprises.
-- **`GET /v1/models`.** Return the list the CLI knows about so SDKs that
-  call `client.models.list()` work.
+  `message_stop`) so `client.messages.stream(...)` works unchanged.
+- **Tool-use round-trips for qwen/glm on the Anthropic shape.** Accept
+  `tools` + emit `tool_use`/`tool_result` content blocks, translating
+  against llama-server's OpenAI-function-calling output.
+- **Anthropic-shaped error responses.** Match
+  `{"type":"error","error":{"type":"invalid_request_error","message":"..."}}`
+  with the right status codes, so the SDK's retry / typed-exception
+  logic behaves as it would against the real API.
+- **Auth + version headers.** Accept and echo `x-api-key`,
+  `anthropic-version`, `anthropic-beta` so clients that inspect them
+  aren't surprised.
 - **`POST /v1/messages/count_tokens`.** Useful for cost estimation;
   could shell out to a dry-run or use a tokenizer locally.
-- **Request IDs.** Add `request-id` / `x-request-id` headers and thread
-  them into logs for traceability.
-- **CORS.** Enable it so browser-based clients and local webapps can call
-  the server directly.
+- **Request IDs.** Add `request-id` / `x-request-id` and thread them
+  into logs for traceability.
+- **CORS.** Enable it so browser-based clients and local webapps can
+  call the hub directly.
 - **Image & document content blocks.** Decode base64 attachments to a
-  per-request temp dir, pass via `--add-dir`, reference by path. Caveats:
-  indirect semantics (model chooses to read), fuzzy token accounting,
-  filesystem side-effects — see notes in the main thread for full pros/cons.
-- **Tool use round-trips.** Accept `tools` param and emit
-  `tool_use`/`tool_result` content blocks. Non-trivial: the CLI's tool
-  system is internal, not the API's function-calling protocol.
+  per-request temp dir, pass via `--add-dir` to Claude, and to the
+  appropriate multimodal llama-server builds for qwen-VL when we add
+  them.
 
 **Medium value — fidelity and ergonomics**
 
-- **Faithful multi-turn via `--input-format stream-json`.** Preserves
-  prior assistant turns as real assistant messages rather than flattening
-  them into a prompt. Better cache reuse, better behavior on long chats.
-- **`stop_sequences`, `temperature`, `top_p`, `top_k`.** Accept them —
-  some the CLI supports, others must be documented as no-ops.
-- **Stop-reason mapping.** Normalize the CLI's `stop_reason` onto the
-  API's enum (`end_turn`, `max_tokens`, `stop_sequence`, `tool_use`,
-  `pause_turn`).
+- **Faithful multi-turn via `claude -p --input-format stream-json`.**
+  Preserves prior assistant turns as real assistant messages rather
+  than flattening. Better cache reuse.
+- **`stop_sequences`, `temperature`, `top_p`, `top_k` passthrough** to
+  every backend. Some the CLI supports, others must be documented as
+  no-ops.
+- **Stop-reason mapping.** Normalize CLI + llama-server stop reasons
+  onto the Anthropic enum.
 - **Persistent sessions via `--resume`.** Optional `session_id` in
-  request metadata → reuse a CLI session for stateful chat with proper
-  prompt-cache hits.
-- **Metadata passthrough.** Log `metadata.user_id` and tie it to request
+  request metadata → reuse a CLI session for stateful chat with
+  proper prompt-cache hits.
+- **Metadata passthrough.** Log `metadata.user_id` and tie to request
   IDs for per-user observability.
-- **Concurrency / process pooling.** Each request spawns a subprocess
-  (~1–2s overhead). A small warm-pool or `--resume` reuse cuts p50
-  latency significantly.
-- **Extended thinking blocks.** `thinking: {type:"enabled", budget_tokens}`
-  and mirrored `thinking` content blocks in the response.
+- **Concurrency / process pooling for Claude.** Each request spawns a
+  subprocess (~1–2 s overhead). A small warm pool or `--resume` reuse
+  cuts p50 latency significantly.
+- **Extended thinking blocks** (`thinking: {type:"enabled", budget_tokens}`)
+  on the Claude path.
+- **MLX backend for the Mac mini.** llama.cpp-Metal works; MLX is
+  30–50 % faster for dense 9 B. Add as a new `backend: "mlx"` entry in
+  the registry with a sibling to `openai_upstream.py`.
 
 **Low value — nice-to-have**
 
 - **`/v1/messages/batches`** (batch API).
-- **Prompt-cache-control honoring** on system/message blocks (currently
-  parsed but unused).
-- **Rate-limit response headers** (`anthropic-ratelimit-*`) — useful for
-  clients that read them even if we don't actually rate-limit.
-- **Structured logging + `/metrics` endpoint** for Prometheus-style
+- **Prompt-cache-control honoring** on system/message blocks.
+- **Rate-limit response headers** (`anthropic-ratelimit-*`).
+- **Structured logging + `/metrics`** for Prometheus-style
   observability.
-- **Web UI chat playground** at `/playground` for smoke-testing in the
-  browser without writing code.
+- **Auto-start enabled backends with the hub.** Deliberately not done
+  today so a 60 GB RAM model doesn't load when someone only wants
+  Claude.
 
 ## License
 
 [MIT](LICENSE). Use it, fork it, break it — just keep the copyright
 notice. Note that the license covers *this code* only; your use of the
 underlying `claude` CLI is still governed by Anthropic's terms (see
-[Scope & usage policy](#scope--usage-policy) above).
+[Scope & usage policy](#scope--usage-policy) above) and the model
+weights follow their own licenses
+([Qwen](https://huggingface.co/Qwen),
+[GLM / Zhipu AI](https://huggingface.co/zai-org)).

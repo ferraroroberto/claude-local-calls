@@ -27,6 +27,10 @@ data/output/
 tmp_server.log
 *.log
 
+# Local LLM assets — large binaries, host-specific, downloaded by installer
+vendor/
+models/
+
 # Env
 .env
 .env.local

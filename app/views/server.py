@@ -47,6 +47,19 @@ def render() -> None:
         if st.button("🔄 Refresh", use_container_width=True):
             st.rerun()
 
+    strays = [] if running else sp.stray_pids_on_port()
+    if strays:
+        pretty = ", ".join(str(p) for p in strays)
+        st.warning(
+            f"Port {sp.PORT} is held by another process (PID {pretty}) — "
+            "probably a stale server from a previous session. Start will "
+            "fail with WinError 10048 until it's gone."
+        )
+        if st.button(f"💀 Kill stray process on port {sp.PORT}", use_container_width=False):
+            ok, msg = sp.kill_stray_on_port()
+            (st.success if ok else st.error)(msg)
+            st.rerun()
+
     st.divider()
 
     st.markdown("**Server log** (stdout + stderr)")

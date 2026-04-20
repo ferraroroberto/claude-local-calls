@@ -1,0 +1,75 @@
+# Models registry for the claude-local-calls hub.
+#
+# - `hosts` lists each machine this repo runs on. `platform` matches
+#   sys.platform ("win32" or "darwin"); `default: true` lets the first
+#   matching row win when no hostname matches exactly. Override with
+#   the CLAUDE_LOCAL_CALLS_HOST env var.
+# - `enabled` is the whitelist of model ids this host is willing to
+#   serve locally. The installer only downloads GGUFs for enabled ids.
+# - `models` defines every model the hub knows about, across all hosts.
+#   An entry not present in the active host's `enabled` list is treated
+#   as absent (not shown in UI, not downloaded, not startable).
+
+hub:
+  port: 8000
+  bind_host: "0.0.0.0"
+
+hosts:
+  pc-cuda:
+    platform: win32
+    default: true
+    enabled: [qwen, glm]
+
+  mac-mini-m4:
+    platform: darwin
+    default: true
+    enabled: [qwen]
+
+models:
+  # --- Claude subscription path (existing behaviour) ---
+  # Listed as one logical "model" but routes by the exact model name
+  # the client sent, so all three claude-* names hit the same backend.
+  claude:
+    display_name: claude-haiku-4-5
+    backend: claude
+    aliases: ["claude-sonnet-4-6", "claude-opus-4-7"]
+
+  # --- Local Qwen3.5-9B via llama.cpp ---
+  qwen:
+    display_name: qwen3.5-9b
+    backend: openai
+    engine: llama-server
+    port: 8081
+    hf_repo: "unsloth/Qwen3.5-9B-GGUF"
+    hf_pattern: "Qwen3.5-9B-Q4_K_M.gguf"
+    model_path: "models/Qwen3.5-9B-Q4_K_M.gguf"
+    args:
+      - "--jinja"
+      - "-ngl"
+      - "99"
+      - "-c"
+      - "16384"
+      - "--alias"
+      - "qwen3.5-9b"
+
+  # --- Local GLM-4.5-Air via llama.cpp with MoE CPU offload ---
+  glm:
+    display_name: glm-4.5-air
+    backend: openai
+    engine: llama-server
+    port: 8082
+    hf_repo: "unsloth/GLM-4.5-Air-GGUF"
+    # Multi-part GGUF in a Q4_K_M/ subdir — llama-server follows the
+    # shard chain when given part 1.
+    hf_pattern: "Q4_K_M/GLM-4.5-Air-Q4_K_M-*.gguf"
+    model_path: "models/GLM-4.5-Air-Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"
+    args:
+      - "--jinja"
+      - "-ngl"
+      - "99"
+      - "-ot"
+      - ".ffn_.*_exps.=CPU"
+      - "-c"
+      - "16384"
+      - "--alias"
+      - "glm-4.5-air"

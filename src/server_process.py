@@ -10,6 +10,7 @@ state on a module-level singleton rather than `st.session_state`
 from __future__ import annotations
 
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -153,3 +154,73 @@ def pid() -> Optional[int]:
     if p is None or p.poll() is not None:
         return None
     return p.pid
+
+
+def find_port_pids(port: int) -> list[int]:
+    """Return PIDs of processes listening on `port`, if any.
+
+    Cross-platform: uses `netstat` on Windows, `lsof` on macOS/Linux.
+    Returns [] if nothing is listening or the tool isn't available.
+    """
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            pids: set[int] = set()
+            for line in out.splitlines():
+                if "LISTENING" not in line:
+                    continue
+                # columns: Proto  LocalAddress  ForeignAddress  State  PID
+                m = re.search(rf":{port}\b.*LISTENING\s+(\d+)", line)
+                if m:
+                    pids.add(int(m.group(1)))
+            return sorted(pids)
+        else:
+            out = subprocess.run(
+                ["lsof", "-nP", "-iTCP", f"-i:{port}", "-sTCP:LISTEN", "-t"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            return sorted({int(x) for x in out.split() if x.strip().isdigit()})
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+
+
+def stray_pids_on_port(port: int = PORT) -> list[int]:
+    """PIDs on `port` that are NOT the process we manage."""
+    ours = pid()
+    return [p for p in find_port_pids(port) if p != ours]
+
+
+def kill_pid(target_pid: int) -> tuple[bool, str]:
+    """Force-kill a PID. Uses taskkill on Windows, SIGKILL elsewhere."""
+    try:
+        if sys.platform == "win32":
+            r = subprocess.run(
+                ["taskkill", "/F", "/PID", str(target_pid)],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                return True, f"killed pid {target_pid}"
+            return False, (r.stderr or r.stdout or "taskkill failed").strip()
+        else:
+            os.kill(target_pid, signal.SIGKILL)
+            return True, f"killed pid {target_pid}"
+    except ProcessLookupError:
+        return True, f"pid {target_pid} already gone"
+    except Exception as e:
+        return False, f"error killing {target_pid}: {e}"
+
+
+def kill_stray_on_port(port: int = PORT) -> tuple[bool, str]:
+    """Kill every process holding `port` that isn't ours. Idempotent."""
+    strays = stray_pids_on_port(port)
+    if not strays:
+        return False, f"no stray process on port {port}"
+    results = [kill_pid(p) for p in strays]
+    killed = [msg for ok, msg in results if ok]
+    failed = [msg for ok, msg in results if not ok]
+    if failed:
+        return False, "; ".join(failed)
+    return True, "; ".join(killed)

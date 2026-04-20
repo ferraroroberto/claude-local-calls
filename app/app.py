@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 
-from views import playground, server, testing, welcome
+from views import install, models, playground, server, testing, welcome
 
 st.set_page_config(
     page_title="claude-local-calls",
@@ -37,7 +37,9 @@ with st.sidebar:
 
 nav_pages = [
     st.Page(welcome.render,    title="Welcome",    icon="👋", url_path="welcome",    default=True),
+    st.Page(install.render,    title="Install",    icon="🩺", url_path="install"),
     st.Page(server.render,     title="Server",     icon="🛰",  url_path="server"),
+    st.Page(models.render,     title="Models",     icon="🧠", url_path="models"),
     st.Page(testing.render,    title="Testing",    icon="✅", url_path="testing"),
     st.Page(playground.render, title="Playground", icon="💬", url_path="playground"),
 ]

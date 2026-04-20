@@ -8,12 +8,15 @@ import httpx
 import streamlit as st
 
 from src import server_process as sp
+from src.model_registry import enabled_models
 
-MODELS = [
-    "claude-haiku-4-5",
-    "claude-sonnet-4-6",
-    "claude-opus-4-7",
-]
+
+def _model_options() -> list[str]:
+    names: list[str] = []
+    for m in enabled_models():
+        names.extend(m.all_names)
+    # de-dupe while preserving order
+    return list(dict.fromkeys(names))
 
 
 def render() -> None:
@@ -29,7 +32,8 @@ def render() -> None:
 
     cols = st.columns([1, 2])
     with cols[0]:
-        model = st.selectbox("Model", MODELS, index=0)
+        options = _model_options()
+        model = st.selectbox("Model", options, index=0) if options else None
         apply_max = st.checkbox(
             "Apply max_tokens",
             value=False,
@@ -61,7 +65,7 @@ def render() -> None:
     send = st.button(
         "Send",
         type="primary",
-        disabled=not reachable or not prompt.strip(),
+        disabled=not reachable or not prompt.strip() or not model,
     )
 
     if send:
@@ -76,7 +80,7 @@ def render() -> None:
 
         t0 = time.time()
         try:
-            with st.spinner(f"calling {model} via claude -p …"):
+            with st.spinner(f"calling {model} via hub …"):
                 r = httpx.post(
                     f"{sp.BASE_URL}/v1/messages",
                     json=payload,

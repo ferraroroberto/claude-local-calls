@@ -26,6 +26,7 @@ flowchart LR
         V_WELCOME["views/welcome.py"]
         V_INSTALL["views/install.py<br/>check + fix rows"]
         V_SERVER["views/server.py<br/>hub control + log"]
+        V_CMP["views/comparison.py<br/>renders docs/model-comparison.md"]
         V_MODELS["views/models.py<br/>per-backend start/stop/log"]
         V_TEST["views/testing.py<br/>pytest + smoke"]
         V_PLAY["views/playground.py<br/>prompt → hub"]
@@ -89,6 +90,7 @@ flowchart LR
     APP --> V_WELCOME
     APP --> V_INSTALL
     APP --> V_SERVER
+    APP --> V_CMP
     APP --> V_MODELS
     APP --> V_TEST
     APP --> V_PLAY
@@ -156,9 +158,10 @@ flowchart TB
     A3 --> V1["welcome.py"]
     A3 --> V2["install.py"]
     A3 --> V3["server.py"]
-    A3 --> V4["models.py"]
-    A3 --> V5["testing.py"]
-    A3 --> V6["playground.py"]
+    A3 --> V4["comparison.py"]
+    A3 --> V5["models.py"]
+    A3 --> V6["testing.py"]
+    A3 --> V7["playground.py"]
 
     ROOT --> SCDIR["scripts/"]
     SCDIR --> SC1["smoke_test.py"]

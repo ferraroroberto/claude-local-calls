@@ -29,6 +29,7 @@ from .model_registry import Model, enabled_models
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VENDOR_LLAMA = PROJECT_ROOT / "vendor" / "llama.cpp"
+VENDOR_WHISPER = PROJECT_ROOT / "vendor" / "whisper.cpp"
 
 STATUS_ORDER = {"ok": 0, "warn": 1, "missing": 2, "error": 3}
 
@@ -172,7 +173,7 @@ def _check_llama_cpp() -> Check:
 def _check_models() -> List[Check]:
     rows: List[Check] = []
     for m in enabled_models():
-        if m.backend != "openai" or not m.model_path:
+        if m.backend not in ("openai", "whisper") or not m.model_path:
             continue
         path = (PROJECT_ROOT / m.model_path).resolve()
         label = f"Model present: {m.display_name}"
@@ -187,6 +188,35 @@ def _check_models() -> List[Check]:
                 fix_label=f"scripts/download_models.py --only {m.id}",
             ))
     return rows
+
+
+def _whisper_server_binary() -> Path:
+    name = "whisper-server.exe" if sys.platform == "win32" else "whisper-server"
+    return VENDOR_WHISPER / name
+
+
+def _whisper_enabled() -> bool:
+    return any(m.engine == "whisper-server" or m.backend == "whisper"
+               for m in enabled_models())
+
+
+def _check_whisper_cpp() -> Check:
+    bin_path = _whisper_server_binary()
+    if not bin_path.exists():
+        return Check("whisper_cpp", "whisper.cpp binary installed", "missing",
+                     f"expected at {bin_path}",
+                     fix_id="whisper_cpp",
+                     fix_label="scripts/install_whisper_cpp.py (downloads the platform-matching release)")
+    try:
+        # whisper-server prints usage on --help and may exit non-zero.
+        r = subprocess.run([str(bin_path), "--help"], capture_output=True, text=True, timeout=10)
+        if r.returncode in (0, 1):
+            first = ((r.stdout or r.stderr).strip().splitlines() or ["ok"])[0]
+            return Check("whisper_cpp", "whisper.cpp binary installed", "ok", first)
+        return Check("whisper_cpp", "whisper.cpp binary installed", "warn",
+                     f"--help exited {r.returncode}")
+    except Exception as e:
+        return Check("whisper_cpp", "whisper.cpp binary installed", "warn", str(e))
 
 
 def _port_in_use(port: int) -> bool:
@@ -204,7 +234,7 @@ def _check_ports() -> List[Check]:
     for label, port in [("hub", hub_port())] + [
         (m.display_name, m.port)
         for m in enabled_models()
-        if m.backend == "openai" and m.port
+        if m.backend in ("openai", "whisper") and m.port
     ]:
         if _port_in_use(port):
             rows.append(Check(
@@ -227,6 +257,8 @@ def run_all_checks() -> Report:
         _check_gpu(),
         _check_llama_cpp(),
     ]
+    if _whisper_enabled():
+        checks.append(_check_whisper_cpp())
     checks.extend(_check_models())
     checks.extend(_check_ports())
     return Report(checks=checks)
@@ -247,6 +279,11 @@ def _fix_llama_cpp() -> None:
     install_llama_cpp.main()
 
 
+def _fix_whisper_cpp() -> None:
+    from scripts import install_whisper_cpp  # type: ignore
+    install_whisper_cpp.main()
+
+
 def _fix_download(model_id: str) -> Callable[[], None]:
     def _fix() -> None:
         from scripts import download_models  # type: ignore
@@ -259,6 +296,8 @@ def fix_fn_for(check: Check) -> Optional[FixFn]:
         return _fix_deps
     if check.fix_id == "llama_cpp":
         return _fix_llama_cpp
+    if check.fix_id == "whisper_cpp":
+        return _fix_whisper_cpp
     if check.fix_id and check.fix_id.startswith("download_"):
         return _fix_download(check.fix_id[len("download_"):])
     return None

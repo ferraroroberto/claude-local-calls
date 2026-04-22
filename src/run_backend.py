@@ -14,8 +14,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .backend_process import (
+    VENDOR_LLAMA,
+    VENDOR_WHISPER,
+    build_command,
+    resolve_model_by_id,
+)
 from .host_profile import resolve as resolve_host
-from .llama_process import VENDOR_LLAMA, build_command, resolve_model_by_id
 from .model_registry import enabled_models
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +40,7 @@ def _run_backend(model_id: str) -> int:
         known = [m.id for m in enabled_models()]
         print(f"model {model_id!r} not enabled on host {host.id}. known: {known}", file=sys.stderr)
         return 2
-    if model.backend != "openai":
+    if model.backend not in ("openai", "whisper"):
         print(f"model {model_id!r} is backend={model.backend}; nothing to spawn", file=sys.stderr)
         return 2
 
@@ -44,7 +49,8 @@ def _run_backend(model_id: str) -> int:
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     if sys.platform == "win32":
-        env["PATH"] = str(VENDOR_LLAMA) + os.pathsep + env.get("PATH", "")
+        vendor = VENDOR_WHISPER if model.engine == "whisper-server" else VENDOR_LLAMA
+        env["PATH"] = str(vendor) + os.pathsep + env.get("PATH", "")
     print("-> " + " ".join(cmd))
     # Foreground execution so Ctrl+C works.
     return subprocess.call(cmd, env=env, cwd=str(PROJECT_ROOT))

@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from anthropic import Anthropic  # noqa: E402
 
-from src import llama_process as lp  # noqa: E402
+from src import backend_process as lp  # noqa: E402
 from src.model_registry import enabled_models  # noqa: E402
 
 BASE_URL = "http://127.0.0.1:8000"
@@ -82,6 +82,11 @@ def main() -> int:
     passed: list[str] = []
 
     for m in enabled_models():
+        if m.backend == "whisper":
+            # ASR backend — not exercised by chat-shape smoke test.
+            print(f"[skip] {m.display_name} — audio backend, not a chat model")
+            skipped.append(m.display_name)
+            continue
         if m.backend == "openai" and not lp.is_reachable(m):
             print(f"[skip] {m.display_name} — backend on :{m.port} not reachable")
             skipped.append(m.display_name)

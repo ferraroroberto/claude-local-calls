@@ -43,7 +43,7 @@ flowchart LR
 
     subgraph Procs["Process managers"]
         SP["src/server_process.py<br/>hub Popen + log ring<br/>+ kill-port helper"]
-        LP["src/llama_process.py<br/>per-model llama-server<br/>Popen + log ring"]
+        LP["src/backend_process.py<br/>per-model llama-server + whisper-server<br/>Popen + log ring"]
     end
 
     CLAUDE["claude -p CLI<br/>(Claude Code subscription)"]
@@ -146,9 +146,9 @@ flowchart TB
     SRC --> S4["model_registry.py<br/>YAML loader + Model class"]
     SRC --> S5["host_profile.py<br/>pick active host row"]
     SRC --> S6["install.py<br/>checks + fix dispatch"]
-    SRC --> S7["run_backend.py<br/>hub|qwen|glm|gemma3_12b|gemma3_27b|gemma3n_e4b dispatcher"]
+    SRC --> S7["run_backend.py<br/>hub|qwen|glm|gemma3*|whisper dispatcher"]
     SRC --> S8["server_process.py<br/>hub Popen + kill-port"]
-    SRC --> S9["llama_process.py<br/>per-model llama-server Popen"]
+    SRC --> S9["backend_process.py<br/>per-model Popen (llama-server + whisper-server)"]
     SRC --> S10["landing.py<br/>HTML for GET /"]
 
     ROOT --> APPDIR["app/"]
@@ -274,8 +274,9 @@ the envelope into OpenAI shape; for the local llama-server backends
 - **Only two places shell out.**
   [`src/claude_cli.py`](../src/claude_cli.py) owns
   `subprocess.run(["claude", "-p", ...])`.
-  [`src/llama_process.py`](../src/llama_process.py) owns the
-  `subprocess.Popen(["llama-server", ...])` for each local model.
+  [`src/backend_process.py`](../src/backend_process.py) owns the
+  `subprocess.Popen(["llama-server", ...])` / `subprocess.Popen(["whisper-server", ...])`
+  for each local model.
   Everything else is pure Python / FastAPI / httpx / Streamlit.
 - **UI ↔ processes isolation.** The Streamlit app never imports the
   FastAPI app or the `llama-server` binary directly; it launches each

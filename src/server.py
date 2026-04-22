@@ -234,6 +234,14 @@ def messages(req: MessagesRequest) -> JSONResponse:
         env = _run_claude_backend(req)
     elif model.backend == "openai":
         env = _run_openai_backend(model, req)
+    elif model.backend == "whisper":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{req.model!r} is an ASR backend, not a chat model. "
+                f"POST audio to http://127.0.0.1:{model.port}/v1/audio/transcriptions instead."
+            ),
+        )
     else:
         raise HTTPException(status_code=500, detail=f"unknown backend {model.backend!r}")
 
@@ -316,6 +324,15 @@ def chat_completions(req: ChatCompletionRequest) -> JSONResponse:
             in_toks=int(usage.get("input_tokens", 0) or 0),
             out_toks=int(usage.get("output_tokens", 0) or 0),
         ))
+
+    if model.backend == "whisper":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{req.model!r} is an ASR backend, not a chat model. "
+                f"POST audio to http://127.0.0.1:{model.port}/v1/audio/transcriptions instead."
+            ),
+        )
 
     if model.backend == "openai":
         if not model.url:

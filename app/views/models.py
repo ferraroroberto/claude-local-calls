@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src import llama_process as lp
+from src import backend_process as lp
 from src.model_registry import enabled_models
 
 
@@ -18,12 +18,15 @@ def _render_claude_card(m) -> None:
         st.caption("Aliases: " + ", ".join(m.aliases))
 
 
-def _render_llama_card(m) -> None:
+def _render_local_card(m) -> None:
     running = lp.is_running(m.id)
     reachable = lp.is_reachable(m) if running else False
 
-    st.subheader(f"🦙 {m.display_name}")
-    st.caption(f"`llama-server` on :{m.port} — id `{m.id}`")
+    is_whisper = m.backend == "whisper" or m.engine == "whisper-server"
+    glyph = "🎙" if is_whisper else "🦙"
+    engine_label = "whisper-server" if is_whisper else "llama-server"
+    st.subheader(f"{glyph} {m.display_name}")
+    st.caption(f"`{engine_label}` on :{m.port} — id `{m.id}`")
 
     cols = st.columns(4)
     cols[0].metric("Process", "running" if running else "stopped")
@@ -77,8 +80,8 @@ def render() -> None:
     for m in models:
         if m.backend == "claude":
             _render_claude_card(m)
-        elif m.backend == "openai":
-            _render_llama_card(m)
+        elif m.backend in ("openai", "whisper"):
+            _render_local_card(m)
         else:
             st.write(f"unknown backend {m.backend!r} for {m.display_name}")
         st.divider()

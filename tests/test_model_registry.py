@@ -126,6 +126,44 @@ def test_gemma_per_host_filtering(tmp_path, monkeypatch):
     assert model_registry.resolve("gemma3n-e4b-it") is None
 
 
+def test_whisper_entry(tmp_path, monkeypatch):
+    """Whisper is a distinct backend; runs on 8090, surfaces on pc-cuda only."""
+    cfg = _write_config(tmp_path, {
+        "hub": {"port": 8000},
+        "hosts": {
+            "pc-cuda":     {"platform": "win32", "default": True, "enabled": ["qwen", "whisper"]},
+            "mac-mini-m4": {"platform": "darwin", "enabled": ["qwen"]},
+        },
+        "models": {
+            "qwen":    {"display_name": "qwen3.5-9b",    "backend": "openai",  "port": 8081},
+            "whisper": {
+                "display_name": "whisper-small",
+                "backend": "whisper",
+                "engine": "whisper-server",
+                "port": 8090,
+                "hf_repo": "ggerganov/whisper.cpp",
+                "hf_pattern": "ggml-small.bin",
+                "model_path": "models/ggml-small.bin",
+                "args": ["--threads", "4", "--gpu", "1"],
+            },
+        },
+    })
+    _patch_config_path(monkeypatch, cfg)
+
+    monkeypatch.setenv("CLAUDE_LOCAL_CALLS_HOST", "pc-cuda")
+    m = model_registry.resolve("whisper-small")
+    assert m is not None
+    assert m.id == "whisper"
+    assert m.backend == "whisper"
+    assert m.engine == "whisper-server"
+    assert m.port == 8090
+    assert m.url == "http://127.0.0.1:8090/v1"
+    assert "--gpu" in m.args
+
+    monkeypatch.setenv("CLAUDE_LOCAL_CALLS_HOST", "mac-mini-m4")
+    assert model_registry.resolve("whisper-small") is None
+
+
 def test_model_url_from_port(tmp_path, monkeypatch):
     cfg = _write_config(tmp_path, {
         "hub": {"port": 8000},

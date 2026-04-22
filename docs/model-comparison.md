@@ -19,6 +19,7 @@ markdown. Where a precise number isn't meaningful for a backend
 | `gemma3-12b-it` | Gemma 3 (Google) | 12 B dense | Q4_K_M | 6.8 GB | 16 384 | full GPU (`-ngl 99`) | 8083 | ~70–90 | [Gemma docs](https://ai.google.dev/gemma/docs) · [card](https://huggingface.co/google/gemma-3-12b-it) |
 | `gemma3-27b-it` | Gemma 3 QAT (Google) | 27 B dense | Q4_0 (QAT) | 14.5 GB | 4 096 | partial GPU (`-ngl 50`) + `--flash-attn on` | 8084 | ~15–25 | [QAT announcement](https://developers.googleblog.com/en/gemma-3-quantized-aware-trained-state-of-the-art-ai-to-consumer-gpus/) · [card](https://huggingface.co/google/gemma-3-27b-it-qat-q4_0-gguf) |
 | `gemma3n-e4b-it` | Gemma 3n (Google, edge) | ~4 B effective | Q4_K_M | 4.2 GB | 16 384 | full GPU (`-ngl 99`) | 8085 | ~120–160 | [Gemma 3n docs](https://ai.google.dev/gemma/docs/gemma-3n) · [card](https://huggingface.co/google/gemma-3n-E4B-it) |
+| `whisper-small` | whisper.cpp (OpenAI) | 244 M (ASR, not chat) | ggml f16 | 466 MB | audio (30 s chunks) | tiny (~1 GB) | 8090 | realtime-factor ~6–10× (GPU) | [whisper.cpp](https://github.com/ggerganov/whisper.cpp) · [models](https://huggingface.co/ggerganov/whisper.cpp) |
 
 \* Single-stream generation on an RTX 5060 Ti 16 GB, short
 prompts (~100 input tokens). Ranges are indicative, not a
@@ -36,6 +37,7 @@ committing.
 | **Classifier quality ceiling** | `gemma3-27b-it` | QAT 4-bit, near-BF16 quality. Benchmark the 12B against it before shipping. |
 | **Edge / ultra-fast probe** | `gemma3n-e4b-it` | Smallest footprint, highest tok/s. Use for first-pass triage or where latency > quality. |
 | **Cloud parity check** | `claude-haiku-4-5` / `sonnet-4-6` / `opus-4-7` | Off-device baseline via `claude -p`; same hub, just swap the `model` string. |
+| **Speech-to-text (ASR)** | `whisper-small` | whisper.cpp on :8090. OpenAI-compatible `/v1/audio/transcriptions`. Port is a shared mutual-exclusion lock with the `transcribe_voice` project. Switch size by editing [config/models.yaml](../config/models.yaml) (`ggml-<size>.bin`) and re-running `python -m src.install --fix`. |
 
 ## How to add a new row to this table
 

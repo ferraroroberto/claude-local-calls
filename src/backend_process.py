@@ -1,9 +1,15 @@
-"""Per-model llama-server process manager (parallel to server_process.py).
+"""Per-model backend process manager.
 
-Each enabled openai-backed model in the registry gets its own singleton
-process + log ring buffer here. Keyed by model id ("qwen", "glm"). Used
+Each enabled local model in the registry gets its own singleton process +
+log ring buffer here. Keyed by model id ("qwen", "glm", "whisper"). Used
 by the Streamlit Models view to start/stop individual backends and tail
 their output without any global state entanglement.
+
+Two engine families share this manager:
+  - `llama-server` for chat/completion GGUF models (qwen, glm, gemma3*)
+  - `whisper-server` for whisper.cpp ASR (OpenAI-compatible /v1/audio/*)
+The shape differences (binary location, -m vs --model flag, health
+endpoint) are absorbed in `build_command` and `is_reachable`.
 """
 
 from __future__ import annotations
@@ -24,12 +30,26 @@ from .model_registry import Model, enabled_models, resolve as resolve_model
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VENDOR_LLAMA = PROJECT_ROOT / "vendor" / "llama.cpp"
+VENDOR_WHISPER = PROJECT_ROOT / "vendor" / "whisper.cpp"
 RING_MAX = 1000
 
 
-def _server_binary() -> Path:
+def _llama_server_binary() -> Path:
     name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
     return VENDOR_LLAMA / name
+
+
+def _whisper_server_binary() -> Path:
+    name = "whisper-server.exe" if sys.platform == "win32" else "whisper-server"
+    return VENDOR_WHISPER / name
+
+
+def _is_whisper(model: Model) -> bool:
+    return model.engine == "whisper-server" or model.backend == "whisper"
+
+
+def _vendor_dir_for(model: Model) -> Path:
+    return VENDOR_WHISPER if _is_whisper(model) else VENDOR_LLAMA
 
 
 class _BackendState:
@@ -67,6 +87,13 @@ def is_reachable(model: Model, timeout: float = 1.5) -> bool:
     if not model.url:
         return False
     base = model.url.rstrip("/v1").rstrip("/")
+    if _is_whisper(model):
+        # whisper.cpp server has no /health; GET / returns 200 once loaded.
+        try:
+            r = httpx.get(f"{base}/", timeout=timeout)
+            return r.status_code == 200
+        except Exception:
+            return False
     try:
         r = httpx.get(f"{base}/health", timeout=timeout)
         if r.status_code == 200:
@@ -102,12 +129,32 @@ def _reader(state: _BackendState, proc: subprocess.Popen) -> None:
 
 
 def build_command(model: Model) -> list[str]:
-    bin_path = _server_binary()
-    if not bin_path.exists():
-        raise RuntimeError(f"llama-server not found at {bin_path} - run scripts/install_llama_cpp.py")
     if not model.model_path:
         raise RuntimeError(f"model {model.id} has no model_path")
     model_path = (PROJECT_ROOT / model.model_path).resolve()
+
+    if _is_whisper(model):
+        bin_path = _whisper_server_binary()
+        if not bin_path.exists():
+            raise RuntimeError(
+                f"whisper-server not found at {bin_path} - run scripts/install_whisper_cpp.py"
+            )
+        if not model_path.exists():
+            raise RuntimeError(
+                f"whisper model not found at {model_path} - run scripts/download_models.py --only {model.id}"
+            )
+        cmd = [
+            str(bin_path),
+            "--host", "0.0.0.0",
+            "--port", str(model.port),
+            "--model", str(model_path),
+        ]
+        cmd.extend(model.args or [])
+        return cmd
+
+    bin_path = _llama_server_binary()
+    if not bin_path.exists():
+        raise RuntimeError(f"llama-server not found at {bin_path} - run scripts/install_llama_cpp.py")
     if not model_path.exists():
         raise RuntimeError(f"GGUF not found at {model_path} - run scripts/download_models.py --only {model.id}")
     cmd = [
@@ -138,9 +185,9 @@ def start(model_id: str) -> tuple[bool, str]:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
-    # Help llama-server find the cudart DLLs shipped next to it.
+    # Help the server find the cudart DLLs shipped next to its binary.
     if sys.platform == "win32":
-        env["PATH"] = str(VENDOR_LLAMA) + os.pathsep + env.get("PATH", "")
+        env["PATH"] = str(_vendor_dir_for(model)) + os.pathsep + env.get("PATH", "")
 
     try:
         proc = subprocess.Popen(
@@ -196,9 +243,9 @@ def resolve_model_by_id(model_id: str) -> Optional[Model]:
 
 
 def running_backends() -> Dict[str, Model]:
-    """Return {model_id: Model} for each backend whose process is alive."""
+    """Return {model_id: Model} for each local backend whose process is alive."""
     out: Dict[str, Model] = {}
     for m in enabled_models():
-        if m.backend == "openai" and is_running(m.id):
+        if m.backend in ("openai", "whisper") and is_running(m.id):
             out[m.id] = m
     return out

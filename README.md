@@ -1,7 +1,8 @@
 # claude-local-calls
 
 A tiny local HTTP hub that routes `POST /v1/messages` (Anthropic shape) and
-`POST /v1/chat/completions` (OpenAI shape) to six backends by `model` name:
+`POST /v1/chat/completions` (OpenAI shape) to seven backends by `model` name,
+plus a local whisper.cpp ASR server that clients hit directly:
 
 - **claude-*** — forwarded to the **`claude -p`** CLI on your machine, using
   your local Claude Code auth (your subscription) instead of an API key.
@@ -23,6 +24,13 @@ A tiny local HTTP hub that routes `POST /v1/messages` (Anthropic shape) and
   [unsloth/gemma-3n-E4B-it-GGUF](https://huggingface.co/unsloth/gemma-3n-E4B-it-GGUF)
   on `127.0.0.1:8085` (edge / mobile-class ~4 B effective params; full
   GPU offload).
+- **whisper-small** — a local `whisper-server`
+  ([ggerganov/whisper.cpp](https://github.com/ggerganov/whisper.cpp))
+  running [ggml-small.bin](https://huggingface.co/ggerganov/whisper.cpp)
+  on `127.0.0.1:8090`. OpenAI-compatible `/v1/audio/transcriptions`;
+  clients POST to :8090 directly (the hub does not proxy audio
+  endpoints). Port 8090 is a shared mutual-exclusion lock with
+  `E:\automation\automation\audio\transcribe_voice`.
 
 Side-by-side technical specs + docs links for all backends live in
 [docs/model-comparison.md](docs/model-comparison.md).
@@ -87,13 +95,19 @@ openclaw / anthropic SDK / openai SDK / curl
    │    gemma3-12b-it  → llama-server 127.0.0.1:8083            │
    │    gemma3-27b-it  → llama-server 127.0.0.1:8084            │
    │    gemma3n-e4b-it → llama-server 127.0.0.1:8085            │
+   │    whisper-small  → 400 "POST to :8090 directly" (audio)   │
    └──────────────────────────────────────────────────────────┘
+
+audio clients  ──────►  whisper-server 127.0.0.1:8090
+                          (OpenAI-compatible /v1/audio/transcriptions)
 ```
 
 See [docs/project-structure.md](docs/project-structure.md) for the full
-mermaid diagrams (components, modules, request lifecycle) and
+mermaid diagrams (components, modules, request lifecycle),
 [docs/20260420-hub-with-qwen-and-glm.md](docs/20260420-hub-with-qwen-and-glm.md)
-for the post-mortem of how the hub got built.
+for the original hub post-mortem, and
+[docs/20260422-add-whisper-asr.md](docs/20260422-add-whisper-asr.md) for
+how the whisper backend slotted in.
 
 ## Layout
 
@@ -107,6 +121,7 @@ claude-local-calls/
 ├── run_gemma3_12b.bat   / .sh   # start llama-server for Gemma 3 12B on :8083
 ├── run_gemma3_27b.bat   / .sh   # start llama-server for Gemma 3 27B QAT on :8084
 ├── run_gemma3n_e4b.bat  / .sh   # start llama-server for Gemma 3n E4B on :8085
+├── run_whisper.bat      / .sh   # start whisper-server for whisper-small on :8090
 ├── run_all.bat          / .sh   # start everything enabled on this host
 ├── launch_app.bat / .sh      # Streamlit UI
 ├── config/
@@ -118,19 +133,23 @@ claude-local-calls/
 │   ├── model_registry.py     # YAML loader
 │   ├── host_profile.py       # pick active host row
 │   ├── install.py            # first-run checks + --fix
-│   ├── run_backend.py        # hub|qwen|glm dispatcher
+│   ├── run_backend.py        # hub|qwen|glm|…|whisper dispatcher
 │   ├── server_process.py     # hub Popen + kill-stray-on-port
-│   └── llama_process.py      # per-model llama-server Popen
+│   └── backend_process.py    # per-model Popen (llama-server + whisper-server)
 ├── app/                      # Streamlit UI (welcome/install/server/models/…)
 ├── scripts/
 │   ├── smoke_test.py
 │   ├── download_models.py    # huggingface_hub → models/
-│   └── install_llama_cpp.py  # CUDA-Windows / Metal-macOS release
+│   ├── install_llama_cpp.py  # CUDA-Windows / Metal-macOS release
+│   └── install_whisper_cpp.py  # whisper.cpp CUDA/Metal release → vendor/whisper.cpp/
 ├── tests/                    # test_server / test_router / test_model_registry / test_install
-├── vendor/llama.cpp/         # prebuilt llama-server binary (gitignored)
+├── vendor/
+│   ├── llama.cpp/            # prebuilt llama-server binary (gitignored)
+│   └── whisper.cpp/          # prebuilt whisper-server binary (gitignored)
 ├── models/                   # downloaded GGUFs (gitignored):
 │                             #   Qwen3.5-9B, GLM-4.5-Air, gemma-3-12b-it,
-│                             #   gemma-3-27b-it-qat (Q4_0), gemma-3n-E4B-it
+│                             #   gemma-3-27b-it-qat (Q4_0), gemma-3n-E4B-it,
+│                             #   ggml-small.bin (whisper)
 └── docs/
     ├── project-structure.md
     └── 20260420-hub-with-qwen-and-glm.md
@@ -151,8 +170,9 @@ out which host row you are (by `CLAUDE_LOCAL_CALLS_HOST` env var, else
 hostname match, else `default: true`), and only downloads what that
 host's `enabled` list asks for. On the reference Windows PC that's
 Qwen (~6.6 GB) + GLM (~55 GB) + Gemma 3 12B (~7.3 GB) + Gemma 3 27B
-QAT (~15.6 GB) + Gemma 3n E4B (~4.3 GB); on the Mac mini it's Qwen
-only.
+QAT (~15.6 GB) + Gemma 3n E4B (~4.3 GB) + whisper-small (~466 MB,
+plus the whisper.cpp CUDA binary under `vendor/whisper.cpp/`); on the
+Mac mini it's Qwen only.
 
 Plain check (no changes):
 
@@ -175,6 +195,7 @@ run_glm.bat            :: llama-server for GLM on :8082
 run_gemma3_12b.bat     :: llama-server for Gemma 3 12B IT on :8083
 run_gemma3_27b.bat     :: llama-server for Gemma 3 27B IT QAT on :8084
 run_gemma3n_e4b.bat    :: llama-server for Gemma 3n E4B IT on :8085
+run_whisper.bat        :: whisper-server for whisper-small on :8090
 run_all.bat            :: start every backend enabled for this host
 ```
 
@@ -187,6 +208,7 @@ Equivalent Python entrypoints:
 .venv\Scripts\python -m src.run_backend gemma3_12b
 .venv\Scripts\python -m src.run_backend gemma3_27b
 .venv\Scripts\python -m src.run_backend gemma3n_e4b
+.venv\Scripts\python -m src.run_backend whisper
 ```
 
 The hub binds on `0.0.0.0:8000`, so other machines on your LAN can
@@ -304,6 +326,24 @@ List enabled models:
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/models
+```
+
+Transcribe audio via whisper (direct to :8090 — the hub does not proxy
+audio endpoints):
+
+```bash
+curl -s -F file=@clip.wav -F response_format=json \
+  http://127.0.0.1:8090/v1/audio/transcriptions
+```
+
+Or with the OpenAI SDK:
+
+```python
+from openai import OpenAI
+asr = OpenAI(api_key="local-dummy", base_url="http://127.0.0.1:8090/v1")
+with open("clip.wav", "rb") as f:
+    r = asr.audio.transcriptions.create(model="whisper-small", file=f)
+print(r.text)
 ```
 
 ## Test

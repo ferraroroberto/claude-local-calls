@@ -4,7 +4,7 @@ REM  claude-local-calls - Streamlit control panel
 REM  Welcome / Server / Testing / Playground
 REM ==========================================================
 title claude-local-calls - app
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo ============================================================
 echo   claude-local-calls - Streamlit control panel

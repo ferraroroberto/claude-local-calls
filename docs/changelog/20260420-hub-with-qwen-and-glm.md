@@ -68,7 +68,7 @@ install.
 
 ### Registry-driven, per-host build
 
-One config, [`config/models.yaml`](../config/models.yaml), lists every
+One config, [`config/models.yaml`](../../config/models.yaml), lists every
 host (with a `platform` and an `enabled` whitelist) and every model
 (display name, aliases, backend, engine, port, GGUF path, llama-server
 args). Host resolution: `CLAUDE_LOCAL_CALLS_HOST` env var → hostname
@@ -84,7 +84,7 @@ branches sprinkled through the Python.
 
 ### Installer as a first-class module
 
-[`src/install.py`](../src/install.py) exposes a table of checks
+[`src/install.py`](../../src/install.py) exposes a table of checks
 (python+venv, deps, host profile resolve, claude CLI, GPU, llama.cpp
 binary, each enabled GGUF, ports free, and an opt-in end-to-end ping)
 and a separate set of `fix_*` functions. Same checks feed two
@@ -97,12 +97,12 @@ failing rows expose a Fix button; long fixes (llama.cpp download,
 
 Two singletons, same ring-buffer-log pattern:
 
-- [`src/server_process.py`](../src/server_process.py) — hub Popen,
+- [`src/server_process.py`](../../src/server_process.py) — hub Popen,
   reachability check, and a **kill-stray-on-port helper** added after
   we hit WinError 10048 from a zombie hub bound to :8000. The Server
   tab now surfaces the stray PID and a "💀 Kill stray process"
   button when the port is held by something we don't manage.
-- [`src/llama_process.py`](../src/llama_process.py) — per-model
+- [`src/llama_process.py`](../../src/llama_process.py) — per-model
   llama-server Popen keyed by model id, parallel API to the hub's.
   The Models tab renders one card per enabled model (start, stop,
   refresh, tailed log, launch args).

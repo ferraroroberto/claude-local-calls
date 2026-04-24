@@ -46,7 +46,7 @@ calls (or on any call after `--mlock`).
 `prompt eval time`, `eval time`, and `tokens per second` separately
 on every request. llama-server prints them by default; make sure
 stdout is being captured. Our ring buffer already captures it
-([`src/llama_process.py`](../src/llama_process.py)); the
+([`src/llama_process.py`](../../src/llama_process.py)); the
 `Logs` view in the Models tab will show them.
 
 ## Why CPU is at 100 % and GPU is idle
@@ -246,7 +246,7 @@ Concrete guidance:
 
 ## What to do next, in order
 
-1. Edit [`config/models.yaml`](../config/models.yaml) with the tier-1
+1. Edit [`config/models.yaml`](../../config/models.yaml) with the tier-1
    flags. Restart GLM from the Models tab. Read the llama-server log
    for the new VRAM / CUDA buffer sizes and the `eval time … tokens
    per second` line after a prompt.

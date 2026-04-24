@@ -6,7 +6,7 @@ REM  Routes by model name: claude -> `claude -p`;
 REM                        qwen*/glm* -> local llama-server
 REM ==========================================================
 title claude-local-calls - hub
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo ============================================================
 echo   claude-local-calls - models hub

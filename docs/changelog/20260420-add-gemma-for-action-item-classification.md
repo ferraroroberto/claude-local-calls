@@ -361,14 +361,17 @@ both were risks the plan already flagged.
    `[qwen, glm, gemma3_12b, gemma3_27b]`. `mac-mini-m4.enabled`
    left at `[qwen]`.
 2. **Launchers** — created
-   [run_gemma3_12b.bat](../run_gemma3_12b.bat) /
-   [run_gemma3_12b.sh](../run_gemma3_12b.sh) and
-   [run_gemma3_27b.bat](../run_gemma3_27b.bat) /
-   [run_gemma3_27b.sh](../run_gemma3_27b.sh), mirrors of the
-   Qwen / GLM ones. Extended [run_all.bat](../run_all.bat) and
-   [run_all.sh](../run_all.sh) to start both.
+   [run_gemma3_12b.bat](../../launchers/run_gemma3_12b.bat) /
+   [run_gemma3_12b.sh](../../launchers/run_gemma3_12b.sh) and
+   [run_gemma3_27b.bat](../../launchers/run_gemma3_27b.bat) /
+   [run_gemma3_27b.sh](../../launchers/run_gemma3_27b.sh), mirrors of
+   the Qwen / GLM ones. Extended
+   [run_all.bat](../../launchers/run_all.bat) and
+   [run_all.sh](../../launchers/run_all.sh) to start both.
+   *(2026-04-24: launchers were later moved from the repo root into
+   `launchers/`; links above reflect the current path.)*
 3. **Tests** — added `test_gemma_per_host_filtering` in
-   [tests/test_model_registry.py](../tests/test_model_registry.py)
+   [tests/test_model_registry.py](../../tests/test_model_registry.py)
    that asserts both gemma ids resolve on `pc-cuda` and do *not*
    resolve on `mac-mini-m4`, and that their ports are 8083 / 8084.
    No other test file changed (as the plan predicted).
@@ -397,9 +400,9 @@ both were risks the plan already flagged.
    ports by design. Both Gemma backends returned `"pong"` in
    ~3 output tokens through `/v1/messages`.
 6. **Docs** — updated
-   [project-structure.md](project-structure.md) (component +
+   [project-structure.md](../project-structure.md) (component +
    module mermaids, request-lifecycle header, key-facts
-   bullets) and the [README](../README.md) (top bullet list,
+   bullets) and the [README](../../README.md) (top bullet list,
    ASCII architecture box, Layout tree, Setup disk budget,
    Run table, Python example).
 

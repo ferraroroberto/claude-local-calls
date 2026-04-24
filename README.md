@@ -104,9 +104,9 @@ audio clients  ──────►  whisper-server 127.0.0.1:8090
 
 See [docs/project-structure.md](docs/project-structure.md) for the full
 mermaid diagrams (components, modules, request lifecycle),
-[docs/20260420-hub-with-qwen-and-glm.md](docs/20260420-hub-with-qwen-and-glm.md)
+[docs/changelog/20260420-hub-with-qwen-and-glm.md](docs/changelog/20260420-hub-with-qwen-and-glm.md)
 for the original hub post-mortem, and
-[docs/20260422-add-whisper-asr.md](docs/20260422-add-whisper-asr.md) for
+[docs/changelog/20260422-add-whisper-asr.md](docs/changelog/20260422-add-whisper-asr.md) for
 how the whisper backend slotted in.
 
 ## Layout
@@ -115,15 +115,16 @@ how the whisper backend slotted in.
 claude-local-calls/
 ├── .venv/                    # local virtualenv
 ├── requirements.txt
-├── run_hub.bat          / .sh   # start the FastAPI hub on :8000
-├── run_qwen.bat         / .sh   # start llama-server for Qwen on :8081
-├── run_glm.bat          / .sh   # start llama-server for GLM on :8082
-├── run_gemma3_12b.bat   / .sh   # start llama-server for Gemma 3 12B on :8083
-├── run_gemma3_27b.bat   / .sh   # start llama-server for Gemma 3 27B QAT on :8084
-├── run_gemma3n_e4b.bat  / .sh   # start llama-server for Gemma 3n E4B on :8085
-├── run_whisper.bat      / .sh   # start whisper-server for whisper-small on :8090
-├── run_all.bat          / .sh   # start everything enabled on this host
-├── launch_app.bat / .sh      # Streamlit UI
+├── launchers/                   # one-shot entrypoints (.bat + .sh)
+│   ├── run_hub.*                # start the FastAPI hub on :8000
+│   ├── run_qwen.*               # start llama-server for Qwen on :8081
+│   ├── run_glm.*                # start llama-server for GLM on :8082
+│   ├── run_gemma3_12b.*         # start llama-server for Gemma 3 12B on :8083
+│   ├── run_gemma3_27b.*         # start llama-server for Gemma 3 27B QAT on :8084
+│   ├── run_gemma3n_e4b.*        # start llama-server for Gemma 3n E4B on :8085
+│   ├── run_whisper.*            # start whisper-server for whisper-small on :8090
+│   ├── run_all.*                # start everything enabled on this host
+│   └── launch_app.*             # Streamlit UI
 ├── config/
 │   └── models.yaml           # host + model registry
 ├── src/
@@ -152,7 +153,13 @@ claude-local-calls/
 │                             #   ggml-small.bin (whisper)
 └── docs/
     ├── project-structure.md
-    └── 20260420-hub-with-qwen-and-glm.md
+    ├── model-comparison.md
+    └── changelog/                # dated post-mortems / plan docs
+        ├── 20260420-hub-with-qwen-and-glm.md
+        ├── 20260420-add-gemma-for-action-item-classification.md
+        ├── 20260420-glm-performance-assessment.md
+        ├── 20260422-add-whisper-asr.md
+        └── 20260424-launchers-and-docs-reorg.md
 ```
 
 ## Setup
@@ -189,17 +196,19 @@ model is enabled for your host.
 ## Run
 
 ```bat
-run_hub.bat            :: FastAPI hub on :8000
-run_qwen.bat           :: llama-server for Qwen on :8081
-run_glm.bat            :: llama-server for GLM on :8082
-run_gemma3_12b.bat     :: llama-server for Gemma 3 12B IT on :8083
-run_gemma3_27b.bat     :: llama-server for Gemma 3 27B IT QAT on :8084
-run_gemma3n_e4b.bat    :: llama-server for Gemma 3n E4B IT on :8085
-run_whisper.bat        :: whisper-server for whisper-small on :8090
-run_all.bat            :: start every backend enabled for this host
+launchers\run_hub.bat            :: FastAPI hub on :8000
+launchers\run_qwen.bat           :: llama-server for Qwen on :8081
+launchers\run_glm.bat            :: llama-server for GLM on :8082
+launchers\run_gemma3_12b.bat     :: llama-server for Gemma 3 12B IT on :8083
+launchers\run_gemma3_27b.bat     :: llama-server for Gemma 3 27B IT QAT on :8084
+launchers\run_gemma3n_e4b.bat    :: llama-server for Gemma 3n E4B IT on :8085
+launchers\run_whisper.bat        :: whisper-server for whisper-small on :8090
+launchers\run_all.bat            :: start every backend enabled for this host
 ```
 
-Equivalent Python entrypoints:
+(macOS / Linux: `./launchers/run_hub.sh`, `./launchers/run_all.sh`, etc.)
+
+Equivalent Python entrypoints (run from the project root):
 
 ```bat
 .venv\Scripts\python -m src.run_backend hub
@@ -221,9 +230,9 @@ The hub binds on `0.0.0.0:8000`, so any machine on the same network
 (another laptop, a VM, an agent like openclaw running next to you) can
 use it.
 
-1. **Start the hub** (either `run_hub.bat` / `.sh` or the Streamlit
-   *Server* tab). Start any local backends you need from
-   `run_qwen.*` / `run_glm.*` or the *Models* tab.
+1. **Start the hub** (either `launchers/run_hub.bat` / `.sh` or the
+   Streamlit *Server* tab). Start any local backends you need from
+   `launchers/run_qwen.*` / `launchers/run_glm.*` or the *Models* tab.
 2. **Find your LAN IP.** The Streamlit *Server* page shows it as a
    clickable **LAN** link. From a terminal:
 

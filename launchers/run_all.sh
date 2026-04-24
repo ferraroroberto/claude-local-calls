@@ -3,7 +3,7 @@
 # process group so individual Ctrl+C works. Pids are printed so you
 # can `kill` them; or just close the terminal.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 start() {
   local name="$1"; shift

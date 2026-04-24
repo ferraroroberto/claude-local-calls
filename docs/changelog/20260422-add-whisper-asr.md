@@ -19,7 +19,7 @@ and [20260420-add-gemma-for-action-item-classification.md](20260420-add-gemma-fo
   *"intentionally identical between this repository and claude-local-calls
   so the server binds the same port"* — the design had always intended
   both projects to share :8090 as a mutual-exclusion lock.
-- [scripts/install_whisper_cpp.py](../scripts/install_whisper_cpp.py)
+- [scripts/install_whisper_cpp.py](../../scripts/install_whisper_cpp.py)
   had been seeded (untracked) to download the CUDA Windows build of
   whisper.cpp and normalise the binary name to `whisper-server[.exe]`.
   Everything else was missing: registry entry, process wiring, UI
@@ -46,7 +46,7 @@ registry + backend-process manager + Streamlit Models view + `src.install`
    name is a misnomer. Done while we were in there.
 3. **YAML-only size selection, default small.** No CLI flags, no env
    vars. To switch to `ggml-tiny.bin` / `base` / `medium` / `large-v3`,
-   edit `hf_pattern` + `model_path` in [config/models.yaml](../config/models.yaml)
+   edit `hf_pattern` + `model_path` in [config/models.yaml](../../config/models.yaml)
    and re-run `python -m src.install --fix`. Matches how every other
    model in the registry picks a quant.
 4. **Branch on `engine: whisper-server`**, not a new manager class.
@@ -55,7 +55,7 @@ registry + backend-process manager + Streamlit Models view + `src.install`
 
 ## What we built
 
-### Registry row ([config/models.yaml](../config/models.yaml))
+### Registry row ([config/models.yaml](../../config/models.yaml))
 
 ```yaml
 whisper:
@@ -77,7 +77,7 @@ whisper:
 
 Enabled on `pc-cuda`, not on `mac-mini-m4`.
 
-### Process manager ([src/backend_process.py](../src/backend_process.py))
+### Process manager ([src/backend_process.py](../../src/backend_process.py))
 
 Renamed from `llama_process.py`. Two engine-aware helpers, everything
 else shared:
@@ -96,10 +96,10 @@ else shared:
 
 ### Dispatcher + hub router
 
-- [src/run_backend.py](../src/run_backend.py) — accepts
+- [src/run_backend.py](../../src/run_backend.py) — accepts
   `backend in ("openai", "whisper")` and picks the right vendor dir for
   the Windows PATH augmentation.
-- [src/server.py](../src/server.py) — both `/v1/messages` and
+- [src/server.py](../../src/server.py) — both `/v1/messages` and
   `/v1/chat/completions` handlers add an explicit 400 when the resolved
   model is whisper, with a body pointing callers at
   `http://127.0.0.1:8090/v1/audio/transcriptions`.
@@ -108,20 +108,20 @@ else shared:
 
 ### Install + download
 
-- [src/install.py](../src/install.py) — added `_check_whisper_cpp()`
+- [src/install.py](../../src/install.py) — added `_check_whisper_cpp()`
   (gated on whether any enabled model has `engine == "whisper-server"`),
   `_fix_whisper_cpp()` that shells out to
   `scripts.install_whisper_cpp.main()`, and widened `_check_models()`
   and `_check_ports()` filters from `backend == "openai"` to
   `backend in ("openai", "whisper")`.
-- [scripts/download_models.py](../scripts/download_models.py) —
+- [scripts/download_models.py](../../scripts/download_models.py) —
   `ggerganov/whisper.cpp` hosts `ggml-small.bin` at the repo root, so
   `huggingface_hub.hf_hub_download` fits unchanged once the backend
   filter accepts `whisper`.
 
 ### UI + launchers
 
-- [app/views/models.py](../app/views/models.py) — renamed
+- [app/views/models.py](../../app/views/models.py) — renamed
   `_render_llama_card` → `_render_local_card`; whisper cards show 🎙
   + "whisper-server", llama cards show 🦙 + "llama-server". Routing
   widened to `m.backend in ("openai", "whisper")`. No other functional
@@ -131,15 +131,15 @@ else shared:
 
 ### Docs + tests
 
-- [docs/model-comparison.md](model-comparison.md) — added a
+- [docs/model-comparison.md](../model-comparison.md) — added a
   `whisper-small` row (engine whisper.cpp, port 8090, `ggml-small.bin`
   ~466 MB, role "speech-to-text, not chat") plus a roles-at-a-glance
   row with size-switching instructions.
-- [tests/test_model_registry.py](../tests/test_model_registry.py) —
+- [tests/test_model_registry.py](../../tests/test_model_registry.py) —
   `test_whisper_entry` asserts backend=`whisper`, engine=`whisper-server`,
   port=8090, `url == "http://127.0.0.1:8090/v1"`, with per-host
   filtering checked on both `pc-cuda` and `mac-mini-m4`.
-- [README.md](../README.md) + [docs/project-structure.md](project-structure.md) —
+- [README.md](../../README.md) + [docs/project-structure.md](../project-structure.md) —
   updated for the new row and the `llama_process → backend_process`
   rename.
 

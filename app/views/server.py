@@ -69,5 +69,5 @@ def render() -> None:
 
     st.caption(
         "The process is managed by this Streamlit session. Stopping the app "
-        "will also stop the server. For standalone use, run `run_server.bat`."
+        "will also stop the server. For standalone use, run `launchers/run_hub.bat`."
     )

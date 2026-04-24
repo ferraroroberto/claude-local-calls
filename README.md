@@ -24,9 +24,9 @@ plus a local whisper.cpp ASR server that clients hit directly:
   [unsloth/gemma-3n-E4B-it-GGUF](https://huggingface.co/unsloth/gemma-3n-E4B-it-GGUF)
   on `127.0.0.1:8085` (edge / mobile-class ~4 B effective params; full
   GPU offload).
-- **whisper-small** — a local `whisper-server`
+- **whisper-large-v3-turbo** — a local `whisper-server`
   ([ggerganov/whisper.cpp](https://github.com/ggerganov/whisper.cpp))
-  running [ggml-small.bin](https://huggingface.co/ggerganov/whisper.cpp)
+  running [ggml-large-v3-turbo.bin](https://huggingface.co/ggerganov/whisper.cpp)
   on `127.0.0.1:8090`. OpenAI-compatible `/v1/audio/transcriptions`;
   clients POST to :8090 directly (the hub does not proxy audio
   endpoints). Port 8090 is a shared mutual-exclusion lock with
@@ -95,7 +95,7 @@ openclaw / anthropic SDK / openai SDK / curl
    │    gemma3-12b-it  → llama-server 127.0.0.1:8083            │
    │    gemma3-27b-it  → llama-server 127.0.0.1:8084            │
    │    gemma3n-e4b-it → llama-server 127.0.0.1:8085            │
-   │    whisper-small  → 400 "POST to :8090 directly" (audio)   │
+   │    whisper-large-v3-turbo → 400 "POST to :8090 directly" (audio) │
    └──────────────────────────────────────────────────────────┘
 
 audio clients  ──────►  whisper-server 127.0.0.1:8090
@@ -122,7 +122,7 @@ claude-local-calls/
 │   ├── run_gemma3_12b.*         # start llama-server for Gemma 3 12B on :8083
 │   ├── run_gemma3_27b.*         # start llama-server for Gemma 3 27B QAT on :8084
 │   ├── run_gemma3n_e4b.*        # start llama-server for Gemma 3n E4B on :8085
-│   ├── run_whisper.*            # start whisper-server for whisper-small on :8090
+│   ├── run_whisper.*            # start whisper-server for whisper-large-v3-turbo on :8090
 │   ├── run_all.*                # start everything enabled on this host
 │   └── launch_app.*             # Streamlit UI
 ├── config/
@@ -150,7 +150,7 @@ claude-local-calls/
 ├── models/                   # downloaded GGUFs (gitignored):
 │                             #   Qwen3.5-9B, GLM-4.5-Air, gemma-3-12b-it,
 │                             #   gemma-3-27b-it-qat (Q4_0), gemma-3n-E4B-it,
-│                             #   ggml-small.bin (whisper)
+│                             #   ggml-large-v3-turbo.bin (whisper)
 └── docs/
     ├── project-structure.md
     ├── model-comparison.md
@@ -177,7 +177,7 @@ out which host row you are (by `CLAUDE_LOCAL_CALLS_HOST` env var, else
 hostname match, else `default: true`), and only downloads what that
 host's `enabled` list asks for. On the reference Windows PC that's
 Qwen (~6.6 GB) + GLM (~55 GB) + Gemma 3 12B (~7.3 GB) + Gemma 3 27B
-QAT (~15.6 GB) + Gemma 3n E4B (~4.3 GB) + whisper-small (~466 MB,
+QAT (~15.6 GB) + Gemma 3n E4B (~4.3 GB) + whisper-large-v3-turbo (~1.62 GB,
 plus the whisper.cpp CUDA binary under `vendor/whisper.cpp/`); on the
 Mac mini it's Qwen only.
 
@@ -202,7 +202,7 @@ launchers\run_glm.bat            :: llama-server for GLM on :8082
 launchers\run_gemma3_12b.bat     :: llama-server for Gemma 3 12B IT on :8083
 launchers\run_gemma3_27b.bat     :: llama-server for Gemma 3 27B IT QAT on :8084
 launchers\run_gemma3n_e4b.bat    :: llama-server for Gemma 3n E4B IT on :8085
-launchers\run_whisper.bat        :: whisper-server for whisper-small on :8090
+launchers\run_whisper.bat        :: whisper-server for whisper-large-v3-turbo on :8090
 launchers\run_all.bat            :: start every backend enabled for this host
 ```
 
@@ -351,7 +351,7 @@ Or with the OpenAI SDK:
 from openai import OpenAI
 asr = OpenAI(api_key="local-dummy", base_url="http://127.0.0.1:8090/v1")
 with open("clip.wav", "rb") as f:
-    r = asr.audio.transcriptions.create(model="whisper-small", file=f)
+    r = asr.audio.transcriptions.create(model="whisper-large-v3-turbo", file=f)
 print(r.text)
 ```
 

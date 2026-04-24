@@ -228,3 +228,22 @@ No new modules. No hub passthrough. No parallel app.
   second registry row (e.g. `whisper_large_v3` on a different port)
   rather than toggling `model_path`. Current YAML-only size selection
   is fine for the single-model case.
+
+---
+
+## Addendum 2026-04-24 — model upgrade: small → large-v3-turbo
+
+The backend now ships `ggml-large-v3-turbo.bin` (~1.62 GB) instead of
+`ggml-small.bin` (~466 MB). Same registry slot (`whisper`), same port
+(8090), same launcher name; only the weights file and `display_name`
+changed (`whisper-small` → `whisper-large-v3-turbo`). Whisper-turbo is
+a distilled variant of large-v3 (4 decoder layers vs 32) — ~2× faster
+than large-v3 at near-identical WER on well-resourced languages like
+Spanish/English, which covers the `transcribe_voice` use case.
+
+See [20260424-whisper-turbo-vs-large-v3.md](20260424-whisper-turbo-vs-large-v3.md)
+for the rationale and the `small` / `large-v3` / `turbo` / `q5_0`
+trade-off table.
+
+The above historical references to `whisper-small` / `ggml-small.bin`
+are intentionally left intact as a record of the original design.

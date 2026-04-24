@@ -144,16 +144,19 @@ models:
   # directly (the hub does not proxy audio endpoints).
   #
   # To switch model size, change hf_pattern + model_path to another
-  # ggml-<size>.bin (tiny / base / small / medium / large-v3) and re-run
-  # `python -m src.install --fix` (or scripts/download_models.py --only whisper).
+  # ggml-<size>.bin (tiny / base / small / medium / large-v3 / large-v3-turbo)
+  # and re-run `python -m src.install --fix` (or
+  # scripts/download_models.py --only whisper). See
+  # docs/changelog/20260422-whisper-turbo-vs-large-v3.md for why turbo is
+  # the default on the reference 16 GB GPU.
   whisper:
-    display_name: whisper-small
+    display_name: whisper-large-v3-turbo
     backend: whisper
     engine: whisper-server
     port: 8090
     hf_repo: "ggerganov/whisper.cpp"
-    hf_pattern: "ggml-small.bin"
-    model_path: "models/ggml-small.bin"
+    hf_pattern: "ggml-large-v3-turbo.bin"
+    model_path: "models/ggml-large-v3-turbo.bin"
     # GPU is on by default in whisper.cpp v1.8+; pass -ng / --no-gpu to disable.
     # --inference-path exposes the OpenAI-compatible route that clients
     # (including transcribe_voice's TranscriptionClient) expect.

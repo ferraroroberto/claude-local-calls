@@ -137,13 +137,13 @@ def test_whisper_entry(tmp_path, monkeypatch):
         "models": {
             "qwen":    {"display_name": "qwen3.5-9b",    "backend": "openai",  "port": 8081},
             "whisper": {
-                "display_name": "whisper-small",
+                "display_name": "whisper-large-v3-turbo",
                 "backend": "whisper",
                 "engine": "whisper-server",
                 "port": 8090,
                 "hf_repo": "ggerganov/whisper.cpp",
-                "hf_pattern": "ggml-small.bin",
-                "model_path": "models/ggml-small.bin",
+                "hf_pattern": "ggml-large-v3-turbo.bin",
+                "model_path": "models/ggml-large-v3-turbo.bin",
                 "args": ["--threads", "4", "--gpu", "1"],
             },
         },
@@ -151,7 +151,7 @@ def test_whisper_entry(tmp_path, monkeypatch):
     _patch_config_path(monkeypatch, cfg)
 
     monkeypatch.setenv("CLAUDE_LOCAL_CALLS_HOST", "pc-cuda")
-    m = model_registry.resolve("whisper-small")
+    m = model_registry.resolve("whisper-large-v3-turbo")
     assert m is not None
     assert m.id == "whisper"
     assert m.backend == "whisper"
@@ -161,7 +161,7 @@ def test_whisper_entry(tmp_path, monkeypatch):
     assert "--gpu" in m.args
 
     monkeypatch.setenv("CLAUDE_LOCAL_CALLS_HOST", "mac-mini-m4")
-    assert model_registry.resolve("whisper-small") is None
+    assert model_registry.resolve("whisper-large-v3-turbo") is None
 
 
 def test_model_url_from_port(tmp_path, monkeypatch):

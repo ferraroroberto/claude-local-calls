@@ -34,17 +34,17 @@ def render() -> None:
 
     ctrl = st.columns([1, 1, 1, 4])
     with ctrl[0]:
-        if st.button("▶ Start", type="primary", disabled=running, use_container_width=True):
+        if st.button("▶ Start", type="primary", disabled=running, width="stretch"):
             ok, msg = sp.start()
             (st.success if ok else st.warning)(msg)
             st.rerun()
     with ctrl[1]:
-        if st.button("■ Stop", disabled=not running, use_container_width=True):
+        if st.button("■ Stop", disabled=not running, width="stretch"):
             ok, msg = sp.stop()
             (st.success if ok else st.warning)(msg)
             st.rerun()
     with ctrl[2]:
-        if st.button("🔄 Refresh", use_container_width=True):
+        if st.button("🔄 Refresh", width="stretch"):
             st.rerun()
 
     strays = [] if running else sp.stray_pids_on_port()
@@ -55,7 +55,7 @@ def render() -> None:
             "probably a stale server from a previous session. Start will "
             "fail with WinError 10048 until it's gone."
         )
-        if st.button(f"💀 Kill stray process on port {sp.PORT}", use_container_width=False):
+        if st.button(f"💀 Kill stray process on port {sp.PORT}", width="content"):
             ok, msg = sp.kill_stray_on_port()
             (st.success if ok else st.error)(msg)
             st.rerun()

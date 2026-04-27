@@ -37,18 +37,18 @@ def _render_local_card(m) -> None:
     ctrl = st.columns([1, 1, 1, 4])
     with ctrl[0]:
         if st.button("▶ Start", key=f"start_{m.id}", type="primary",
-                     disabled=running, use_container_width=True):
+                     disabled=running, width="stretch"):
             ok, msg = lp.start(m.id)
             (st.success if ok else st.warning)(msg)
             st.rerun()
     with ctrl[1]:
         if st.button("■ Stop", key=f"stop_{m.id}",
-                     disabled=not running, use_container_width=True):
+                     disabled=not running, width="stretch"):
             ok, msg = lp.stop(m.id)
             (st.success if ok else st.warning)(msg)
             st.rerun()
     with ctrl[2]:
-        if st.button("🔄 Refresh", key=f"refresh_{m.id}", use_container_width=True):
+        if st.button("🔄 Refresh", key=f"refresh_{m.id}", width="stretch"):
             st.rerun()
 
     with st.expander("Log tail", expanded=False):

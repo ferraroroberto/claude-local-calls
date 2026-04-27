@@ -32,7 +32,7 @@ def render() -> None:
         "`python -m src.install --fix` would run from the shell."
     )
 
-    refresh = st.button("🔄 Re-run all checks", use_container_width=False)
+    refresh = st.button("🔄 Re-run all checks", width="content")
     if refresh:
         st.rerun()
 

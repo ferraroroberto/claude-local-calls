@@ -15,13 +15,37 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from src import server as server_mod
+from src import backend_process, model_registry, server as server_mod, services
 from src.diagnostics import report, sampler, settings as diag_settings, store
 
 
+def _stub_real_backend_ops(monkeypatch):
+    """Keep the real ``server_mod.app`` lifespan hermetic (issue #416 follow-up).
+
+    Entering ``TestClient(server_mod.app)`` runs the *real* ASGI lifespan —
+    ``wire_observatory_loop`` inherits/autostarts this machine's actually-configured
+    backends (``config/startup_profile.json`` + ``config/models.yaml``) and its
+    shutdown counterpart really stops them. This suite doesn't exercise any of that
+    (it's purely the diagnostics API), so without these stubs every test in this
+    file was starting/killing this dev box's real ``qwen``/``piper`` backend
+    processes on every ``with TestClient(...)`` enter/exit.
+    """
+    monkeypatch.setattr(model_registry, "autostart_model_ids", lambda *a, **kw: [])
+    monkeypatch.setattr(backend_process, "inherit_running_backends", lambda: 0)
+    monkeypatch.setattr(backend_process, "start", lambda model_id: (True, "stubbed (test)"))
+    monkeypatch.setattr(backend_process, "stop", lambda model_id: (True, "stubbed (test)"))
+
+    async def _no_launch():
+        return {"ok": True, "steps": []}
+
+    monkeypatch.setattr(services, "launch_stack", _no_launch)
+    monkeypatch.setattr(services, "launch_agentsview", _no_launch)
+
+
 @pytest.fixture()
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
     """Isolated DB + settings per test so nothing touches real runtime data."""
+    _stub_real_backend_ops(monkeypatch)
     store.set_db_path(tmp_path / "diag.db")
     diag_settings.set_settings_path(tmp_path / "diagnostics_settings.json")
     with TestClient(server_mod.app) as c:
@@ -349,13 +373,14 @@ def test_broken_settings_file_falls_back_to_defaults(tmp_path):
         diag_settings.set_settings_path(None)
 
 
-def test_shutdown_drains_an_active_capture(tmp_path):
+def test_shutdown_drains_an_active_capture(tmp_path, monkeypatch):
     """A hub shutdown must gracefully stop an in-flight capture, not abandon it.
 
     Beyond finalizing the run as `stopped` instead of orphaning it, this is what
     stops a capture's worker thread from outliving the app and writing through
     the module-global `db_path` into the next test's DB — the intermittent
     `database is locked` the router suite showed before #316 added the drain."""
+    _stub_real_backend_ops(monkeypatch)
     store.set_db_path(tmp_path / "diag.db")
     diag_settings.set_settings_path(tmp_path / "s.json")
     try:

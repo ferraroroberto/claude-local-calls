@@ -35,6 +35,14 @@ bare ``host:`` row) never consults the tracker — ``effective_owner`` returns
 multi-host chain the background loop exits immediately, so existing
 deployments gain zero probes, zero tasks, zero behavior change.
 
+**Contract with fleet_reconcile.py (#411):** this engine's ``fail_after_s``
+window competes with ``fleet_reconcile.py``'s own always-on convergence, which
+used to SSH-resurrect a deliberately-stopped peer within seconds — well inside
+this window — so failover could never observe a real outage. That race is
+closed on the reconcile side: arm ``src.fleet_maintenance`` for the target host
+before inducing an outage (via ``/admin/api/fleet-maintenance``) so reconcile
+stands down and this engine's probe/decide/act cycle gets a clean read.
+
 Reachability reuses ``services.peer_health`` (the same dial-resolver probe
 the Machines tab and fleet reconcile already use — no second prober), and
 the observation loop is the only writer of tracker state; request paths

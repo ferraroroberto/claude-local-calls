@@ -14,7 +14,7 @@ import os
 os.environ.setdefault("LOCAL_LLM_HUB_HOST", "tower")
 
 from src import backend_process as bp  # noqa: E402
-from src import fleet_placement, fleet_reconcile as fr  # noqa: E402
+from src import fleet_maintenance, fleet_placement, fleet_reconcile as fr  # noqa: E402
 from src import remote_bootstrap, services, startup_profile  # noqa: E402
 
 
@@ -198,6 +198,53 @@ def test_local_already_running_is_noop_success(monkeypatch):
     entry = results["tower"]["started"][0]
     assert entry["id"] == "whisper" and entry["ok"] is True  # already-running = ok
     assert stops == []  # additive pass never stops
+
+
+# --------------------------------------------------------------------------- #
+# Maintenance gate (#411) — reconcile skips a drained host entirely
+# --------------------------------------------------------------------------- #
+def test_maintained_host_is_skipped_entirely(monkeypatch):
+    """Reproduction proof: before #411, a host under maintenance still
+    converged normally — reconcile would wake/probe/start it, racing
+    model_failover's fail_after_s window exactly as the issue describes."""
+    calls: list = []
+    _stub_peer_transport(monkeypatch, calls)
+    sent: list = []
+    _stub_wol(monkeypatch, sent)
+    probed = {"n": 0}
+
+    async def health(host_id):
+        probed["n"] += 1
+        return {"reachable": False}
+
+    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
+                        lambda: {"mac-mini-m4": ["parakeet"]})
+    monkeypatch.setattr(services, "peer_health", health)
+    monkeypatch.setattr(remote_bootstrap, "bootstrap_host", _async_ret({"ok": True}))
+    monkeypatch.setattr(fleet_maintenance, "is_under_maintenance", lambda host_id: True)
+
+    results = _run(fr.reconcile_once())
+
+    assert results["mac-mini-m4"] == {"maintenance": True, "reachable": None}
+    assert probed["n"] == 0                                # never even probed
+    assert sent == []                                      # no WOL
+    assert not [c for c in calls if c[0] in ("start", "profile")]  # no convergence
+
+
+def test_expired_maintenance_host_converges_normally(monkeypatch):
+    calls: list = []
+    _stub_peer_transport(monkeypatch, calls)
+    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
+                        lambda: {"mac-mini-m4": ["parakeet"]})
+    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": True}))
+    # A real (non-monkeypatched) call against an empty maintenance file — the
+    # host has no marker at all, i.e. the equivalent of an expired one.
+    monkeypatch.setattr(fleet_maintenance, "load_fleet_maintenance", lambda path=None: {})
+
+    results = _run(fr.reconcile_once())
+
+    assert results["mac-mini-m4"]["reachable"] is True
+    assert ("start", "mac-mini-m4", "parakeet") in calls
 
 
 # --------------------------------------------------------------------------- #

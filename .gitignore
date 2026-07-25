@@ -61,6 +61,11 @@ config/startup_profile.json
 # config/fleet_placement.example.json is the template + fresh-clone default.
 config/fleet_placement.json
 
+# Runtime-mutated fleet maintenance drain markers (issue #411) — armed/cleared
+# via /admin/api/fleet-maintenance, so it must not be tracked. No committed
+# example — an absent file means "nothing under maintenance".
+config/fleet_maintenance.json
+
 # Claude Code local settings
 .claude/settings.local.json
 

@@ -575,6 +575,13 @@ the engine adds zero probes and zero background work.
 - **Tunables.** Top-level `failover:` block in `config/models.yaml`
   (`probe_interval_s` / `fail_after_s` / `failback_after_s` / `policy`);
   defaults documented inline there.
+- **Maintenance gate (#411).** The fleet reconcile loop's own always-on
+  convergence races this engine's `fail_after_s` window — reconcile can
+  SSH-resurrect a deliberately-stopped peer within seconds, before failover
+  ever observes a continuous outage. `src/fleet_maintenance.py` gives the
+  tower a host-scoped drain marker reconcile honours
+  (`GET/POST/DELETE /admin/api/fleet-maintenance/{host_id}`), for running a
+  drill without editing `.env`. See `docs/fleet-maintenance.md`.
 
 **Enabling a chain:** every chain member must cross-list the model in its
 `enabled:` **and** pre-stage the weights (`python -m src.install --fix` on
@@ -808,6 +815,7 @@ local-llm-hub/
 │   ├── startup_profile.json          # live autostart profile, rewritten by the admin UI (gitignored, #304)
 │   ├── fleet_placement.example.json  # copy-me shape template for fleet desired-state (#353)
 │   ├── fleet_placement.json          # live {host: [models]} placement, control-node only (gitignored, #353)
+│   ├── fleet_maintenance.json        # live {host: {until, reason}} reconcile drain markers (gitignored, #411)
 │   └── webapp_config.json            # admin auth: bearer token, optional password, webauthn rp (gitignored)
 ├── webapp/                   # runtime data dir written by the /admin webapp
 │   ├── cloudflared.sample.yml  # sample named-tunnel config (copy to cloudflared.yml)
@@ -831,6 +839,7 @@ local-llm-hub/
 │   ├── startup_profile.py    # config/startup_profile.json load/save (#265)
 │   ├── fleet_placement.py    # config/fleet_placement.json load/save — fleet desired state (#353)
 │   ├── fleet_reconcile.py    # additive reconcile loop: wake/write-through/start placed models (#353)
+│   ├── fleet_maintenance.py  # config/fleet_maintenance.json load/save — reconcile drain markers (#411)
 │   ├── host_profile.py       # pick active host row
 │   ├── system_stats.py       # live RAM/CPU/GPU readings (consumed by Hub tab sparklines)
 │   ├── diagnostics/          # on-demand machine diagnostics (#315) — no resident process

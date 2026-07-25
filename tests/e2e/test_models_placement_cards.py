@@ -86,6 +86,20 @@ FAKE_MODELS = {
             },
         },
         {
+            # On-demand row currently loaded (a request demanded it and the
+            # idle window hasn't elapsed) — the third badge state.
+            "id": "chatterbox", "display_name": "chatterbox-tts",
+            "backend": "tts", "engine": "tts-server", "port": 8092,
+            "url": None, "aliases": [], "controllable": True,
+            "ownership": "ours", "pid": 888, "reachable": True,
+            "model_path": None, "host": "tower",
+            "placement": {
+                "chain": [{"id": "tower", "cpu": False}],
+                "startup": "on_demand", "idle_unload_minutes": 15,
+                "est_vram_mb": 2000,
+            },
+        },
+        {
             # Subscription row — no placement key, no placement section.
             "id": "claude_haiku", "display_name": "claude-haiku-4-5",
             "backend": "claude", "engine": None, "port": None, "url": None,
@@ -165,6 +179,11 @@ def test_startup_badge_reads_policy_and_live_state(page, admin_url):
 
     gemma_badge = _item(page, "gemma4_26b").locator(".placement .badge").first
     assert gemma_badge.inner_text() == "on-demand · idle-unloaded"
+
+    # A reachable on-demand row reads "loaded" — and carries the good tint.
+    chatter_badge = _item(page, "chatterbox").locator(".placement .badge").first
+    assert chatter_badge.inner_text() == "on-demand · loaded"
+    assert "good" in (chatter_badge.get_attribute("class") or "")
 
 
 def test_budget_bar_used_vs_ceiling_and_overcommit_tint(page, admin_url):

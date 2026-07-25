@@ -514,6 +514,19 @@ The Models tab tags every remote-owned tile with a small `on <host-id>`
 badge (e.g. `qwen3.5-9b` / `parakeet-tdt-0.6b-v3` both show `on
 mac-mini-m4`) so a displayed PID is never mistaken for a local process.
 
+**Read-only placement cards (#423).** Each process-backed row in the Models
+tab also renders its declared placement *intent* straight from
+`config/models.yaml`: the host chain in priority order (effective owner
+highlighted, `cpu: true` degraded tiers marked), a startup-policy badge that
+reads the live state honestly (`eager`, `on-demand · loaded`,
+`on-demand · idle-unloaded`), the static `est_vram_mb` estimate, and the
+owner host's VRAM budget bar (sum of the models currently resident there vs
+its `vram_mb` ceiling — the #375 grid math, tinted `attention` on
+overcommit; a host with no ceiling renders no bar). The data rides
+`GET /admin/api/models` as a per-row `placement` object plus a top-level
+`host_budgets` map. Purely informational — editing placement stays with the
+Fleet placement card below and the start/stop controls that already exist.
+
 ### Fleet placement: always-on desired state (#353)
 
 The per-machine autostart above (`startup_profile.json`) answers *"what

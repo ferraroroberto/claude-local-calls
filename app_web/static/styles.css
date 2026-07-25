@@ -644,6 +644,76 @@ h2 { display: flex; align-items: center; gap: 8px; }
   background: var(--accent-soft);
 }
 
+/* ---------- Models tab: read-only placement cards (#423) ----------
+ * A per-row intent section under the runtime meta line: host-chain pills in
+ * priority order (owner = the accent-soft "selected" tint, same recipe as
+ * .segmented button.active), a startup-policy .badge, the static VRAM
+ * estimate, and the owner host's budget bar. All caption-scale — placement
+ * is context, never louder than the row's own title/status. */
+.placement {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+.placement-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-caption);
+}
+.placement-chain {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.placement-arrow { color: var(--muted); }
+.place-pill {
+  background: var(--card-off);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  font-size: var(--font-caption);
+  white-space: nowrap;
+}
+.place-pill.owner {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border-strong);
+  font-weight: 600;
+}
+.placement-vram { font-size: var(--font-caption); }
+/* Budget bar: a thin meter, accent fill (the sparkline convention — accent
+ * for neutral quantitative ink), `attention` only on overcommit (state,
+ * matching .fleet-capacity-warn's advisory tone — never decoration). */
+.placement-budget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.placement-budget-bar {
+  flex: 0 1 220px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--card-off);
+  border: 1px solid var(--line-muted);
+  overflow: hidden;
+}
+.placement-budget-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+}
+.placement-budget-bar.over > span { background: var(--attention); }
+.placement-budget-label {
+  font-size: var(--font-caption);
+  white-space: nowrap;
+}
+
 /* ---------- transcription dictionary editor (inline whisper-row panel) ---------- */
 .glossary-panel {
   border-top: 1px solid var(--line);

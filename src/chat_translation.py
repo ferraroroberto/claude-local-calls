@@ -281,6 +281,11 @@ def _remote_headers(model: Model) -> Optional[Dict[str, str]]:
 
 
 def _run_openai_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
+    # On-demand lifecycle (#422): a cold ``startup: on_demand`` local backend
+    # is spawned here and the request blocks until it answers (503 on load
+    # failure) — same hook the OpenAI-shape route applies in server.py.
+    from .server_common import ensure_backend_ready_or_503
+    ensure_backend_ready_or_503(model)
     remote = remote_base_url(model)
     base_url = f"{remote}/v1" if remote else model.url
     if not base_url:
@@ -302,6 +307,10 @@ def _run_openai_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
         [m.model_dump() for m in req.messages],
         _system_to_text(req.system),
     )
+    from . import on_demand as _on_demand
+    track_on_demand = remote is None and _on_demand.is_on_demand(model)
+    if track_on_demand:
+        _on_demand.request_started(model.id)
     try:
         raw = call_openai_chat(
             base_url,
@@ -313,4 +322,7 @@ def _run_openai_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
         )
     except UpstreamError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        if track_on_demand:
+            _on_demand.request_finished(model.id)
     return openai_to_anthropic_envelope(raw)

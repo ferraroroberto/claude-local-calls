@@ -474,3 +474,22 @@ def test_load_settings_defaults_and_overrides(tmp_path, monkeypatch):
     s = model_failover.load_settings()
     assert s.policy == "auto"                       # bogus policy falls back
     assert s.fail_after_s == 90.0                   # defaults fill the rest
+
+
+# --------------------------------------------------------------------------- #
+# On-demand rows (#422): the failover engine never spawns them.
+# --------------------------------------------------------------------------- #
+def test_ensure_running_local_skips_on_demand_models(monkeypatch):
+    from src.model_registry import Model
+
+    def _boom(*a, **kw):
+        raise AssertionError("backend_process must not be touched")
+
+    monkeypatch.setattr(backend_process, "is_running", _boom)
+    monkeypatch.setattr(backend_process, "start", _boom)
+
+    m = Model(id="orpheus_od", display_name="orpheus-od", backend="tts",
+              port=8093, hosts=["tower", "gaming"], host="tower",
+              startup="on_demand", idle_unload_minutes=30)
+    result = asyncio.run(model_failover._ensure_running_local(m, None))
+    assert result is None

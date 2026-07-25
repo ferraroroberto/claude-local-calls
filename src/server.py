@@ -87,10 +87,12 @@ from .observability import (
 from .server_common import (
     client_id_from as _client_id_from,
     current_otel_span as _current_otel_span,
+    ensure_backend_ready_or_503 as _ensure_backend_ready,
     resolve_model_or_400 as _resolve,
     safe_span as _safe_span,
     stash_trace_id_on_ctx as _stash_trace_id_on_ctx,
 )
+from . import on_demand as _on_demand
 from .server_audio import router as _audio_router
 from .server_images import router as _images_router
 from .server_otel_receiver import router as _otel_receiver_router
@@ -471,6 +473,13 @@ def _stream_openai_passthrough(
     if not base_url:
         raise HTTPException(status_code=500, detail="model has no url")
     extra = _build_openai_extra(model, req)
+    # On-demand idle tracking (#422): a locally-served on_demand model must
+    # not be idle-unloaded while a stream is in flight — pair the start here
+    # with the finish in the generator's ``finally`` (which also runs on a
+    # client disconnect, via GeneratorExit).
+    track_on_demand = remote is None and _on_demand.is_on_demand(model)
+    if track_on_demand:
+        _on_demand.request_started(model.id)
 
     if start_ns is None:
         start_ns = time.monotonic_ns()
@@ -560,6 +569,8 @@ def _stream_openai_passthrough(
             yield "data: " + _json.dumps(err) + "\n\n"
             yield "data: [DONE]\n\n"
         finally:
+            if track_on_demand:
+                _on_demand.request_finished(model.id)
             record_genai_metrics(
                 model=req.model, backend=model.backend,
                 route="/v1/chat/completions", client_id=client_id,
@@ -604,6 +615,12 @@ def chat_completions(req: ChatCompletionRequest, request: Request) -> Response:
     )
     _stash_trace_id_on_ctx(ctx, span)
     start_ns = time.monotonic_ns()
+
+    if model.backend == "openai":
+        # On-demand lifecycle (#422): a cold ``startup: on_demand`` local
+        # backend is spawned here and the request blocks until it answers
+        # (distinct 503 on load failure). No-op for eager/remote/virtual rows.
+        _ensure_backend_ready(model)
 
     if req.stream and model.backend == "openai":
         # The streaming response object closes the span itself once the
@@ -671,6 +688,10 @@ def chat_completions(req: ChatCompletionRequest, request: Request) -> Response:
                 error_type = "config_error"
                 raise HTTPException(status_code=500, detail="model has no url")
             extra = _build_openai_extra(model, req)
+            # On-demand idle tracking (#422) — see _stream_openai_passthrough.
+            track_on_demand = remote is None and _on_demand.is_on_demand(model)
+            if track_on_demand:
+                _on_demand.request_started(model.id)
             try:
                 raw = call_openai_chat(
                     base_url,
@@ -684,6 +705,9 @@ def chat_completions(req: ChatCompletionRequest, request: Request) -> Response:
             except UpstreamError as e:
                 error_type = "upstream_http_error"
                 raise HTTPException(status_code=502, detail=str(e))
+            finally:
+                if track_on_demand:
+                    _on_demand.request_finished(model.id)
             cleaned = clean_openai_response(raw)
             usage = cleaned.get("usage") or {}
             in_t = int(usage.get("prompt_tokens", 0) or 0)

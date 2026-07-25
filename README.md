@@ -63,7 +63,10 @@ Local entries in active use as of the May 2026 frontier reading:
   on `127.0.0.1:8087` (25 B / 3.8 B-active MoE, IQ4_XS i-matrix quant
   — whole model on GPU in 16 GB VRAM). Fills the `agentic_heavy` role:
   deep agentic, transcript polishing, document work, EN↔ES↔CA. Also
-  addressable as `model="agentic_heavy"` for the same reason.
+  addressable as `model="agentic_heavy"` for the same reason. **On-demand
+  since #422** (`startup: on_demand`, `idle_unload_minutes: 30`): the first
+  request loads it (~tens of seconds), 30 idle minutes unload it — freeing
+  ~13.4 GB of tower's VRAM for the voice path between uses.
 - **`whisper-large-v3-turbo`** — local `whisper-server`
   ([ggerganov/whisper.cpp](https://github.com/ggerganov/whisper.cpp))
   running [ggml-large-v3-turbo.bin](https://huggingface.co/ggerganov/whisper.cpp)
@@ -118,7 +121,11 @@ Local entries in active use as of the May 2026 frontier reading:
   most natural/expressive local voice and faster than real-time on GPU; its
   reference runtime (vLLM) has no usable Windows build, so the shim runs the
   GGUF on the vendored `llama-server` (loopback `:18093`) and decodes its
-  audio tokens with the SNAC codec in-process. Address explicitly as
+  audio tokens with the SNAC codec **on CPU** (`--device cpu`, #422 — measured
+  faster than GPU SNAC on the 5060 Ti and ~1 GB VRAM cheaper; the llama child
+  stays fully on GPU). Owned by **tower** with the gaming satellite as
+  degraded fallback (`hosts: [tower, gaming]`, #422 — the 1070 renders at
+  0.71x real-time, tower sustains 1.84x). Address explicitly as
   `model="orpheus-tts"` when expressiveness matters more than latency.
 - **`kokoro-tts`** — low-footprint Kokoro-82M TTS on `127.0.0.1:8095`, served
   by the same [src/tts_server.py](src/tts_server.py) OpenAI-compatible
@@ -431,27 +438,28 @@ Today this powers the `mac-mini-m4` host (`192.168.0.14`, Apple M4):
   [docs/parakeet-asr-evaluation.md](docs/parakeet-asr-evaluation.md).
 
 The same pattern powers the **`gaming`** satellite (`192.168.0.16`, Ryzen 9
-5900X, GTX 1070 8 GB, headless Ubuntu — #323), which now owns all four whisper
-voice backends moved off the tower, so tower carries no whisper backends at
-all:
+5900X, GTX 1070 8 GB, headless Ubuntu — #323), which owns the whisper STT
+trio moved off the tower, so tower carries no whisper backends at all:
 
 - **`whisper-large-v3-turbo`** — the transcribe role's *fallback* (parakeet on
   the Mac stays primary); CUDA-built whisper-server for `sm_61`, ~9.1 RTFx
   there vs ~33.6 on the tower's 5060 Ti — slower, but a failover path, not the
   daily-dictation primary.
 - **`whisper-medium-translate`** and **`whisper-vanilla`** — moved to gaming
-  in #370, alongside `whisper`/`orpheus`'s earlier #323 move. `translate`
+  in #370, alongside `whisper`'s earlier #323 move. `translate`
   stays CPU-only (0 MB VRAM); `vanilla` is GPU/lazy (~2000 MB when resident).
   voice-transcriber retains its own local `:8090` escape-hatch spawner for
   transport failures.
-- **`orpheus-tts`** — llama-server CUDA-built for `sm_61`, ~2× real-time; the
-  `audio_speech` role default stays `piper` (tower CPU), so orpheus serves
-  explicit `model=orpheus` calls, proxied to gaming's hub.
+- **`orpheus-tts`** — moved here in #323, moved **back to tower** in #422: the
+  1070 synthesizes at 0.71x real-time with the GPU pegged (measured
+  2026-07-25), starving every streamed playback. Gaming stays second in
+  orpheus's `hosts: [tower, gaming]` chain as the degraded-but-up fallback,
+  so it keeps the weights staged and the id in `enabled:`.
 
-Gaming's estimated VRAM footprint with all four resident: whisper 2000 +
-orpheus 2800 + whisper_translate 0 + whisper_vanilla 2000 = 6800 MB, against
-an 8192 MB ceiling (`vram_mb` in `config/models.yaml`, #375) — comfortably
-under, no capacity warning expected.
+Gaming's estimated VRAM footprint with the whisper trio resident: whisper
+2000 + whisper_translate 0 + whisper_vanilla 2000 = 4000 MB (plus orpheus
+2200 MB only while acting as failover tenant), against an 8192 MB ceiling
+(`vram_mb` in `config/models.yaml`, #375) — comfortably under.
 
 The Windows hub's admin UI Services card shows a live reachability pill for
 every other hub-running peer (mac-mini-m4, gaming — any future satellite
@@ -636,7 +644,8 @@ that host — the installer treats chain members as local candidates). The
 Models tab tags a model served off-preference with a
 `failover (prefers <host>)` note on its tile.
 
-**The live chain (#405).** `whisper` is the first production row to use one:
+**The live chains (#405, #422).** `whisper` was the first production row to
+use one:
 
 ```yaml
   hosts: [gaming, mac-mini-m4, {id: tower, cpu: true}]
@@ -647,7 +656,37 @@ It was chosen as the pilot because it is the transcribe role's *fallback*
 failover decision degrades a backup path rather than taking fleet STT down.
 `tower` is flagged `cpu: true` because its 16 GB is already ~97% committed to
 the agentic lanes — the degraded-but-up CPU tier is the honest last rung
-there, not a compromise. Every other row still carries a bare `host:`.
+there, not a compromise. `orpheus` joined in #422 with
+`hosts: [tower, gaming]` — tower primary (1.84x real-time), gaming the
+degraded fallback (0.71x — audible but slower than real-time). Every other
+row still carries a bare `host:`.
+
+### On-demand model lifecycle: `startup` + `idle_unload_minutes` (#422)
+
+A `models:` row may declare a lifecycle policy:
+
+```yaml
+gemma4_26b:
+  startup: on_demand        # default: eager (always-on, pre-#422 behavior)
+  idle_unload_minutes: 30   # only meaningful for on_demand; omit to disable
+```
+
+An **on-demand** model is never started eagerly — not by hub autostart, not
+by the fleet reconcile loop, not by the failover engine. The **first request**
+that routes to it (chat, `/v1/messages`, or `/v1/audio/speech`) spawns the
+backend via `src/on_demand.py` and waits for readiness — the hub-level
+generalization of the `whisper-server-lazy` proxy pattern — so the first
+call pays the load (tens of seconds for a big GGUF) and everything after is
+warm. After `idle_unload_minutes` with no requests (in-flight requests hold
+the window open), the idle watchdog stops the backend, and it **stays down**
+until the next request — a hand-stopped or idle-unloaded on-demand model is
+never resurrected by the supervisor loops. Before an on-demand load the hub
+checks the #375 budget math (running `est_vram_mb` sum + the candidate vs
+the host's `vram_mb` ceiling) and logs a loud warning on overcommit —
+warning only, never a block: WDDM overcommit degrades transiently and idle
+unload recovers it. `gemma4_26b` (the single heaviest local model, rarely
+called) is the first on-demand row — which is what freed tower's VRAM for
+orpheus's #422 move back.
 
 ### Linux satellite lifecycle: systemd (#323, #368)
 

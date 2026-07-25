@@ -532,3 +532,67 @@ def test_model_url_from_port(tmp_path, monkeypatch):
     m = model_registry.resolve("qwen3.5-9b")
     assert m.url == "http://127.0.0.1:8081/v1"
 
+
+def test_startup_and_idle_unload_fields(tmp_path, monkeypatch):
+    """#422 schema: `startup: on_demand` + `idle_unload_minutes` parse; the
+    default is eager; an unknown startup value normalizes to eager (a typo
+    must degrade to always-on, never to a model that refuses to start)."""
+    cfg = _write_config(tmp_path, {
+        "hub": {"port": 8000},
+        "hosts": {
+            "pc": {"platform": "win32", "default": True,
+                   "enabled": ["gemma", "qwen", "typo"]},
+        },
+        "models": {
+            "gemma": {
+                "display_name": "gemma4-26b-a4b-it", "backend": "openai",
+                "port": 8087, "startup": "on_demand", "idle_unload_minutes": 30,
+            },
+            "qwen": {"display_name": "qwen3.5-9b", "backend": "openai", "port": 8081},
+            "typo": {
+                "display_name": "typo-model", "backend": "openai",
+                "port": 8085, "startup": "lazy",
+            },
+        },
+    })
+    _patch_config_path(monkeypatch, cfg)
+    monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
+
+    gemma = model_registry.resolve("gemma4-26b-a4b-it")
+    assert gemma.startup == model_registry.STARTUP_ON_DEMAND
+    assert gemma.idle_unload_minutes == 30
+
+    qwen = model_registry.resolve("qwen3.5-9b")
+    assert qwen.startup == model_registry.STARTUP_EAGER
+    assert qwen.idle_unload_minutes is None
+
+    typo = model_registry.resolve("typo-model")
+    assert typo.startup == model_registry.STARTUP_EAGER
+
+
+def test_autostart_model_ids_excludes_on_demand_rows(tmp_path, monkeypatch):
+    """#422: an on_demand row never autostarts with the hub, even when a
+    stale startup profile still lists it — the first request loads it."""
+    profile_path = tmp_path / "startup_profile.json"
+    profile_path.write_text(
+        json.dumps({"models": ["qwen", "gemma"]}), encoding="utf-8",
+    )
+    monkeypatch.setattr(startup_profile, "DEFAULT_PROFILE_PATH", profile_path)
+    cfg = _write_config(tmp_path, {
+        "hub": {"port": 8000},
+        "hosts": {
+            "pc": {"platform": "win32", "default": True, "enabled": ["qwen", "gemma"]},
+        },
+        "models": {
+            "qwen": {"display_name": "qwen3.5-9b", "backend": "openai", "port": 8081},
+            "gemma": {
+                "display_name": "gemma4-26b-a4b-it", "backend": "openai",
+                "port": 8087, "startup": "on_demand", "idle_unload_minutes": 30,
+            },
+        },
+    })
+    _patch_config_path(monkeypatch, cfg)
+    monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
+
+    assert model_registry.autostart_model_ids() == ["qwen"]
+

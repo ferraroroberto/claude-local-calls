@@ -139,9 +139,9 @@ def test_capacity_warning_when_over_ceiling(monkeypatch, tmp_path):
 
 
 def test_no_capacity_warning_when_under_ceiling(monkeypatch, tmp_path):
-    """gaming's real post-#323 voice pair (whisper 2000 + orpheus 2800 =
-    4800 MB from the committed config) sits under its 8192 MB ceiling — the
-    real config must not raise a false positive."""
+    """gaming's voice pair (whisper 2000 + orpheus 2200 with SNAC on CPU,
+    #422 = 4200 MB from the committed config) sits under its 8192 MB ceiling
+    — the real config must not raise a false positive."""
     _isolate(monkeypatch, tmp_path, {"gaming": ["whisper", "orpheus"]})
     _stub_gaming_online(monkeypatch)
 
@@ -149,15 +149,15 @@ def test_no_capacity_warning_when_under_ceiling(monkeypatch, tmp_path):
     hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
     g = hosts["gaming"]
     assert g["vram_mb"] == 8192
-    assert g["est_vram_mb"] == 4800  # 2000 + 2800, from config/models.yaml
+    assert g["est_vram_mb"] == 4200  # 2000 + 2200, from config/models.yaml
     assert g["capacity_warning"] is False
 
 
 def test_no_capacity_warning_with_full_voice_quartet(monkeypatch, tmp_path):
-    """gaming's post-#370 full voice quartet (whisper 2000 + orpheus 2800 +
-    whisper_translate 0 + whisper_vanilla 2000 = 6800 MB from the committed
-    config) sits under its 8192 MB ceiling — the real config must not raise
-    a false positive once all four backends are placed together."""
+    """gaming's worst-case voice set (whisper 2000 + orpheus 2200 as #422's
+    failover tenant + whisper_translate 0 + whisper_vanilla 2000 = 6200 MB
+    from the committed config) sits under its 8192 MB ceiling — the real
+    config must not raise a false positive with all four placed together."""
     _isolate(
         monkeypatch, tmp_path,
         {"gaming": ["whisper", "orpheus", "whisper_translate", "whisper_vanilla"]},
@@ -168,7 +168,7 @@ def test_no_capacity_warning_with_full_voice_quartet(monkeypatch, tmp_path):
     hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
     g = hosts["gaming"]
     assert g["vram_mb"] == 8192
-    assert g["est_vram_mb"] == 6800  # 2000 + 2800 + 0 + 2000, from config/models.yaml
+    assert g["est_vram_mb"] == 6200  # 2000 + 2200 + 0 + 2000, from config/models.yaml
     assert g["capacity_warning"] is False
 
 

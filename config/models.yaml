@@ -510,7 +510,7 @@ models:
     # first agentic_heavy request loads it (~tens of seconds from NVMe) and
     # 30 idle minutes unload it again, freeing the VRAM for the voice path.
     startup: on_demand
-    idle_unload_minutes: 31
+    idle_unload_minutes: 30
     # MoE IQ4_XS ~13.4 GB on GPU (row header), confirmed by the 2026-07-23
     # co-residency measurement (#386) ≈ 13400 MB — the single heaviest local
     # model; only fits the 16 GB tower.

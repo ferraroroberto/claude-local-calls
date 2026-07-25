@@ -6,6 +6,9 @@ httpx>=0.27
 pytest>=8.0
 anthropic>=0.40
 pyyaml>=6.0
+# Comment-preserving round-trip editing of config/models.yaml for the admin
+# UI's git-backed placement writes (#424) — pyyaml stays the fast read path.
+ruamel.yaml>=0.18
 huggingface_hub>=0.24
 psutil>=5.9
 

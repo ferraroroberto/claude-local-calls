@@ -181,6 +181,114 @@ def test_host_budgets_zero_when_nothing_reachable(monkeypatch):
     assert tower["resident_est_vram_mb"] == 0
 
 
+# --------------------------------------------------------------------- #
+# Editable placement (#424) — the config block on GET and the PUT
+# write endpoint's guard rails. The git transaction itself is covered in
+# tests/test_config_write.py; here the router contract is the unit.
+# --------------------------------------------------------------------- #
+
+def test_get_models_carries_config_block(monkeypatch):
+    monkeypatch.setattr(models_router, "snapshot_listening_pids", lambda: {})
+
+    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
+    cfg = body["config"]
+    assert cfg["write_enabled"] is True          # env pins tower, the writer
+    assert cfg["write_host"] == "tower"
+    assert isinstance(cfg["sha"], str) and cfg["sha"]
+    fleet = {h["id"]: h for h in cfg["fleet_hosts"]}
+    assert fleet["gaming"]["vram_mb"] == 8192
+    assert fleet["mac-mini-m4"]["vram_mb"] is None
+
+
+def test_placement_editable_flag_false_on_virtual_rows(monkeypatch):
+    monkeypatch.setattr(models_router, "snapshot_listening_pids", lambda: {})
+
+    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
+    assert _row(body, "orpheus")["placement"]["editable"] is True
+    assert _row(body, "qwen35_4b_nothink")["placement"]["editable"] is False
+
+
+def test_placement_put_403_off_write_host(monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "mac-mini-m4")
+
+    resp = _admin_client().put(
+        "/api/models/orpheus/placement",
+        json={"hosts": ["tower", "gaming"], "startup": "eager"},
+    )
+    assert resp.status_code == 403
+    assert "tower" in resp.json()["detail"]
+
+
+def test_placement_put_400_on_vram_overcommit(monkeypatch):
+    """The #375 hard gate travels through the endpoint: flipping gemma4_26b
+    to eager on tower is rejected before any file/git side effect, with the
+    arithmetic in the detail (the UI shows it inline)."""
+    resp = _admin_client().put(
+        "/api/models/gemma4_26b/placement",
+        json={"hosts": ["tower"], "startup": "eager", "idle_unload_minutes": None},
+    )
+    assert resp.status_code == 400
+    assert "overcommits" in resp.json()["detail"]
+
+
+def test_placement_put_400_on_schema_errors():
+    client = _admin_client()
+    resp = client.put(
+        "/api/models/orpheus/placement",
+        json={"hosts": ["tower", "atlantis"], "startup": "eager"},
+    )
+    assert resp.status_code == 400 and "unknown host" in resp.json()["detail"]
+
+    resp = client.put(
+        "/api/models/orpheus/placement",
+        json={"hosts": ["tower", "gaming"], "startup": "eager", "idle_unload_minutes": 30},
+    )
+    assert resp.status_code == 400
+    assert "on_demand" in resp.json()["detail"]
+
+
+def test_placement_put_success_schedules_peer_sync(monkeypatch):
+    calls = {}
+
+    def fake_apply(model_id, chain, startup, idle):
+        calls["args"] = (model_id, chain, startup, idle)
+        return {"ok": True, "changed": True, "commit": "abc1234", "config_sha": "abc1234"}
+
+    monkeypatch.setattr(models_router.config_write, "apply_placement", fake_apply)
+    monkeypatch.setattr(models_router, "_schedule_peer_sync", lambda: calls.setdefault("synced", True))
+
+    resp = _admin_client().put(
+        "/api/models/gemma4_26b/placement",
+        json={
+            "hosts": [{"id": "tower", "cpu": False}],
+            "startup": "on_demand",
+            "idle_unload_minutes": 31,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["commit"] == "abc1234"
+    assert calls["args"] == ("gemma4_26b", [{"id": "tower", "cpu": False}], "on_demand", 31)
+    assert calls.get("synced") is True
+
+
+def test_placement_put_noop_skips_peer_sync(monkeypatch):
+    monkeypatch.setattr(
+        models_router.config_write, "apply_placement",
+        lambda *a: {"ok": True, "changed": False, "commit": None, "config_sha": "abc1234"},
+    )
+    monkeypatch.setattr(
+        models_router, "_schedule_peer_sync",
+        lambda: (_ for _ in ()).throw(AssertionError("no-op must not restart satellites")),
+    )
+
+    resp = _admin_client().put(
+        "/api/models/gemma4_26b/placement",
+        json={"hosts": ["tower"], "startup": "on_demand", "idle_unload_minutes": 30},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["changed"] is False
+
+
 def test_piper_config_carries_no_device_arg():
     """config/models.yaml's piper row must not resurrect the dead
     `--device` arg piper.py never honored (#371) — piper.py's constructor

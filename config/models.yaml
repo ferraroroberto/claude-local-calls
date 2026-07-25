@@ -13,6 +13,11 @@
 hub:
   port: 8000
   bind_host: "0.0.0.0"
+  # Single-writer contract for the editable placement cards (#424): only the
+  # hub running as this host id may mutate this file from the admin UI (the
+  # write endpoints 403 everywhere else; satellites render read-only cards
+  # and converge by git pull). Unset = config writes disabled fleet-wide.
+  config_write_host: tower
 
 # System-tray launcher (`tray.bat` → `python -m tray`).
 # Drives what `tray/app.py` does on startup. All keys are optional.

@@ -713,6 +713,98 @@ h2 { display: flex; align-items: center; gap: 8px; }
   font-size: var(--font-caption);
   white-space: nowrap;
 }
+/* Edit affordance (#424) — compact inline icon control on the placement
+ * line, same sub-row scale as the glossary REPL row's delete button. */
+.placement-line .placement-edit-btn { width: 26px; min-height: 26px; }
+
+/* ---------- placement editor (#424, inline panel under a model row) ----------
+ * Same sibling-panel recipe as .glossary-panel — the panel sits next to
+ * .app-main so it (and its unsaved draft) survives the 5 s poll. */
+.placement-editor {
+  border-top: 1px solid var(--line);
+  background: var(--card-off);
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.placement-editor .opt-group-title { margin: 4px 0 0; }
+.pe-note { margin: 0; }
+.pe-chain { display: flex; flex-direction: column; gap: 6px; }
+.pe-host-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.pe-host-name { flex: 1 1 0; min-width: 0; font-size: var(--font-label); }
+.pe-cpu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+/* Compact inline chain controls — sub-row icon scale, same rationale as
+ * .glossary-repl-row .icon-btn. */
+.pe-host-row .icon-btn { width: 30px; min-height: 30px; flex-shrink: 0; }
+.pe-add-row { display: flex; gap: 8px; align-items: stretch; }
+.pe-add-row select {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--input-bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  font: inherit;
+  font-size: var(--font-label);
+}
+.pe-add-row .ghost-btn { flex-shrink: 0; }
+.pe-policy { display: flex; gap: 10px; flex-wrap: wrap; }
+.pe-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--font-caption);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.pe-field select,
+.pe-field input {
+  background: var(--input-bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  font: inherit;
+  font-size: var(--font-label);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.pe-field input[type="number"] { width: 110px; }
+.pe-field input[disabled] { opacity: 0.5; }
+/* Inline rejection detail — state color (danger), matching the login
+ * error's tone: the validation arithmetic is the message, keep it legible. */
+.pe-error {
+  margin: 0;
+  font-size: var(--font-caption);
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+}
+.pe-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Config-version chip (#424) in the Models card header. */
+.models-config-sha {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
 
 /* ---------- transcription dictionary editor (inline whisper-row panel) ---------- */
 .glossary-panel {

@@ -24,6 +24,7 @@ flowchart TB
     HOSTP["host_profile.py\nresolve active host"]
     OTELRECV["server_otel_receiver.py\nPOST /v1/metrics (OTLP receiver, issue #68)"]
     SVC["services.py\nDocker/Langfuse probe + launch_stack,\npeer health probe (issue #27, generalized #372)"]
+    CFGWRITE["config_write.py (issue #424)\nadmin placement edits write through to git:\nvalidate (#375 hard gate) -> ruamel comment-preserving\nmodels.yaml edit -> config-bot commit -> push origin main;\nsingle writer (hub.config_write_host) + drift sync loop"]
   end
   TRAY --> SRV
   RUNHUB --> SRV
@@ -161,6 +162,10 @@ flowchart TB
   WROUT -->|models tab| BACKPROC
   WROUT -->|fleet-placement tab: PATCH/reconcile| FLEETREC
   WROUT -.reads/writes.-> FLEETCFG
+  WROUT -->|models tab: PUT placement (#424)| CFGWRITE
+  CFGWRITE -.comment-preserving edit + commit + push.-> MODELSYAML
+  CFGWRITE -->|post-write + drift sync of satellites| REMOTEBOOT
+  LIFECYCLE -->|config drift loop| CFGWRITE
   WROUT -->|playground tab| SRV
 
   subgraph obs["Observability"]

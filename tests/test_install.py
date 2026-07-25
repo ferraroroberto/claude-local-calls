@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("LOCAL_LLM_HUB_HOST", "tower")
@@ -200,6 +202,163 @@ def test_linux_whisper_build_hint_uses_configured_arch(monkeypatch):
     assert "-DCMAKE_CUDA_ARCHITECTURES=61" in hint
     assert "whisper-server" in hint
     assert install_whisper_cpp.PINNED_TAG in hint
+
+
+# --------------------------------------------------------------- macOS from-source build (#413)
+
+
+def test_find_macos_asset_none_when_no_arm64_asset():
+    from scripts import install_whisper_cpp
+
+    release = {"assets": [{"name": "whisper-bin-x64.zip"}, {"name": "whisper-v1.8.6-xcframework.zip"}]}
+    assert install_whisper_cpp._find_macos_asset(release) is None
+
+
+def test_find_macos_asset_matches_when_present():
+    from scripts import install_whisper_cpp
+
+    release = {"assets": [{"name": "whisper-bin-x64.zip"}, {"name": "whisper-bin-arm64.zip"}]}
+    picked = install_whisper_cpp._find_macos_asset(release)
+    assert picked["name"] == "whisper-bin-arm64.zip"
+
+
+def test_pick_assets_no_longer_handles_darwin(monkeypatch):
+    from scripts import install_whisper_cpp
+    import pytest
+
+    monkeypatch.setattr(install_whisper_cpp.sys, "platform", "darwin")
+    with pytest.raises(install_whisper_cpp.InstallError, match="unsupported platform"):
+        install_whisper_cpp._pick_assets({"assets": []})
+
+
+def test_macos_find_cmake_prefers_path(monkeypatch):
+    from scripts import install_whisper_cpp
+
+    monkeypatch.setattr(install_whisper_cpp.shutil, "which", lambda name: "/usr/bin/cmake")
+    assert install_whisper_cpp._macos_find_cmake() == "/usr/bin/cmake"
+
+
+def test_macos_find_cmake_falls_back_to_homebrew_path(monkeypatch):
+    from scripts import install_whisper_cpp
+
+    monkeypatch.setattr(install_whisper_cpp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        install_whisper_cpp.Path, "exists",
+        lambda self: self.as_posix() == "/opt/homebrew/bin/cmake",
+    )
+    assert install_whisper_cpp._macos_find_cmake() == "/opt/homebrew/bin/cmake"
+
+
+def test_macos_find_cmake_none_when_absent_everywhere(monkeypatch):
+    from scripts import install_whisper_cpp
+
+    monkeypatch.setattr(install_whisper_cpp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(install_whisper_cpp.Path, "exists", lambda self: False)
+    assert install_whisper_cpp._macos_find_cmake() is None
+
+
+def test_macos_build_prereqs_raises_actionable_message_when_cmake_missing(monkeypatch):
+    from scripts import install_whisper_cpp
+    import pytest
+
+    monkeypatch.setattr(install_whisper_cpp, "_macos_find_cmake", lambda: None)
+    with pytest.raises(install_whisper_cpp.InstallError, match="brew install cmake"):
+        install_whisper_cpp._macos_build_prereqs()
+
+
+def test_macos_build_prereqs_raises_actionable_message_when_clt_missing(monkeypatch):
+    from scripts import install_whisper_cpp
+    import pytest
+
+    monkeypatch.setattr(install_whisper_cpp, "_macos_find_cmake", lambda: "/opt/homebrew/bin/cmake")
+
+    class _R:
+        returncode = 2
+
+    monkeypatch.setattr(install_whisper_cpp.subprocess, "run", lambda *a, **k: _R())
+    with pytest.raises(install_whisper_cpp.InstallError, match="xcode-select --install"):
+        install_whisper_cpp._macos_build_prereqs()
+
+
+def test_macos_build_prereqs_ok_returns_cmake_path(monkeypatch):
+    from scripts import install_whisper_cpp
+
+    monkeypatch.setattr(install_whisper_cpp, "_macos_find_cmake", lambda: "/opt/homebrew/bin/cmake")
+
+    class _R:
+        returncode = 0
+
+    monkeypatch.setattr(install_whisper_cpp.subprocess, "run", lambda *a, **k: _R())
+    assert install_whisper_cpp._macos_build_prereqs() == "/opt/homebrew/bin/cmake"
+
+
+def test_macos_build_from_source_flattens_dylibs_and_fixes_rpath(monkeypatch, tmp_path):
+    """Exercises the real flatten + symlink-preservation + rpath-fix control
+    flow against a synthetic build tree shaped like the real whisper.cpp
+    cmake output (nested dirs, versioned real .dylib + symlink chain) —
+    verified against an actual macOS build on mac-mini-m4 during development
+    (#413); this test locks in the Python-side file/process orchestration."""
+    from scripts import install_whisper_cpp
+
+    vendor_dir = tmp_path / "vendor"
+    monkeypatch.setattr(install_whisper_cpp, "VENDOR_DIR", vendor_dir)
+    monkeypatch.setattr(install_whisper_cpp.sys, "platform", "darwin")
+    monkeypatch.setattr(install_whisper_cpp, "_macos_build_prereqs", lambda: "/opt/homebrew/bin/cmake")
+
+    def _fake_mkdtemp(prefix=None):
+        d = tmp_path / "tmproot"
+        d.mkdir()
+        return str(d)
+
+    monkeypatch.setattr(install_whisper_cpp.tempfile, "mkdtemp", _fake_mkdtemp)
+
+    install_name_tool_calls = []
+
+    def _fake_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            src_dir = Path(cmd[-1])
+            src_dir.mkdir(parents=True)
+        elif cmd[0] == "/opt/homebrew/bin/cmake" and cmd[1] == "-B":
+            build_dir = Path(cmd[2])
+            build_dir.mkdir(parents=True)
+        elif cmd[0] == "/opt/homebrew/bin/cmake" and cmd[1] == "--build":
+            build_dir = Path(cmd[2])
+            bin_dir = build_dir / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "whisper-server").write_bytes(b"MACHO-BINARY")
+            base_real = build_dir / "ggml" / "src" / "libggml-base.0.13.1.dylib"
+            base_real.parent.mkdir(parents=True)
+            base_real.write_bytes(b"MACHO-DYLIB")
+            # Real whisper.cpp cmake output symlinks the unversioned/soname
+            # names to the fully-versioned real file. Creating actual OS
+            # symlinks needs elevated privilege on Windows dev machines, so
+            # these are plain files here — is_symlink() is monkeypatched
+            # below by name to stand in for that OS-level fact instead.
+            (build_dir / "ggml" / "src" / "libggml-base.0.dylib").write_bytes(b"MACHO-DYLIB")
+            (build_dir / "ggml" / "src" / "libggml-base.dylib").write_bytes(b"MACHO-DYLIB")
+        elif cmd[0] == "install_name_tool":
+            install_name_tool_calls.append(cmd[-1])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(install_whisper_cpp.subprocess, "run", _fake_run)
+
+    symlink_names = {"libggml-base.0.dylib", "libggml-base.dylib"}
+    monkeypatch.setattr(Path, "is_symlink", lambda self: self.name in symlink_names)
+
+    install_whisper_cpp._macos_build_from_source()
+
+    assert (vendor_dir / "whisper-server").read_bytes() == b"MACHO-BINARY"
+    assert (vendor_dir / "libggml-base.0.13.1.dylib").read_bytes() == b"MACHO-DYLIB"
+    assert (vendor_dir / "libggml-base.0.dylib").is_symlink()
+    assert (vendor_dir / "libggml-base.dylib").is_symlink()
+    # Only the real (non-symlink) files get install_name_tool -add_rpath —
+    # symlinks share the target's inode and would error as a duplicate.
+    assert sorted(install_name_tool_calls) == sorted([
+        str(vendor_dir / "whisper-server"),
+        str(vendor_dir / "libggml-base.0.13.1.dylib"),
+    ])
+    # The temp clone/build tree is cleaned up afterward.
+    assert not (tmp_path / "tmproot").exists()
 
 
 def test_detect_cuda_arch_empty_without_nvidia_smi(monkeypatch):

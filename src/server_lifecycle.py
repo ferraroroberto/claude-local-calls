@@ -25,6 +25,31 @@ from .hub_observability import OBS
 
 logger = logging.getLogger(__name__)
 
+# Tasks spawned by wire_observatory_loop, tracked so stop_background_tasks
+# can cancel them on shutdown -- see that function's docstring for why.
+_BACKGROUND_TASKS: list[asyncio.Task] = []
+
+
+async def stop_background_tasks() -> None:
+    """Cancel every perpetual task ``wire_observatory_loop`` spawned.
+
+    On a real process exit this wouldn't matter (the OS reclaims everything),
+    but the ASGI lifespan also tears down on every ``with TestClient(app) as
+    c:`` exit in the test suite -- and ``_fleet_reconcile_loop`` /
+    ``_model_failover_loop`` (each starts with a boot-delay ``asyncio.sleep``,
+    so a test's brief lifespan window usually catches them still sleeping)
+    would otherwise keep running in that torn-down loop, mutating the very
+    module-global state (``model_failover.TRACKER``, ``fleet_reconcile``'s
+    peer-transport hooks) that ``test_fleet_reconcile.py`` /
+    ``test_model_failover.py`` monkeypatch and assert on from the main thread
+    -- the order-dependent full-suite pollution in issue #416."""
+    tasks, _BACKGROUND_TASKS[:] = list(_BACKGROUND_TASKS), []
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
 
 async def stop_backend_children() -> None:
     """Tear down every model subprocess the hub spawned.
@@ -91,7 +116,7 @@ async def wire_observatory_loop() -> None:
     OBS.attach_loop(loop)
     HUB_LOG.attach_loop(loop)
     # Start the resource sampler. 2s tick × 150 samples = 5 min ring.
-    loop.create_task(_resource_sampler())
+    _BACKGROUND_TASKS.append(loop.create_task(_resource_sampler()))
 
     # Inherit any backend process left running on one of our ports by a
     # previous hub instance. Without this, every hub restart shows the
@@ -106,25 +131,25 @@ async def wire_observatory_loop() -> None:
 
     # The hub owns configured backend autostart so every launch surface
     # (tray, run_hub.bat, python -m src.run_backend hub) behaves the same.
-    loop.create_task(_autostart_configured_backends())
+    _BACKGROUND_TASKS.append(loop.create_task(_autostart_configured_backends()))
     # Same idea for Docker/Langfuse/AgentsView (issue #265) — the startup
     # profile's non-model service flags.
-    loop.create_task(_autostart_services())
+    _BACKGROUND_TASKS.append(loop.create_task(_autostart_services()))
     # Fleet always-on control plane (issue #353): converge every host to its
     # desired placement on boot + every few minutes. Since #374 this is also
     # the *sole* peer wake/sync mechanism — the old per-service mac_mini_sync
     # boot toggle folded into reconcile-on-boot (a peer with placed models is
     # woken + synced + started here; one with no placement is left asleep).
-    loop.create_task(_fleet_reconcile_loop())
+    _BACKGROUND_TASKS.append(loop.create_task(_fleet_reconcile_loop()))
     # Dynamic model fallback (issue #342): probe the hosts of every
     # multi-host ``hosts:`` chain and move ownership down/up the chain with
     # hysteresis. The task exits immediately when no enabled model declares
     # a multi-host chain, so pre-#342 configs pay nothing.
-    loop.create_task(_model_failover_loop())
+    _BACKGROUND_TASKS.append(loop.create_task(_model_failover_loop()))
     # Diagnostics (issue #315): close any capture orphaned by a previous hub
     # and arm the scheduled snapshot if it's enabled. No task is created when
     # it's off — the feature costs nothing until asked for.
-    loop.create_task(_init_diagnostics())
+    _BACKGROUND_TASKS.append(loop.create_task(_init_diagnostics()))
 
 
 async def _autostart_configured_backends() -> None:
@@ -303,6 +328,7 @@ def register(app) -> None:
     is FastAPI's still-supported (if deprecated) escape hatch for the
     decorator-less registration this module needs.
     """
+    app.on_event("shutdown")(stop_background_tasks)
     app.on_event("shutdown")(stop_backend_children)
     app.on_event("shutdown")(stop_diagnostics_sampler)
     app.on_event("startup")(wire_observatory_loop)

@@ -514,7 +514,7 @@ The Models tab tags every remote-owned tile with a small `on <host-id>`
 badge (e.g. `qwen3.5-9b` / `parakeet-tdt-0.6b-v3` both show `on
 mac-mini-m4`) so a displayed PID is never mistaken for a local process.
 
-**Read-only placement cards (#423).** Each process-backed row in the Models
+**Placement cards (#423).** Each process-backed row in the Models
 tab also renders its declared placement *intent* straight from
 `config/models.yaml`: the host chain in priority order (effective owner
 highlighted, `cpu: true` degraded tiers marked), a startup-policy badge that
@@ -524,8 +524,32 @@ owner host's VRAM budget bar (sum of the models currently resident there vs
 its `vram_mb` ceiling — the #375 grid math, tinted `attention` on
 overcommit; a host with no ceiling renders no bar). The data rides
 `GET /admin/api/models` as a per-row `placement` object plus a top-level
-`host_budgets` map. Purely informational — editing placement stays with the
-Fleet placement card below and the start/stop controls that already exist.
+`host_budgets` map.
+
+**Editable placement — the UI writes through to git (#424).** On the single
+write host (`hub.config_write_host` in `models.yaml` — the tower) each
+placement card gains an edit button that opens an inline editor: reorder /
+add / remove chain hosts from the fleet host list, toggle a host's degraded
+`cpu` tier, flip `eager` ↔ `on_demand`, set `idle_unload_minutes`. Saving
+`PUT`s `/admin/api/models/<id>/placement`, which **validates first** —
+schema (known hosts, no duplicates, every chain member cross-lists the model
+in its `enabled:`) plus the #375 VRAM budget as a *hard* gate: an edit whose
+eager, non-`cpu` chain members overcommit a host's `vram_mb` ceiling is
+rejected with the arithmetic inline, before any file change. An accepted
+edit mutates `config/models.yaml` comment-preservingly (ruamel.yaml
+round-trip — the file's comments survive byte-for-byte), commits as
+`config: <model> placement via admin UI` under the `local-llm-hub
+config-bot` author name, and pushes to `origin main`. The write refuses a
+dirty tracked file or a non-`main` checkout (409), and a failed push rolls
+the commit *and* the file back (502) — never a silent local-only divergence.
+Satellites converge automatically: a successful push fires the #181 sync
+(git pull + hub restart) at every hub peer, and a periodic drift loop on the
+write host re-syncs any satellite whose `models.yaml` sha lags (e.g. it was
+powered off during the push; it also catches up on next boot). The Models
+card header shows the config version (`cfg <sha>` — the models.yaml HEAD
+sha, also on `/admin/api/version` as `config_sha`), so drift between hubs is
+visible by comparing their `/admin` pages. Non-write hosts render the cards
+read-only and 403 the write endpoint.
 
 ### Fleet placement: always-on desired state (#353)
 
@@ -935,6 +959,8 @@ local-llm-hub/
 │   ├── gemini_cli.py         # Antigravity CLI (`agy`) wrapper via ConPTY (Google AI Pro)
 │   ├── openai_upstream.py    # httpx client + SSE think-strip pipeline
 │   ├── model_registry.py     # YAML loader (resolves display_name + aliases)
+│   ├── config_write.py       # git-backed models.yaml placement writes: validate → ruamel
+│   │                         #   edit → config-bot commit → push + drift sync (#424)
 │   ├── startup_profile.py    # config/startup_profile.json load/save (#265)
 │   ├── fleet_placement.py    # config/fleet_placement.json load/save — fleet desired state (#353)
 │   ├── fleet_reconcile.py    # additive reconcile loop: wake/write-through/start placed models (#353)

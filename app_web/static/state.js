@@ -73,6 +73,10 @@ export const state = {
   // Models tab — per-host VRAM budget context for the placement cards
   // (issue #423): host_id -> { vram_mb, resident_est_vram_mb }.
   hostBudgets: {},
+  // Models tab — config-as-code context (#424): models.yaml HEAD sha,
+  // whether this hub may write (tower only), and the fleet host list the
+  // chain editor offers. Null until the first /admin/api/models fetch.
+  modelsConfig: null,
 
   // Machines tab — fleet status/actions/terminal (issue #309).
   machinesStatus: null,     // last good /admin/api/machines/status payload
@@ -170,6 +174,7 @@ export const els = {
   modelsList: document.getElementById('modelsList'),
   modelsEmpty: document.getElementById('modelsEmpty'),
   modelsActiveToggle: document.getElementById('modelsActiveToggle'),
+  modelsConfigSha: document.getElementById('modelsConfigSha'),
 
   // Startup card (issue #265)
   startupList: document.getElementById('startupList'),

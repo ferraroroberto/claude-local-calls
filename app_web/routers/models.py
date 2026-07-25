@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 
 from src import backend_process as bp
+from src import config_write
 from src import services as svc
 from src.host_profile import all_hosts, get_host, resolve as resolve_host
 from src.model_failover import effective_owner
@@ -96,6 +97,9 @@ def _add_placement_fields(row: Dict[str, Any], m: Model) -> None:
         "startup": m.startup,
         "idle_unload_minutes": m.idle_unload_minutes,
         "est_vram_mb": m.est_vram_mb,
+        # #424: a virtual alias shares its parent row's process — its
+        # placement is the parent's, so the editor never opens on it.
+        "editable": not m.virtual,
     }
 
 
@@ -122,6 +126,19 @@ def _host_budgets(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {
         h: {"vram_mb": ceilings.get(h), "resident_est_vram_mb": resident.get(h, 0)}
         for h in sorted(hosts_seen)
+    }
+
+
+def _config_block() -> Dict[str, Any]:
+    """Config-as-code context for the Models tab (#424): the models.yaml
+    HEAD sha (the drift-visible config version), whether *this* hub may
+    write (single-writer contract — tower only), and the full fleet host
+    list the chain editor offers (with ceilings for context)."""
+    return {
+        "sha": config_write.config_sha(),
+        "write_enabled": config_write.is_write_host(),
+        "write_host": config_write.write_host_id(),
+        "fleet_hosts": [{"id": h.id, "vram_mb": h.vram_mb} for h in all_hosts()],
     }
 
 
@@ -276,7 +293,7 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
         rows.append(row)
 
     if local_only:
-        return {"models": rows, "host_budgets": _host_budgets(rows)}
+        return {"models": rows, "host_budgets": _host_budgets(rows), "config": _config_block()}
 
     # Remote-owned rows: one fetch per distinct owning host, merged in.
     # Trust the owner's own reachable/ownership/pid values — this hub has
@@ -300,7 +317,72 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
             _add_placement_fields(row, m)
             rows.append(row)
 
-    return {"models": rows, "host_budgets": _host_budgets(rows)}
+    return {"models": rows, "host_budgets": _host_budgets(rows), "config": _config_block()}
+
+
+# --------------------------------------------------------------------- #
+# Editable placement (#424) — the write-through-to-git path. Tower-only;
+# validation + the git transaction live in src.config_write.
+# --------------------------------------------------------------------- #
+
+# Strong references to in-flight peer-sync tasks — a bare create_task result
+# is GC-eligible and the sync would silently die mid-flight.
+_PEER_SYNC_TASKS: set = set()
+
+
+def _schedule_peer_sync() -> None:
+    """Fire the #181 sync (git pull + hub restart) at every hub peer after a
+    successful config push — the immediate leg of propagation; the periodic
+    drift loop (``config_drift_sync_loop``) is the catch-up net."""
+    from src import remote_bootstrap
+    from src.model_registry import hub_peer_ids
+
+    async def _sync(peer: str) -> None:
+        try:
+            result = await remote_bootstrap.sync_host(peer)
+            logger.info("🔃 post-write sync of %s: %s", peer, result)
+        except Exception as exc:  # noqa: BLE001 — drift loop retries later
+            logger.warning("post-write sync of %s raised: %s", peer, exc)
+
+    for peer in hub_peer_ids():
+        task = asyncio.create_task(_sync(peer))
+        _PEER_SYNC_TASKS.add(task)
+        task.add_done_callback(_PEER_SYNC_TASKS.discard)
+
+
+@router.put("/api/models/{model_id}/placement")
+async def model_placement_update(model_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Update a model's placement in config/models.yaml via the git-backed
+    write path (#424): validate (schema + #375 VRAM budget, hard-reject) →
+    comment-preserving YAML edit → config-bot commit → push to origin main
+    → background peer sync. 403 on every host but the declared writer.
+    """
+    if not config_write.is_write_host():
+        writer = config_write.write_host_id() or "(none configured)"
+        raise HTTPException(
+            status_code=403,
+            detail=f"config writes are only allowed on host {writer!r} — "
+                   f"this hub is {resolve_host().id!r}",
+        )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    chain, shape_errors = config_write.normalize_chain(payload.get("hosts"))
+    if shape_errors:
+        raise HTTPException(status_code=400, detail="; ".join(shape_errors))
+    startup = str(payload.get("startup") or "").strip().lower()
+    raw_idle = payload.get("idle_unload_minutes")
+    idle: Any = raw_idle
+    if isinstance(raw_idle, float) and raw_idle.is_integer():
+        idle = int(raw_idle)
+    try:
+        result = await asyncio.to_thread(
+            config_write.apply_placement, model_id, chain, startup, idle
+        )
+    except config_write.ConfigWriteError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc))
+    if result.get("changed"):
+        _schedule_peer_sync()
+    return result
 
 
 @router.post("/api/models/{model_id}/start")

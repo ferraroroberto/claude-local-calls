@@ -155,6 +155,11 @@ async def wire_observatory_loop() -> None:
     # ``idle_unload_minutes`` window. Cheap when no row opts in — the pass
     # scans the registry and finds no candidates.
     _BACKGROUND_TASKS.append(loop.create_task(_on_demand_idle_loop()))
+    # Config drift convergence (#424): on the single write host only, poll
+    # hub peers' models.yaml sha and re-fire the #181 sync at any satellite
+    # that missed a push-triggered sync (e.g. it was powered off). The task
+    # returns immediately on every non-writer host.
+    _BACKGROUND_TASKS.append(loop.create_task(_config_drift_loop()))
 
 
 async def _autostart_configured_backends() -> None:
@@ -275,6 +280,21 @@ async def _model_failover_loop() -> None:
         await model_failover.failover_loop(boot_delay_s=20.0)
     except Exception as exc:  # noqa: BLE001 — the shim must not crash startup
         logger.warning("model failover loop exited abnormally: %s", exc)
+
+
+async def _config_drift_loop() -> None:
+    """Periodic models.yaml drift sync across hub peers (issue #424).
+
+    Thin lifecycle shim — the write-host gate, the per-(peer, sha) attempt
+    memory, and the sync call live in ``src.config_write``
+    (``config_drift_sync_loop``), keeping the policy unit-testable.
+    """
+    from . import config_write
+
+    try:
+        await config_write.config_drift_sync_loop()
+    except Exception as exc:  # noqa: BLE001 — the shim must not crash startup
+        logger.warning("config drift loop exited abnormally: %s", exc)
 
 
 async def _on_demand_idle_loop() -> None:

@@ -8,7 +8,7 @@
  */
 
 import { els, state, MODELS_ACTIVE_ONLY_KEY } from './state.js';
-import { jsonApi, postJson, toast, escapeHtml } from './api.js';
+import { jsonApi, postJson, putJson, toast, escapeHtml } from './api.js';
 import { mountGlossaryEditor } from './glossary.js';
 import { icon } from './_vendored/icons/icons.js';
 
@@ -17,8 +17,24 @@ export async function fetchModels() {
     const body = await jsonApi('/admin/api/models');
     state.models = body.models || [];
     state.hostBudgets = body.host_budgets || {};
+    state.modelsConfig = body.config || null;
+    renderConfigChip();
     renderModels();
   } catch (_) { /* ignore */ }
+}
+
+/* models.yaml config-version chip (#424) — the HEAD sha of the file, shown
+ * in the card header. Every converged hub shows the same sha, so drift
+ * between hubs is visible by comparing their /admin pages at a glance. */
+function renderConfigChip() {
+  const el = els.modelsConfigSha;
+  if (!el) return;
+  const cfg = state.modelsConfig;
+  const sha = cfg && cfg.sha && cfg.sha !== 'unknown' ? cfg.sha : '';
+  el.textContent = sha ? 'cfg ' + sha : '';
+  el.title = sha
+    ? 'models.yaml config version (HEAD sha of config/models.yaml) — the same on every converged hub'
+    : '';
 }
 
 // A row counts as "active" only if it's a controllable backend that's
@@ -161,12 +177,16 @@ function fillItem(li, m) {
     (m.aliases && m.aliases.length ? ' · ' + m.aliases.join(', ') : '');
   main.appendChild(meta);
 
-  // Read-only placement card (#423) — declared intent under the runtime meta.
-  const placement = buildPlacement(m);
+  // Placement card (#423) — declared intent under the runtime meta; the
+  // edit affordance (#424) rides it on the write host.
+  const editorOpen = !!li.querySelector(':scope > .placement-editor');
+  const placement = buildPlacement(m, editorOpen);
   if (placement) main.appendChild(placement);
 
-  // Keep .app-main as the first child so any dictionary panel stays below it.
-  const panel = li.querySelector(':scope > .glossary-panel');
+  // Keep .app-main as the first child so any inline panel (dictionary or
+  // placement editor — both siblings, so they survive the 5 s poll) stays
+  // below it.
+  const panel = li.querySelector(':scope > .glossary-panel, :scope > .placement-editor');
   if (panel) {
     li.insertBefore(main, panel);
   } else if (main.parentNode !== li) {
@@ -182,8 +202,8 @@ function fillItem(li, m) {
  * rows, the static VRAM estimate, and the owner host's budget bar (resident
  * estimate vs declared ceiling — the #375 grid math, surfaced per row).
  * Subscription rows (claude/gemini) carry no `placement` key and get nothing.
- * Everything here is read-only — mutation stays with start/stop (Phase 3). */
-function buildPlacement(m) {
+ * On the single write host (#424) an edit button opens the inline editor. */
+function buildPlacement(m, editorOpen) {
   const p = m.placement;
   if (!p) return null;
   const wrap = document.createElement('div');
@@ -224,6 +244,21 @@ function buildPlacement(m) {
     vr.textContent = '~' + fmtGb(p.est_vram_mb) + ' VRAM';
     vr.title = 'Static worst-case GPU-VRAM estimate (est_vram_mb) — not live telemetry';
     line.appendChild(vr);
+  }
+
+  // Edit affordance (#424): only where this hub may write (tower — the
+  // single-writer contract) and the row's placement is its own (a virtual
+  // alias shares its parent's process, so `editable` is false there).
+  if (canEditPlacement(m)) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'icon-btn placement-edit-btn' + (editorOpen ? ' active' : '');
+    btn.dataset.act = 'edit-placement';
+    btn.title = 'Edit placement (writes to config/models.yaml)';
+    btn.setAttribute('aria-label', btn.title);
+    btn.innerHTML = icon('wrench');
+    btn.addEventListener('click', function () { togglePlacementEditor(m); });
+    line.appendChild(btn);
   }
   wrap.appendChild(line);
 
@@ -286,6 +321,267 @@ function budgetBar(m) {
 // MB → compact "X.X GB" (same formatting as the fleet grid's capacity note).
 function fmtGb(mb) {
   return (Number(mb || 0) / 1024).toFixed(1) + ' GB';
+}
+
+/* ---------- placement editor (#424) ----------
+ * Inline panel under a model row that edits its declared placement — hosts
+ * chain (reorder / add / remove / cpu tier), startup policy, idle-unload
+ * window — and PUTs it to /admin/api/models/<id>/placement, which validates
+ * hard (schema + the #375 VRAM budget) and then writes through to git
+ * (comment-preserving models.yaml edit, config-bot commit, push).
+ *
+ * Same sibling-panel recipe as the dictionary editor: the panel lives NEXT
+ * to .app-main inside the <li>, so the 5 s poll's .app-main rebuild leaves
+ * an open editor (and its unsaved draft) intact. Only rendered where the
+ * server says this hub may write (config.write_enabled — tower only). */
+function canEditPlacement(m) {
+  return !!(state.modelsConfig && state.modelsConfig.write_enabled &&
+    m.placement && m.placement.editable !== false);
+}
+
+function togglePlacementEditor(m) {
+  const root = els.modelsList;
+  if (!root) return;
+  const li = root.querySelector('.app-item[data-id="' + cssEscape(m.id) + '"]');
+  if (!li) return;
+  const alreadyOpen = !!li.querySelector(':scope > .placement-editor');
+  closeAllPlacementEditors(root);
+  if (alreadyOpen) return;
+  const panel = document.createElement('div');
+  panel.className = 'placement-editor';
+  li.appendChild(panel);
+  mountPlacementEditor(panel, m);
+  const btn = li.querySelector('.icon-btn[data-act="edit-placement"]');
+  if (btn) btn.classList.add('active');
+}
+
+function closeAllPlacementEditors(root) {
+  root.querySelectorAll('.placement-editor').forEach(function (p) { p.remove(); });
+  root.querySelectorAll('.icon-btn[data-act="edit-placement"].active')
+    .forEach(function (b) { b.classList.remove('active'); });
+}
+
+function mountPlacementEditor(panel, m) {
+  const p = m.placement || {};
+  const draft = {
+    chain: (p.chain || []).map(function (e) { return { id: e.id, cpu: !!e.cpu }; }),
+    startup: p.startup === 'on_demand' ? 'on_demand' : 'eager',
+    idle: p.idle_unload_minutes || null,
+  };
+  let errorMsg = '';
+  let saving = false;
+
+  function fleetHosts() {
+    const cfg = state.modelsConfig;
+    return (cfg && cfg.fleet_hosts) || [];
+  }
+
+  function move(i, delta) {
+    const j = i + delta;
+    if (j < 0 || j >= draft.chain.length) return;
+    const tmp = draft.chain[i];
+    draft.chain[i] = draft.chain[j];
+    draft.chain[j] = tmp;
+    render();
+  }
+
+  async function save() {
+    errorMsg = '';
+    saving = true;
+    render();
+    try {
+      const body = await putJson(
+        '/admin/api/models/' + encodeURIComponent(m.id) + '/placement',
+        {
+          hosts: draft.chain,
+          startup: draft.startup,
+          idle_unload_minutes:
+            draft.startup === 'on_demand' && draft.idle ? Number(draft.idle) : null,
+        }
+      );
+      if (body.changed) {
+        toast('Committed ' + (body.commit || '') + ' — syncing satellites', 'good');
+      } else {
+        toast('No changes — placement already matches', 'good');
+      }
+      closeAllPlacementEditors(els.modelsList);
+      fetchModels();
+    } catch (exc) {
+      // Inline, not just a toast: the validation detail (e.g. the VRAM
+      // overcommit arithmetic) is the whole point of the rejection.
+      errorMsg = String(exc.message || exc);
+      saving = false;
+      render();
+    }
+  }
+
+  function render() {
+    panel.replaceChildren();
+
+    const note = document.createElement('p');
+    note.className = 'pe-note muted small';
+    note.textContent =
+      'Edits are validated (schema + VRAM budget), then committed to config/models.yaml and pushed — satellites sync automatically.';
+    panel.appendChild(note);
+
+    const title = document.createElement('div');
+    title.className = 'opt-group-title';
+    title.textContent = 'Hosts chain — priority order';
+    panel.appendChild(title);
+
+    const list = document.createElement('div');
+    list.className = 'pe-chain';
+    draft.chain.forEach(function (entry, i) {
+      const row = document.createElement('div');
+      row.className = 'pe-host-row';
+      row.dataset.host = entry.id;
+
+      const name = document.createElement('span');
+      name.className = 'pe-host-name';
+      name.textContent = entry.id;
+      row.appendChild(name);
+
+      const cpuLabel = document.createElement('label');
+      cpuLabel.className = 'pe-cpu-label muted small';
+      const cpu = document.createElement('input');
+      cpu.type = 'checkbox';
+      cpu.className = 'pe-cpu';
+      cpu.checked = entry.cpu;
+      cpu.addEventListener('change', function () { entry.cpu = cpu.checked; });
+      cpuLabel.appendChild(cpu);
+      cpuLabel.appendChild(document.createTextNode(' cpu tier'));
+      cpuLabel.title = 'Degraded CPU-offload last resort (#342) — holds no VRAM';
+      row.appendChild(cpuLabel);
+
+      const controls = [
+        { cls: 'pe-up', glyph: 'chevron-up', label: 'Move up', disabled: i === 0, fn: function () { move(i, -1); } },
+        { cls: 'pe-down', glyph: 'chevron-down', label: 'Move down', disabled: i === draft.chain.length - 1, fn: function () { move(i, 1); } },
+        { cls: 'pe-remove', glyph: 'x', label: 'Remove host', danger: true, fn: function () { draft.chain.splice(i, 1); render(); } },
+      ];
+      controls.forEach(function (c) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'icon-btn ' + c.cls + (c.danger ? ' danger' : '');
+        b.title = c.label;
+        b.setAttribute('aria-label', c.label);
+        b.disabled = !!c.disabled;
+        b.innerHTML = icon(c.glyph);
+        b.addEventListener('click', c.fn);
+        row.appendChild(b);
+      });
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+
+    const inChain = {};
+    draft.chain.forEach(function (e) { inChain[e.id] = true; });
+    const addable = fleetHosts().filter(function (h) { return !inChain[h.id]; });
+    if (addable.length) {
+      const addRow = document.createElement('div');
+      addRow.className = 'pe-add-row';
+      const sel = document.createElement('select');
+      sel.className = 'pe-add-select';
+      sel.setAttribute('aria-label', 'Host to add to the chain');
+      addable.forEach(function (h) {
+        const opt = document.createElement('option');
+        opt.value = h.id;
+        opt.textContent = h.id + (h.vram_mb ? ' · ' + fmtGb(h.vram_mb) + ' VRAM' : '');
+        sel.appendChild(opt);
+      });
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'ghost-btn pe-add-btn';
+      addBtn.innerHTML = icon('plus') + 'Add host';
+      addBtn.addEventListener('click', function () {
+        if (!sel.value) return;
+        draft.chain.push({ id: sel.value, cpu: false });
+        render();
+      });
+      addRow.appendChild(sel);
+      addRow.appendChild(addBtn);
+      panel.appendChild(addRow);
+    }
+
+    const policyTitle = document.createElement('div');
+    policyTitle.className = 'opt-group-title';
+    policyTitle.textContent = 'Lifecycle';
+    panel.appendChild(policyTitle);
+
+    const policy = document.createElement('div');
+    policy.className = 'pe-policy';
+
+    const startupLabel = document.createElement('label');
+    startupLabel.className = 'pe-field';
+    startupLabel.appendChild(document.createTextNode('Startup'));
+    const startupSel = document.createElement('select');
+    startupSel.className = 'pe-startup';
+    [
+      { v: 'eager', t: 'eager — always on' },
+      { v: 'on_demand', t: 'on-demand — load on first request' },
+    ].forEach(function (o) {
+      const opt = document.createElement('option');
+      opt.value = o.v;
+      opt.textContent = o.t;
+      if (draft.startup === o.v) opt.selected = true;
+      startupSel.appendChild(opt);
+    });
+    startupSel.addEventListener('change', function () {
+      draft.startup = startupSel.value;
+      render();
+    });
+    startupLabel.appendChild(startupSel);
+    policy.appendChild(startupLabel);
+
+    const idleLabel = document.createElement('label');
+    idleLabel.className = 'pe-field';
+    idleLabel.appendChild(document.createTextNode('Idle unload (min)'));
+    const idle = document.createElement('input');
+    idle.type = 'number';
+    idle.min = '1';
+    idle.step = '1';
+    idle.className = 'pe-idle';
+    idle.placeholder = 'never';
+    idle.value = draft.idle == null ? '' : String(draft.idle);
+    idle.disabled = draft.startup !== 'on_demand';
+    idle.title = draft.startup === 'on_demand'
+      ? 'Minutes without a request before the idle watchdog unloads the backend (empty = stays up)'
+      : 'Only applies to on-demand rows';
+    idle.addEventListener('input', function () {
+      const v = parseInt(idle.value, 10);
+      draft.idle = Number.isFinite(v) && v > 0 ? v : null;
+    });
+    idleLabel.appendChild(idle);
+    policy.appendChild(idleLabel);
+    panel.appendChild(policy);
+
+    const err = document.createElement('div');
+    err.className = 'pe-error';
+    err.setAttribute('role', 'alert');
+    err.hidden = !errorMsg;
+    err.textContent = errorMsg;
+    panel.appendChild(err);
+
+    const actions = document.createElement('div');
+    actions.className = 'pe-actions';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'ghost-btn primary pe-save';
+    saveBtn.innerHTML = icon('save') + (saving ? 'Saving…' : 'Save & commit');
+    saveBtn.disabled = saving;
+    saveBtn.addEventListener('click', save);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'ghost-btn pe-cancel';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', function () {
+      closeAllPlacementEditors(els.modelsList);
+    });
+    actions.appendChild(saveBtn);
+    actions.appendChild(cancelBtn);
+    panel.appendChild(actions);
+  }
+
+  render();
 }
 
 function badge(m) {

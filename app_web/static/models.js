@@ -16,6 +16,7 @@ export async function fetchModels() {
   try {
     const body = await jsonApi('/admin/api/models');
     state.models = body.models || [];
+    state.hostBudgets = body.host_budgets || {};
     renderModels();
   } catch (_) { /* ignore */ }
 }
@@ -160,6 +161,10 @@ function fillItem(li, m) {
     (m.aliases && m.aliases.length ? ' · ' + m.aliases.join(', ') : '');
   main.appendChild(meta);
 
+  // Read-only placement card (#423) — declared intent under the runtime meta.
+  const placement = buildPlacement(m);
+  if (placement) main.appendChild(placement);
+
   // Keep .app-main as the first child so any dictionary panel stays below it.
   const panel = li.querySelector(':scope > .glossary-panel');
   if (panel) {
@@ -167,6 +172,120 @@ function fillItem(li, m) {
   } else if (main.parentNode !== li) {
     li.appendChild(main);
   }
+}
+
+/* ---------- read-only placement card (#423) ----------
+ * Renders the declared placement *intent* from config/models.yaml (the Phase 1
+ * #422 registry fields the API now carries per row): the host chain in
+ * priority order with the effective owner highlighted and degraded cpu tiers
+ * marked, a startup-policy badge that reads the live state for on-demand
+ * rows, the static VRAM estimate, and the owner host's budget bar (resident
+ * estimate vs declared ceiling — the #375 grid math, surfaced per row).
+ * Subscription rows (claude/gemini) carry no `placement` key and get nothing.
+ * Everything here is read-only — mutation stays with start/stop (Phase 3). */
+function buildPlacement(m) {
+  const p = m.placement;
+  if (!p) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'placement';
+
+  const line = document.createElement('div');
+  line.className = 'placement-line';
+
+  const chain = p.chain || [];
+  if (chain.length) {
+    const chainEl = document.createElement('span');
+    chainEl.className = 'placement-chain';
+    chain.forEach(function (entry, i) {
+      if (i) {
+        const sep = document.createElement('span');
+        sep.className = 'placement-arrow';
+        sep.textContent = '›';
+        sep.setAttribute('aria-hidden', 'true');
+        chainEl.appendChild(sep);
+      }
+      const owner = entry.id === m.host;
+      const pill = document.createElement('span');
+      pill.className = 'place-pill' + (owner ? ' owner' : '');
+      pill.textContent = entry.id + (entry.cpu ? ' · cpu' : '');
+      pill.title = (owner ? 'Active owner'
+        : (i === 0 ? 'Preferred host' : 'Fallback host'))
+        + (entry.cpu ? ' — degraded CPU tier' : '');
+      chainEl.appendChild(pill);
+    });
+    line.appendChild(chainEl);
+  }
+
+  line.appendChild(startupBadge(m, p));
+
+  if (p.est_vram_mb) {
+    const vr = document.createElement('span');
+    vr.className = 'placement-vram muted';
+    vr.textContent = '~' + fmtGb(p.est_vram_mb) + ' VRAM';
+    vr.title = 'Static worst-case GPU-VRAM estimate (est_vram_mb) — not live telemetry';
+    line.appendChild(vr);
+  }
+  wrap.appendChild(line);
+
+  const budget = budgetBar(m);
+  if (budget) wrap.appendChild(budget);
+  return wrap;
+}
+
+/* Startup policy badge: `eager` is the quiet default; an on-demand row reads
+ * its live state honestly — "loaded" while the backend answers, else
+ * "idle-unloaded" (stopped by the idle watchdog or never yet demanded). */
+function startupBadge(m, p) {
+  const el = document.createElement('span');
+  if (p.startup === 'on_demand') {
+    const idleNote = p.idle_unload_minutes
+      ? 'Loads on first request; unloads after ' + p.idle_unload_minutes + ' min idle'
+      : 'Loads on first request; stays up until stopped';
+    if (m.reachable) {
+      el.className = 'badge good';
+      el.textContent = 'on-demand · loaded';
+    } else {
+      el.className = 'badge';
+      el.textContent = 'on-demand · idle-unloaded';
+    }
+    el.title = idleNote;
+  } else {
+    el.className = 'badge';
+    el.textContent = 'eager';
+    el.title = 'Always-on: autostarted and kept resident';
+  }
+  return el;
+}
+
+/* The owner host's VRAM budget bar: resident estimate vs declared ceiling.
+ * Hosts with no `vram_mb` ceiling (Apple-silicon unified memory) render no
+ * bar — there is no honest denominator (#375). Overcommit tints the fill
+ * `attention`, matching the fleet grid's advisory warning. */
+function budgetBar(m) {
+  const b = m.host && state.hostBudgets ? state.hostBudgets[m.host] : null;
+  if (!b || !b.vram_mb) return null;
+  const used = b.resident_est_vram_mb || 0;
+  const pct = Math.min(100, Math.round((used / b.vram_mb) * 100));
+  const row = document.createElement('div');
+  row.className = 'placement-budget';
+  row.title = 'Estimated VRAM of models currently resident on ' + m.host
+    + ' vs its ' + fmtGb(b.vram_mb) + ' ceiling — static estimates, not live telemetry';
+  const bar = document.createElement('span');
+  bar.className = 'placement-budget-bar' + (used > b.vram_mb ? ' over' : '');
+  const fill = document.createElement('span');
+  fill.style.width = pct + '%';
+  bar.appendChild(fill);
+  const label = document.createElement('span');
+  label.className = 'placement-budget-label muted';
+  label.textContent = m.host + ' · ' + fmtGb(used) + ' / ' + fmtGb(b.vram_mb);
+  row.appendChild(bar);
+  row.appendChild(label);
+  return row;
+}
+
+// MB → compact "X.X GB" (same formatting as the fleet grid's capacity note).
+function fmtGb(mb) {
+  return (Number(mb || 0) / 1024).toFixed(1) + ' GB';
 }
 
 function badge(m) {

@@ -97,6 +97,90 @@ def test_device_probe_not_fired_for_non_tts_backend(monkeypatch):
     assert "device" not in row
 
 
+# --------------------------------------------------------------------- #
+# Read-only placement fields (#423) — declared intent per row + per-host
+# VRAM budget context, consumed by the Models tab's placement cards.
+# --------------------------------------------------------------------- #
+
+def test_placement_fields_on_local_rows(monkeypatch):
+    """A local process row carries its declared chain, startup policy, and
+    VRAM estimate — orpheus pins the #422 tower-primary/gaming-fallback
+    chain, gemma4_26b pins on_demand + idle_unload_minutes."""
+    monkeypatch.setattr(models_router, "snapshot_listening_pids", lambda: {})
+
+    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
+
+    orpheus = _row(body, "orpheus")
+    p = orpheus["placement"]
+    assert [e["id"] for e in p["chain"]] == ["tower", "gaming"]
+    assert all(e["cpu"] is False for e in p["chain"])
+    assert p["startup"] == "eager"
+    assert p["idle_unload_minutes"] is None
+    assert p["est_vram_mb"] == 2200
+
+    gemma = _row(body, "gemma4_26b")
+    assert gemma["placement"]["startup"] == "on_demand"
+    assert gemma["placement"]["idle_unload_minutes"] == 30
+    assert gemma["placement"]["est_vram_mb"] == 13400
+
+
+def test_placement_absent_on_subscription_rows(monkeypatch):
+    """Claude/Gemini rows have no placement concept — the key must be absent
+    entirely, not an empty shell."""
+    monkeypatch.setattr(models_router, "snapshot_listening_pids", lambda: {})
+
+    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
+    assert "placement" not in _row(body, "claude_haiku")
+    assert "placement" not in _row(body, "gemini_flash")
+
+
+def test_placement_chain_marks_cpu_tier_on_remote_row(monkeypatch):
+    """The whisper chain's degraded last-resort tier ({id: tower, cpu: true})
+    surfaces as cpu=True — stamped from the local registry even when the
+    owning hub is unreachable (offline fallback row)."""
+    monkeypatch.setattr(models_router, "snapshot_listening_pids", lambda: {})
+
+    async def _offline(profile, **kwargs):
+        return None
+
+    monkeypatch.setattr(models_router.svc, "remote_models", _offline)
+
+    body = _admin_client().get("/api/models").json()
+    chain = _row(body, "whisper")["placement"]["chain"]
+    assert chain == [
+        {"id": "gaming", "cpu": False},
+        {"id": "mac-mini-m4", "cpu": False},
+        {"id": "tower", "cpu": True},
+    ]
+
+
+def test_host_budgets_sum_reachable_rows(monkeypatch):
+    """host_budgets carries the tower's declared ceiling and sums est_vram_mb
+    over the rows currently reachable there — qwen35_4b (2100) + gemma4_26b
+    (13400); the co-listening virtual alias contributes 0."""
+    monkeypatch.setattr(
+        models_router, "snapshot_listening_pids",
+        lambda: {8087: [111], 8088: [222]},
+    )
+    monkeypatch.setattr(bp, "is_reachable", lambda m, timeout=1.5: True)
+
+    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
+    tower = body["host_budgets"]["tower"]
+    assert tower["vram_mb"] == 16384
+    assert tower["resident_est_vram_mb"] == 2100 + 13400
+
+
+def test_host_budgets_zero_when_nothing_reachable(monkeypatch):
+    """No reachable process rows → the tower budget reports 0 resident MB
+    (claude/gemini rows are 'reachable' but estimate-less, contributing 0)."""
+    monkeypatch.setattr(models_router, "snapshot_listening_pids", lambda: {})
+
+    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
+    tower = body["host_budgets"]["tower"]
+    assert tower["vram_mb"] == 16384
+    assert tower["resident_est_vram_mb"] == 0
+
+
 def test_piper_config_carries_no_device_arg():
     """config/models.yaml's piper row must not resurrect the dead
     `--device` arg piper.py never honored (#371) — piper.py's constructor

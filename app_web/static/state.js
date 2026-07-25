@@ -70,6 +70,9 @@ export const state = {
 
   // Models tab — "Active only" filter, default on (issue #266).
   modelsActiveOnly: true,
+  // Models tab — per-host VRAM budget context for the placement cards
+  // (issue #423): host_id -> { vram_mb, resident_est_vram_mb }.
+  hostBudgets: {},
 
   // Machines tab — fleet status/actions/terminal (issue #309).
   machinesStatus: null,     // last good /admin/api/machines/status payload

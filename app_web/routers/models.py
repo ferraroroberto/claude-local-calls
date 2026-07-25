@@ -13,9 +13,14 @@ from fastapi import APIRouter, HTTPException
 
 from src import backend_process as bp
 from src import services as svc
-from src.host_profile import get_host, resolve as resolve_host
+from src.host_profile import all_hosts, get_host, resolve as resolve_host
 from src.model_failover import effective_owner
-from src.model_registry import Model, enabled_models, resolve as resolve_model
+from src.model_registry import (
+    Model,
+    all_models,
+    enabled_models,
+    resolve as resolve_model,
+)
 from src.remote_proxy import remote_auth_token_for_model, remote_base_url
 from app_web.admin_forward import forward_admin_request
 from src.server_process import (
@@ -69,6 +74,55 @@ def _add_failover_fields(row: Dict[str, Any], m: Model, owner_id: str) -> None:
         return
     row["preferred_host"] = m.host_chain[0]
     row["failover"] = owner_id != m.host_chain[0]
+
+
+def _add_placement_fields(row: Dict[str, Any], m: Model) -> None:
+    """Annotate a tile row with its declared placement *intent* (#423) — the
+    Phase 1 (#422) registry fields the read-only placement card renders.
+
+    Config-derived from the local registry, never trusted from a peer: the
+    YAML is the fleet-wide source of truth and every hub reads the same file,
+    so stamping it locally keeps the payload shape independent of the owning
+    hub's version. Subscription rows (claude/gemini) have no placement
+    concept — no chain, no process, no VRAM — so they carry no ``placement``
+    key at all rather than an empty shell the UI would have to special-case.
+    """
+    if m.backend in ("claude", "gemini"):
+        return
+    row["placement"] = {
+        # Declared chain in priority order; ``cpu`` marks the degraded
+        # CPU-offload tier (#342). A bare ``host:`` row is a 1-element chain.
+        "chain": [{"id": h, "cpu": h in m.cpu_hosts} for h in m.host_chain],
+        "startup": m.startup,
+        "idle_unload_minutes": m.idle_unload_minutes,
+        "est_vram_mb": m.est_vram_mb,
+    }
+
+
+def _host_budgets(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Per-host VRAM budget context for the placement cards (#423).
+
+    Reuses the #375 grid's math shape: ``vram_mb`` is the host's declared
+    ceiling (``None`` for hosts with no discrete-VRAM notion — Apple-silicon
+    unified memory — which never warn), ``resident_est_vram_mb`` sums the
+    static ``est_vram_mb`` estimates of the models *currently reachable* on
+    that host (the grid's "running" leg; estimates come from the local
+    registry, keyed by id, so a peer's payload version can't skew the sum).
+    Only hosts that own at least one row in this payload appear.
+    """
+    est = {m.id: m.est_vram_mb or 0 for m in all_models()}
+    resident: Dict[str, int] = {}
+    for r in rows:
+        host = r.get("host")
+        if not host or not r.get("reachable"):
+            continue
+        resident[host] = resident.get(host, 0) + est.get(r.get("id"), 0)
+    ceilings = {h.id: h.vram_mb for h in all_hosts()}
+    hosts_seen = {r.get("host") for r in rows if r.get("host")}
+    return {
+        h: {"vram_mb": ceilings.get(h), "resident_est_vram_mb": resident.get(h, 0)}
+        for h in sorted(hosts_seen)
+    }
 
 
 def _require_model(model_id: str) -> Model:
@@ -216,12 +270,13 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
             "host": active.id,
         }
         _add_failover_fields(row, m, active.id)
+        _add_placement_fields(row, m)
         if device:
             row["device"] = device
         rows.append(row)
 
     if local_only:
-        return {"models": rows}
+        return {"models": rows, "host_budgets": _host_budgets(rows)}
 
     # Remote-owned rows: one fetch per distinct owning host, merged in.
     # Trust the owner's own reachable/ownership/pid values — this hub has
@@ -242,9 +297,10 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
             else:
                 row = _offline_remote_row(m, host_id)
             _add_failover_fields(row, m, host_id)
+            _add_placement_fields(row, m)
             rows.append(row)
 
-    return {"models": rows}
+    return {"models": rows, "host_budgets": _host_budgets(rows)}
 
 
 @router.post("/api/models/{model_id}/start")

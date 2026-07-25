@@ -369,6 +369,37 @@ def resolve(name: str, host: Optional[HostProfile] = None) -> Optional[Model]:
     return None
 
 
+def resolve_any(name: str) -> Optional[Model]:
+    """Look up a model by any of its names across **every** configured row,
+    ignoring the active host's ``enabled:`` whitelist.
+
+    The host-blind companion to :func:`resolve`. Answers a different question:
+    not "can I serve this here?" but "is this name one of *our* model ids at
+    all?". The audio proxy needs exactly that distinction to keep an explicit
+    ``model=`` strict (issue #412): a configured id that can't be served here
+    must fail loudly rather than fall through to the role chain and be
+    answered by a different model, while a name the registry has never heard
+    of (a client-side placeholder like OpenAI's ``whisper-1``) is not a model
+    request at all and still addresses the role.
+
+    Matching is **case-insensitive** (and whitespace-tolerant), unlike
+    :func:`resolve`. That asymmetry is deliberate: this function answers "did
+    the caller *name* one of our models?", and someone who typed ``Whisper``
+    named whisper — treating it as an unknown id would drop them onto the role
+    chain and hand back a 200 produced by a different model, exactly the
+    silence #412 abolishes. :func:`resolve` stays exact because its callers
+    (dispatch, ``/v1/models``, the admin model control) key off the canonical
+    name; pair the two by resolving *this* row's ``id`` there.
+    """
+    key = (name or "").strip().lower()
+    if not key:
+        return None
+    for m in all_models():
+        if key in {n.lower() for n in m.all_names}:
+            return m
+    return None
+
+
 def audio_role_chain(role_key: str) -> List[str]:
     """Ordered model-id chain for an audio role (issue #348).
 

@@ -39,7 +39,22 @@ STATS_RING_MAX = 150  # 150 samples × 2s tick = 5 min
 class RequestRecord:
     ts: float                 # wall-clock epoch seconds
     path: str                 # e.g. "/v1/messages"
-    model: str = ""           # request model alias the client sent
+    model: str = ""           # request model alias the client sent (what was *asked* for)
+    # Model id that actually served the request, when the hub resolved the
+    # requested name to something else — a role alias (``audio_transcribe``)
+    # landing on a chain member, or a chain fallback taking over. Empty when
+    # nothing resolved it (the ordinary chat paths) — never guess: a consumer
+    # reads "requested=X served=Y" only when this is set (issue #412).
+    served_model: str = ""
+    # Host id that actually served the request — the missing dimension behind
+    # the #405 false pass: a `model=whisper` answered 200 by a host with no
+    # whisper bound was a legitimate remote hop to whisper's owner, and the
+    # record had no field that said so (``client`` is the *caller*, not the
+    # server). Set on the audio paths: the active host for a locally-served
+    # request, the owning host for a remote-proxy hop, and whatever the peer
+    # hub reports when it answers with its own ``X-Hub-Served-Host``. Empty
+    # when nothing resolved it (issue #412).
+    served_host: str = ""
     backend: str = ""         # "claude" | "gemini" | "openai" | "whisper" | ""
     status: int = 0           # HTTP status of the response
     latency_ms: float = 0.0
@@ -82,6 +97,8 @@ class ObservabilityCtx:
     __slots__ = (
         "start_ns",
         "model",
+        "served_model",
+        "served_host",
         "backend",
         "in_tok",
         "out_tok",
@@ -95,6 +112,8 @@ class ObservabilityCtx:
     def __init__(self) -> None:
         self.start_ns: int = time.monotonic_ns()
         self.model: str = ""
+        self.served_model: str = ""
+        self.served_host: str = ""
         self.backend: str = ""
         self.in_tok: int = 0
         self.out_tok: int = 0
@@ -123,7 +142,15 @@ class Observatory:
             self._requests.append(rec)
             if rec.status >= 400 or rec.error_detail:
                 self._errors.append(rec)
-            key = rec.model or rec.backend or "unknown"
+            # Count against the model that *served*: a role-addressed audio
+            # request would otherwise pile every call onto the alias
+            # ("audio_transcribe") and hide which backend actually carried the
+            # traffic (issue #412). ``served_model`` is only ever set once a
+            # model has really answered, so a request nothing served (a strict
+            # rejection, or a chain where every candidate was down) falls back
+            # to the requested name and is never charged to a model that never
+            # ran.
+            key = rec.served_model or rec.model or rec.backend or "unknown"
             c = self._counters.setdefault(key, BackendCounters())
             c.requests += 1
             if rec.status >= 400:
@@ -220,6 +247,8 @@ def _rec_to_dict(r: RequestRecord) -> Dict[str, Any]:
         "ts": r.ts,
         "path": r.path,
         "model": r.model,
+        "served_model": r.served_model,
+        "served_host": r.served_host,
         "backend": r.backend,
         "status": r.status,
         "latency_ms": round(r.latency_ms, 1),
@@ -298,6 +327,8 @@ class ObservatoryMiddleware(BaseHTTPMiddleware):
                     ts=time.time(),
                     path=path,
                     model=ctx.model,
+                    served_model=ctx.served_model,
+                    served_host=ctx.served_host,
                     backend=ctx.backend,
                     status=status,
                     latency_ms=latency_ms,

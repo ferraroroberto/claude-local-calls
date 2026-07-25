@@ -180,6 +180,11 @@ code { font-family: inherit; }   /* beat the UA's default monospace */
 pre code { font-family: inherit; } /* …but code inside a pre stays mono */
 .muted { color: var(--muted); }
 .small { font-size: var(--font-caption); }
+/* "requested → served @host" tail on a request row whose model was resolved to
+ * a different one (role chain / fallback) and/or served by another machine —
+ * see api.js modelLabel (#412). */
+.model-served { color: var(--muted); }
+.model-host { color: var(--muted); }
 
 /* ---------- icons (vendored Lucide sprite — _vendored/icons) ----------
  * The `.icon` rule is the required CSS contract from the vendored component's

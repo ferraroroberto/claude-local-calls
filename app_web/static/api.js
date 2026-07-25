@@ -170,6 +170,39 @@ export function escapeHtml(s) {
   });
 }
 
+/* Plain-text label for a request record's model: the requested name, the model
+ * that actually served it when the hub resolved one to the other, and the host
+ * that served it ("audio_transcribe → parakeet @mac-mini-m4"). The served host
+ * is the dimension the #405 drill was missing — a `model=whisper` answered by
+ * a machine with no whisper bound was a legitimate remote hop, and no field
+ * said so. Only the audio paths populate the served pair, so ordinary chat
+ * rows render exactly as before (#412). */
+export function modelLabelText(rec, fallback) {
+  const requested = (rec && rec.model) || '';
+  const served = (rec && rec.served_model) || '';
+  const host = (rec && rec.served_host) || '';
+  let out = requested || fallback || '';
+  if (served && served !== requested) out += ' → ' + served;
+  if (host) out += ' @' + host;
+  return out;
+}
+
+/* Escaped-HTML twin of modelLabelText, with the resolved parts muted. Shared
+ * by the Hub tab's live-request / error lists and the Telemetry tab's trace
+ * feed so a substitution can never be visible in one pane and invisible in
+ * the other (#412). */
+export function modelLabel(rec, fallback) {
+  const requested = (rec && rec.model) || '';
+  const served = (rec && rec.served_model) || '';
+  const host = (rec && rec.served_host) || '';
+  let html = escapeHtml(requested || fallback || '');
+  if (served && served !== requested) {
+    html += ' <span class="model-served">&rarr; ' + escapeHtml(served) + '</span>';
+  }
+  if (host) html += ' <span class="model-host">@' + escapeHtml(host) + '</span>';
+  return html;
+}
+
 /* Trim the vendor prefix off an nvidia-smi GPU name ("NVIDIA GeForce RTX
  * 4080" -> "RTX 4080") — shared by the Hub sparkline labels and the
  * Machines-tab stats card (#309 sibling-dedup, same pattern as escapeHtml). */

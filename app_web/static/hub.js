@@ -4,7 +4,7 @@
  */
 
 import { els, state } from './state.js';
-import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtSecs, tokPair, shortGpu } from './api.js';
+import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtSecs, tokPair, shortGpu, modelLabel } from './api.js';
 import { langfuseTraceUrl, fetchTelemetryHealth } from './telemetry.js';
 import { icon } from './_vendored/icons/icons.js';
 
@@ -126,7 +126,7 @@ function renderRequests() {
       : '';
     li.innerHTML =
       '<span class="muted">' + fmtClock(r.ts) + '</span>' +
-      '<span>' + escapeHtml(r.model || '(no model)') + ' <span class="muted">' + escapeHtml(r.backend || '') + '</span></span>' +
+      '<span>' + modelLabel(r, '(no model)') + ' <span class="muted">' + escapeHtml(r.backend || '') + '</span></span>' +
       '<span class="req-status ' + cls + '">' + r.status + ' · ' + r.latency_ms + ' ms</span>' +
       '<span class="muted">' + (r.in_tok || 0) + ' / ' + (r.out_tok || 0) + ' tok ' + traceCol + '</span>';
     list.appendChild(li);
@@ -144,7 +144,7 @@ function renderErrors() {
     const li = document.createElement('li');
     li.innerHTML =
       '<span class="muted">' + fmtClock(r.ts) + '</span>' +
-      '<span>' + escapeHtml(r.model || '(no model)') + ' <span class="muted">' + escapeHtml(r.backend || '') + '</span></span>' +
+      '<span>' + modelLabel(r, '(no model)') + ' <span class="muted">' + escapeHtml(r.backend || '') + '</span></span>' +
       '<span class="req-status err">' + r.status + '</span>' +
       '<span class="muted">' + escapeHtml((r.error_detail || '').slice(0, 80)) + '</span>';
     list.appendChild(li);

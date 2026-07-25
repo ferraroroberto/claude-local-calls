@@ -1,9 +1,11 @@
-"""Audio role failover (#348).
+"""Audio role failover (#348) and the strict-explicit-model contract (#412).
 
 The audio proxy resolves the ``roles.audio.<role>`` chain (primary + fallback)
 and, when a candidate's backend is *unavailable* (connection error / 502-503-504),
 transparently retries the next model instead of erroring. An explicit concrete
-``model=`` is honoured single-shot (no failover, preserving #128).
+``model=`` is honoured single-shot (no failover, preserving #128) and is never
+answered by a *different* model (#412) — it 503s instead, and every request
+records which model actually served alongside the one asked for.
 
 The whisper worker binaries are platform/GPU-specific, so these fake the httpx
 client and the config rather than driving a real backend.
@@ -20,6 +22,7 @@ import yaml
 from fastapi import HTTPException
 
 from src import host_profile, model_registry, server_audio, transcription_glossary
+from src.hub_observability import ObservabilityCtx
 
 
 # --------------------------------------------------------------------------- #
@@ -199,6 +202,10 @@ def test_client_error_not_failed_over(tmp_path, monkeypatch):
     assert len(calls) == 1  # wb never tried — 4xx is not an availability failure
 
 
+def _model_body(model_id: str) -> bytes:
+    return b'Content-Disposition: form-data; name="model"\r\n\r\n' + model_id.encode() + b"\r\n"
+
+
 def test_explicit_model_down_does_not_fail_over(tmp_path, monkeypatch):
     _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
     calls = []
@@ -212,3 +219,421 @@ def test_explicit_model_down_does_not_fail_over(tmp_path, monkeypatch):
     with pytest.raises(HTTPException):
         _proxy(req)
     assert all(":9002" in u for u in calls) and all(":9001" not in u for u in calls)
+
+
+# --------------------------------------------------------------------------- #
+# strict explicit model — no silent substitution (#412)
+#
+# A role alias may fall back across models (that is #348). An explicit model id
+# may not: the #405 drill saw `model=whisper` answered 200 by parakeet on a host
+# with no whisper at all, logged as `model: whisper, backend: whisper`.
+# --------------------------------------------------------------------------- #
+def _strict_config(tmp_path, monkeypatch):
+    """``wa`` is the serveable transcribe primary; ``wdown`` is a configured
+    whisper row this host is *not* enabled for — whisper with its whole chain
+    down on the host answering the request; ``chatty`` is a non-audio row."""
+    cfg = _write_config(tmp_path, {
+        "hub": {"port": 8000},
+        "hosts": {"pc": {"platform": "win32", "default": True, "enabled": ["wa"]}},
+        "models": {
+            "wa": {"display_name": "whisper-a", "backend": "whisper",
+                   "engine": "whisper-server", "port": 9001},
+            "wdown": {"display_name": "whisper-down", "backend": "whisper",
+                      "engine": "whisper-server", "port": 9003, "host": "elsewhere"},
+            "chatty": {"display_name": "chat-model", "backend": "openai", "port": 9100},
+        },
+        "roles": {"audio": {"transcribe": {"model_id": "wa"}}},
+    })
+    _patch_config_path(monkeypatch, cfg)
+    monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
+    monkeypatch.setattr(transcription_glossary, "load_rules", lambda: [])
+
+
+def test_explicit_unavailable_model_is_503_never_another_model(tmp_path, monkeypatch):
+    """The #412 repro: an explicit id whose chain is down must not be answered
+    200 by the role's primary."""
+    _strict_config(tmp_path, monkeypatch)
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(url)
+        return _FakeResp(200, b'{"text":"served by wa"}')
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    with pytest.raises(HTTPException) as ei:
+        _proxy(_FakeReq(body=_model_body("wdown")))
+    assert ei.value.status_code == 503
+    assert "wdown" in ei.value.detail          # names the model that was asked for
+    assert not calls                           # wa was never asked to stand in
+
+
+def test_explicit_non_audio_model_is_400(tmp_path, monkeypatch):
+    _strict_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        server_audio, "get_async_client",
+        lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
+    with pytest.raises(HTTPException) as ei:
+        _proxy(_FakeReq(body=_model_body("chatty")))
+    assert ei.value.status_code == 400
+
+
+def test_unknown_model_name_still_addresses_the_role(tmp_path, monkeypatch):
+    """``whisper-1`` is the OpenAI SDK's default STT model name — not one of our
+    ids, so it is a role request, not a strict model request."""
+    _strict_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        server_audio, "get_async_client",
+        lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
+    resp = _proxy(_FakeReq(body=_model_body("whisper-1")))
+    assert resp.status_code == 200 and b"wa" in resp.body
+
+
+# --------------------------------------------------------------------------- #
+# observability: requested vs served (#412)
+# --------------------------------------------------------------------------- #
+def _req_with_ctx(body=b"----x\r\n"):
+    req = _FakeReq(body=body)
+    req.state.obs_ctx = ObservabilityCtx()
+    return req
+
+
+def test_record_carries_requested_role_and_served_model(tmp_path, monkeypatch):
+    _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
+
+    def handler(url, kwargs):
+        if ":9001" in url:
+            raise httpx.ConnectError("down")
+        return _FakeResp(200, b'{"text":"wb"}')
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    req = _req_with_ctx()
+    resp = _proxy(req)
+    assert resp.status_code == 200
+    assert req.state.obs_ctx.model == "audio_transcribe"   # what was requested
+    assert req.state.obs_ctx.served_model == "wb"          # what actually served
+
+
+def test_response_headers_name_requested_and_served(tmp_path, monkeypatch):
+    _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
+
+    def handler(url, kwargs):
+        if ":9001" in url:
+            raise httpx.ConnectError("down")
+        return _FakeResp(200, b'{"text":"wb"}')
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    resp = _proxy(_FakeReq())
+    assert resp.headers["x-hub-requested-model"] == "audio_transcribe"
+    assert resp.headers["x-hub-served-model"] == "wb"
+
+
+def test_explicit_served_model_matches_requested(tmp_path, monkeypatch):
+    """No substitution -> both names agree, so the UI shows a single model."""
+    _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
+    monkeypatch.setattr(
+        server_audio, "get_async_client",
+        lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wb"}')))
+    req = _req_with_ctx(body=_model_body("wb"))
+    _proxy(req)
+    assert req.state.obs_ctx.model == "wb"
+    assert req.state.obs_ctx.served_model == "wb"
+
+
+# --------------------------------------------------------------------------- #
+# a rejection must be the *most* observable outcome, not the least (#412 F1)
+#
+# The strict gate fires before any backend is contacted, so nothing used to
+# stamp request.state.obs_ctx: the ring recorded model='' backend='' and the
+# counter key 'unknown'. ObservatoryMiddleware cannot recover it — its fallback
+# peeks a JSON body and a multipart request never parses.
+# --------------------------------------------------------------------------- #
+def test_strict_reject_is_recorded_not_blank(tmp_path, monkeypatch):
+    _strict_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        server_audio, "get_async_client",
+        lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
+    req = _req_with_ctx(body=_model_body("wdown"))
+    with pytest.raises(HTTPException) as ei:
+        _proxy(req)
+
+    ctx = req.state.obs_ctx
+    assert ctx.model == "wdown"          # the ring row names what was asked for
+    assert ctx.backend == "whisper"      # …and which family it addressed
+    assert ctx.served_model == ""        # nothing served it
+    assert ctx.served_host == ""
+    assert "wdown" in ctx.error_detail   # …and why it failed
+    # The same trio a 200 carries, so a client can read the outcome off the
+    # response alone (README's promise).
+    assert ei.value.headers["X-Hub-Requested-Model"] == "wdown"
+    assert ei.value.headers["X-Hub-Served-Model"] == ""
+    assert ei.value.headers["X-Hub-Served-Host"] == ""
+
+
+def test_reject_before_chain_resolution_still_records_the_role(tmp_path, monkeypatch):
+    """A role-addressed request that finds no backend at all records the role,
+    not a blank row."""
+    _write_config(tmp_path, {
+        "hub": {"port": 8000},
+        "hosts": {"pc": {"platform": "win32", "default": True, "enabled": []}},
+        "models": {},
+        "roles": {"audio": {}},
+    })
+    _patch_config_path(monkeypatch, tmp_path / "models.yaml")
+    monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
+    monkeypatch.setattr(transcription_glossary, "load_rules", lambda: [])
+    req = _req_with_ctx()
+    with pytest.raises(HTTPException) as ei:
+        _proxy(req)
+    assert ei.value.status_code == 503
+    assert req.state.obs_ctx.model == "audio_transcribe"
+    assert req.state.obs_ctx.error_detail
+    assert ei.value.headers["X-Hub-Requested-Model"] == "audio_transcribe"
+
+
+def test_whole_chain_down_does_not_claim_a_served_model(tmp_path, monkeypatch):
+    """#412 F2: ``served_model`` is written only once a model has answered, so a
+    503 is never charged to the last candidate's error counter."""
+    _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
+
+    def handler(url, kwargs):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    req = _req_with_ctx()
+    with pytest.raises(HTTPException):
+        _proxy(req)
+    assert req.state.obs_ctx.served_model == ""   # nothing served — not "wb"
+    assert req.state.obs_ctx.served_host == ""
+    assert req.state.obs_ctx.model == "audio_transcribe"
+
+
+# --------------------------------------------------------------------------- #
+# case-insensitive ownership test (#412 F3)
+#
+# `resolve` is exact-match, so `model=Whisper` used to look exactly like
+# `whisper-1` to the gate: unknown -> role chain -> 200 from another model.
+# --------------------------------------------------------------------------- #
+def test_capitalized_owned_id_is_still_that_model(tmp_path, monkeypatch):
+    _strict_config(tmp_path, monkeypatch)
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(url)
+        return _FakeResp(200, b'{"text":"wa"}')
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    req = _req_with_ctx(body=_model_body("Whisper-A"))   # display_name, capitalized
+    resp = _proxy(req)
+    assert resp.status_code == 200
+    assert req.state.obs_ctx.model == "Whisper-A"        # echoed as the caller typed it
+    assert req.state.obs_ctx.served_model == "wa"        # …resolved to the real row
+    assert len(calls) == 1 and ":9001" in calls[0]
+
+
+def test_capitalized_unserveable_id_is_rejected_not_substituted(tmp_path, monkeypatch):
+    """The #412 repro with a capital letter: `model=WDOWN` must 503, not fall
+    through to the role chain and come back 200 off `wa`."""
+    _strict_config(tmp_path, monkeypatch)
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(url)
+        return _FakeResp(200, b'{"text":"wa"}')
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    with pytest.raises(HTTPException) as ei:
+        _proxy(_FakeReq(body=_model_body("WDOWN")))
+    assert ei.value.status_code == 503
+    assert not calls
+
+
+def test_role_alias_is_case_insensitive_too(tmp_path, monkeypatch):
+    _strict_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        server_audio, "get_async_client",
+        lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
+    resp = _proxy(_FakeReq(body=_model_body("Audio_Transcribe")))
+    assert resp.status_code == 200
+    assert resp.headers["x-hub-served-model"] == "wa"
+
+
+def test_resolve_any_is_case_insensitive_resolve_is_not(tmp_path, monkeypatch):
+    """The asymmetry is the point: only the ownership test loosened."""
+    _strict_config(tmp_path, monkeypatch)
+    assert model_registry.resolve_any("WHISPER-A").id == "wa"
+    assert model_registry.resolve_any("  Wa  ").id == "wa"
+    assert model_registry.resolve("WHISPER-A") is None   # exact-match, untouched
+    assert model_registry.resolve("wa").id == "wa"
+
+
+# --------------------------------------------------------------------------- #
+# distinct messages for distinct conditions (#412 F4)
+# --------------------------------------------------------------------------- #
+def test_not_enabled_here_does_not_claim_an_outage(tmp_path, monkeypatch):
+    """The admin Models-tab ping sends `model=<display_name>`; a cross-listed
+    row this host doesn't serve must not report an outage that isn't
+    happening."""
+    _strict_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        server_audio, "get_async_client",
+        lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
+    with pytest.raises(HTTPException) as ei:
+        _proxy(_FakeReq(body=_model_body("wdown")))
+    detail = ei.value.detail
+    assert "not enabled on this host" in detail
+    assert "elsewhere" in detail          # names the owner, so it is actionable
+    assert "chain is down" not in detail  # the old, false claim
+
+
+def test_backend_really_down_says_so(tmp_path, monkeypatch):
+    """The other condition — the model *is* served here and its port is dead —
+    keeps its own message naming the port (#147)."""
+    _strict_config(tmp_path, monkeypatch)
+
+    def handler(url, kwargs):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    with pytest.raises(HTTPException) as ei:
+        _proxy(_FakeReq(body=_model_body("wa")))
+    assert ei.value.status_code == 503
+    assert "not running on :9001" in ei.value.detail
+    assert "not enabled on this host" not in ei.value.detail
+
+
+def test_upstream_404_survives_the_error_funnel_unchanged(tmp_path, monkeypatch):
+    """#412 wrapped `_dispatch_audio` in an `except HTTPException` funnel to
+    stamp observability on strict rejects. An upstream status must not get
+    caught by it and re-flavoured as a whisper outage: a 404 from the backend
+    is *returned* as a Response, never raised, so it passes through intact."""
+    _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(url)
+        return _FakeResp(404, b'{"error":"no such route"}')
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    resp = _proxy(_FakeReq())
+    assert resp.status_code == 404  # not 503, not re-worded
+    assert b"no such route" in resp.body
+    assert len(calls) == 1  # a 4xx is not an availability failure — no fallback
+
+
+# --------------------------------------------------------------------------- #
+# header sanitation (#412 F5)
+# --------------------------------------------------------------------------- #
+def test_control_bytes_are_stripped_from_the_echoed_header(tmp_path, monkeypatch):
+    """A `model=` carrying a NUL passes the CRLF-only body regex; writing it
+    verbatim made h11 raise *after* the transcription had already run."""
+    _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa"})
+    monkeypatch.setattr(
+        server_audio, "get_async_client",
+        lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
+    resp = _proxy(_FakeReq(body=_model_body("wh\x00is\x7fper-1")))
+    echoed = resp.headers["x-hub-requested-model"]
+    assert echoed == "whisper-1"
+    assert all(0x20 <= ord(c) <= 0x7e for c in echoed)
+
+
+# --------------------------------------------------------------------------- #
+# served *host* — the dimension #405 actually needed (#412 F6/F7)
+# --------------------------------------------------------------------------- #
+def _remote_peer_config(tmp_path, monkeypatch, *, transcribe: dict):
+    """``wremote`` is owned by host ``peer`` and cross-listed here (the real
+    whisper/parakeet arrangement); ``wa`` is served locally."""
+    cfg = _write_config(tmp_path, {
+        "hub": {"port": 8000},
+        "hosts": {
+            "pc": {"platform": "win32", "default": True, "enabled": ["wa", "wremote"]},
+            "peer": {"platform": "darwin", "address": "10.0.0.9", "enabled": ["wremote"]},
+        },
+        "models": {
+            "wa": {"display_name": "whisper-a", "backend": "whisper",
+                   "engine": "whisper-server", "port": 9001},
+            "wremote": {"display_name": "whisper-remote", "backend": "whisper",
+                        "engine": "whisper-server", "port": 9005, "host": "peer"},
+        },
+        "roles": {"audio": {"transcribe": transcribe}},
+    })
+    _patch_config_path(monkeypatch, cfg)
+    monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
+    monkeypatch.setattr(transcription_glossary, "load_rules", lambda: [])
+    monkeypatch.setattr(
+        server_audio, "remote_base_url",
+        lambda m: "http://10.0.0.9:8000" if m.id == "wremote" else None)
+
+
+def test_served_host_is_the_active_host_when_served_locally(tmp_path, monkeypatch):
+    _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa"})
+    monkeypatch.setattr(
+        server_audio, "get_async_client",
+        lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
+    req = _req_with_ctx()
+    resp = _proxy(req)
+    assert req.state.obs_ctx.served_host == "pc"
+    assert resp.headers["x-hub-served-host"] == "pc"
+
+
+def test_served_host_is_the_owner_on_a_remote_hop(tmp_path, monkeypatch):
+    """The #405 observation explained: a 200 from a host with no whisper bound
+    is a legitimate hop to the owner — now the record says which owner."""
+    _remote_peer_config(tmp_path, monkeypatch, transcribe={"model_id": "wremote", "fallback": ["wa"]})
+    urls = []
+
+    def handler(url, kwargs):
+        urls.append(url)
+        return _FakeResp(200, b'{"text":"remote"}')   # older peer: no X-Hub-* headers
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    req = _req_with_ctx()
+    resp = _proxy(req)
+    assert urls and urls[0].startswith("http://10.0.0.9:8000")
+    assert req.state.obs_ctx.served_model == "wremote"
+    assert req.state.obs_ctx.served_host == "peer"
+    assert resp.headers["x-hub-served-host"] == "peer"
+
+
+def test_peer_served_headers_win_over_local_guess(tmp_path, monkeypatch):
+    """#412 F7: on the role path the peer hub re-resolves the role itself (the
+    forwarded body carries no `model`), so its own answer is the honest one."""
+    _remote_peer_config(tmp_path, monkeypatch, transcribe={"model_id": "wremote", "fallback": ["wa"]})
+
+    def handler(url, kwargs):
+        return _FakeResp(200, b'{"text":"parakeet"}', headers={
+            "content-type": "application/json",
+            "X-Hub-Requested-Model": "audio_transcribe",
+            "X-Hub-Served-Model": "parakeet",
+            "X-Hub-Served-Host": "gaming",
+        })
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    req = _req_with_ctx()
+    resp = _proxy(req)
+    assert req.state.obs_ctx.served_model == "parakeet"   # not "wremote"
+    assert req.state.obs_ctx.served_host == "gaming"      # not "peer"
+    assert resp.headers["x-hub-served-model"] == "parakeet"
+    assert resp.headers["x-hub-served-host"] == "gaming"
+    # …and the requested name stays *this* hub's view of what the caller asked.
+    assert resp.headers["x-hub-requested-model"] == "audio_transcribe"
+    assert len(resp.raw_headers) == len({k.lower() for k, _ in resp.raw_headers})
+
+
+def test_local_backend_headers_are_not_trusted_as_peer_answers(tmp_path, monkeypatch):
+    """A *local* whisper-server is not a hub; a stray X-Hub-* header from one
+    must not override what this hub dispatched."""
+    _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa"})
+
+    def handler(url, kwargs):
+        return _FakeResp(200, b'{"text":"wa"}', headers={
+            "content-type": "application/json",
+            "X-Hub-Served-Model": "impostor",
+            "X-Hub-Served-Host": "impostor-host",
+        })
+
+    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    req = _req_with_ctx()
+    resp = _proxy(req)
+    assert req.state.obs_ctx.served_model == "wa"
+    assert req.state.obs_ctx.served_host == "pc"
+    assert resp.headers["x-hub-served-model"] == "wa"

@@ -140,6 +140,53 @@ Local entries in active use as of the May 2026 frontier reading:
   [docs/add-tts.md](docs/add-tts.md) for the engine choice, request shape,
   and the Orpheus GGUF caveat.
 
+**Role vs explicit model on `/v1/audio/*` (#412).** The two are different
+contracts. Sending **no `model`** (or the role alias `audio_transcribe` /
+`audio_translate`) addresses the *role*, and the hub is free to fall back
+across the models in `roles.audio.<role>` when the primary's backend is down —
+that is the point of the chain. Sending an **explicit model id** (`whisper`,
+`parakeet`, `whisper-vanilla`) is **strict**: it is served by that model or it
+fails. Matching is case-insensitive, so `Whisper` is the same strict request as
+`whisper`. The rejections are three distinct conditions with three distinct
+messages: `400` when the id names something that isn't a transcription backend,
+`503 "not enabled on this host"` when it names a transcription model this hub
+doesn't serve (a routing fact — nothing is down), and `503 "whisper-server not
+running on :<port>"` when the model *is* served here and its backend is
+genuinely dead. It is never quietly answered by a different model. (Host-level
+failover for the *same* id — the #342 chain — is not a substitution and still
+applies.) A `model=` the registry doesn't know, e.g. the OpenAI SDK's default
+`whisper-1`, isn't a model request at all and still addresses the role.
+
+Either way the substitution is **observable**. Every `/v1/audio/transcriptions`
+and `/v1/audio/translations` response — including a strict rejection — carries
+`X-Hub-Requested-Model`, `X-Hub-Served-Model`, and `X-Hub-Served-Host` (additive
+— clients ignore them; the served pair is empty when the request was rejected
+before any model ran, and the trio is not emitted on `/v1/audio/speech`, which
+has no chain to substitute across). The request ring records `served_model` and
+`served_host` alongside `model` (`GET /admin/api/hub/requests/recent`), and the
+admin Hub/Telemetry rows render `requested → served @host`. `served_host` is the
+dimension a cross-host drill actually needs: a `model=whisper` answered by a
+machine with no whisper bound is a legitimate proxy hop to whisper's owner, and
+until #412 no field said so. Use all of it, not a bare 200, when verifying a
+failover drill — see [docs/fleet-maintenance.md](docs/fleet-maintenance.md).
+
+> **Semantic change for role-addressed audio (#412).** For a request that
+> addresses the *role* (no `model`, or `audio_transcribe` / `audio_translate`),
+> the record's `model` field now holds the **role alias** rather than the
+> concrete model that ran — the concrete one moved to `served_model`. The same
+> value feeds the OTel `gen_ai.request.model` attribute (with the served id in
+> `gen_ai.response.model` and the host in `hub.served_host`), so any dashboard
+> grouping audio traffic by *request* model will re-bucket from `parakeet` to
+> `audio_transcribe`. The hub's own per-model counters are unaffected: they key
+> off `served_model` when one exists. Group by `served_model` /
+> `gen_ai.response.model` to restore the old buckets.
+>
+> The counter key also canonicalises for an **explicit** model request: it is
+> now the registry row id (`whisper`) rather than whatever alias the client
+> typed (`whisper-large-v3-turbo`), because `served_model` records the row that
+> actually ran. More consistent, but a dashboard keyed on a display name will
+> re-bucket once.
+
 **Transcription glossary.** Requests that go through the hub's audio
 proxy (`:8000/v1/audio/*`) get a deterministic post-processing pass that
 fixes persistent domain-term misspellings (e.g. "cloud code" → "Claude

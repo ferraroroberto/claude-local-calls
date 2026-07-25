@@ -14,7 +14,8 @@ onto the parent hub app by ``server.py`` via ``include_router``.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+import re
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -28,6 +29,31 @@ from .server_common import current_otel_span, safe_span, stash_trace_id_on_ctx
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Response headers naming the model/host pair behind an audio request (#412).
+# Additive metadata — every OpenAI/Anthropic client ignores unknown headers —
+# and the only way a caller can tell "whisper answered" from "the role chain
+# fell through to parakeet" without reading the hub's admin API.
+HEADER_REQUESTED_MODEL = "X-Hub-Requested-Model"
+HEADER_SERVED_MODEL = "X-Hub-Served-Model"
+HEADER_SERVED_HOST = "X-Hub-Served-Host"
+
+# Everything outside printable ASCII, and the cap on an echoed header value.
+_NON_PRINTABLE_ASCII = re.compile(r"[^\x20-\x7e]")
+_HEADER_VALUE_MAX = 200
+
+
+def _header_safe(value: str) -> str:
+    """Make ``value`` safe to write into a response header.
+
+    The requested-model name is peeked out of a *client-supplied* multipart
+    body by regex. That pattern rejects CR/LF but nothing else, so a
+    ``model=`` carrying a NUL (or any other control byte) used to reach h11
+    verbatim and raise ``LocalProtocolError`` — after the upstream
+    transcription had already run, turning a completed request into a 500
+    (#412). Strip to printable ASCII and cap the length instead.
+    """
+    return _NON_PRINTABLE_ASCII.sub("", value or "")[:_HEADER_VALUE_MAX]
 
 
 def _remote_audio_headers(model: Model) -> Optional[dict]:
@@ -128,23 +154,88 @@ def _whisper_chain_for_request(model_name: str, *, default_role: str) -> List[Mo
     """Ordered whisper-shaped candidates to try for this request (#348).
 
     * An explicit **concrete** model (``model=whisper-vanilla``) → a one-element
-      chain: honour it exactly, never fail over. Preserves #128 — a caller that
+      chain: honour it exactly, never fail over to a *different model*, and
+      never fall through to the role chain. Preserves #128 — a caller that
       picked ``whisper-vanilla`` to escape the glossary must not silently land
-      on turbo.
+      on turbo — and #412: when that model can't be served here the caller gets
+      a 503 naming it, not a 200 produced by some other model. (Host-level
+      failover for the *same* model id — the #342 chain — is not a
+      substitution and still applies, inside :func:`_forward_to_candidate`.)
     * The **role** path (no ``model``, or a role alias like ``audio_transcribe``)
       → the configured ``roles.audio.<role>`` chain (``model_id`` + ``fallback``),
       resolved via the registry so it can include remote/cross-enabled rows
-      (e.g. ``parakeet`` on the Mac).
+      (e.g. ``parakeet`` on the Mac). Falling back across models here is the
+      whole point of the role — it is only made *observable* (#412), never
+      blocked.
+    * A ``model=`` the registry has never heard of (OpenAI clients must send
+      something, and the SDK's default is ``whisper-1``) is not a request for
+      one of our models — it addresses the role, exactly as before.
     * If the config chain is empty/unresolvable → the legacy local-only heuristic
       (:func:`_whisper_model_for_request`), so nothing regresses.
-    """
-    from .model_registry import audio_role_chain, resolve as _resolve_model
 
-    if model_name and model_name not in _ROLE_ALIASES:
-        m = _resolve_model(model_name)
-        if m and m.backend == "whisper" and m.port:
-            return [m]
-        # unresolvable / non-whisper explicit id → fall through to the role chain
+    Raises ``HTTPException`` for an explicit, *known* model id that this hub
+    cannot serve — 400 when the id names a non-transcription model, 503 when
+    the id names a transcription model this host does not serve. Neither of
+    those is an *outage*: a backend that is genuinely down is a different
+    condition, reported downstream by :func:`_audio_upstream_error` with a
+    message naming the port (#147).
+    """
+    from .model_registry import audio_role_chain, resolve as _resolve_model, resolve_any
+
+    if model_name and model_name.strip().lower() not in _ROLE_ALIASES:
+        # Ownership test first, and case-insensitively (:func:`resolve_any`):
+        # "is this one of *our* model ids at all?". An exact-match-only gate
+        # let ``model=Whisper`` look identical to ``whisper-1`` and drop the
+        # caller onto the role chain — a 200 from another model, the exact
+        # behaviour #412 exists to abolish.
+        known = resolve_any(model_name)
+        if known is not None:
+            # Serveability is a separate question, asked with the row's
+            # *canonical* id so the host-scoped exact-match ``resolve`` — which
+            # every other consumer relies on being exact — is left untouched.
+            serveable = _resolve_model(known.id)
+            if serveable is not None and serveable.backend == "whisper" and serveable.port:
+                return [serveable]
+            if known.backend != "whisper" or not known.port:
+                logger.warning(
+                    "⚠️ audio request rejected: %s is a '%s' model, not a "
+                    "transcription backend",
+                    known.id, known.backend,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"model '{model_name}' is not a transcription backend "
+                        f"(it is a '{known.backend}' model) — /v1/audio/* only "
+                        f"serves whisper-shaped models"
+                    ),
+                )
+            # The *effective* owner, not the statically-preferred one: on a
+            # failed-over multi-host row (#342) `known.host` still names the
+            # first chain entry, which would point the operator at a machine
+            # that no longer serves the model.
+            from .model_failover import effective_owner
+
+            owner = effective_owner(known) or known.host or ""
+            logger.warning(
+                "⚠️ audio request rejected: %s is a configured model this host "
+                "does not serve (owner=%s) — refusing to substitute another model",
+                known.id, owner or "unset",
+            )
+            owned_by = f" — host '{owner}' owns it" if owner else ""
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"model '{model_name}' is not enabled on this host{owned_by}. "
+                    f"Nothing is down: this hub simply does not serve that model, "
+                    f"and an explicit model id is never answered by a different "
+                    f"one. Send the request to the owning host's hub, or address "
+                    f"the role ('{default_role}', or omit model) if a fallback "
+                    f"across models is acceptable."
+                ),
+            )
+        # Unknown to the registry → a client-side placeholder, not a model
+        # request: fall through to the role chain (and record what served).
 
     role_key = "translate" if default_role == "audio_translate" else "transcribe"
     chain: List[Model] = []
@@ -161,6 +252,74 @@ def _whisper_chain_for_request(model_name: str, *, default_role: str) -> List[Mo
     return [m] if m is not None else []
 
 
+def _served_host_for(target: Model) -> str:
+    """Host id that serves ``target`` from this hub's point of view (#412).
+
+    The *effective* owner (#342) when the row declares one — that is the host
+    the request is proxied to — and the active host otherwise (a row nobody
+    owns is served right here). Best-effort: an unresolvable host profile
+    yields ``""`` rather than failing a transcription that already succeeded.
+    """
+    from .host_profile import resolve as _resolve_host
+    from .model_failover import effective_owner
+
+    try:
+        owner = effective_owner(target)
+    except Exception:  # noqa: BLE001 — never fail a served request over a label
+        owner = None
+    if owner:
+        return owner
+    try:
+        return _resolve_host().id
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _served_identity(target: Model, upstream, *, remote: bool) -> Tuple[str, str]:
+    """Who actually served this response — ``(served_model, served_host)``.
+
+    Normally that is the candidate this hub dispatched to, on its owning host.
+    The exception is a **remote role hop**: ``_proxy_audio`` forwards the body
+    with no ``model`` field, so the peer hub re-resolves the role against *its*
+    own config and may legitimately answer off a different chain member. Its
+    ``X-Hub-Served-Model`` / ``X-Hub-Served-Host`` are the honest answer and
+    win; a peer too old to send them — or a bare whisper-server, which never
+    does — falls back to what this hub dispatched (#412).
+    """
+    peer_model = ""
+    peer_host = ""
+    if remote:
+        try:
+            peer_model = _header_safe(str(upstream.headers.get(HEADER_SERVED_MODEL) or "").strip())
+            peer_host = _header_safe(str(upstream.headers.get(HEADER_SERVED_HOST) or "").strip())
+        except Exception:  # noqa: BLE001 — a malformed peer header is not fatal
+            peer_model = peer_host = ""
+    return peer_model or target.id, peer_host or _served_host_for(target)
+
+
+def _observable_audio_error(exc: HTTPException, ctx, requested: str) -> HTTPException:
+    """Make an audio *failure* as observable as an audio success (#412).
+
+    A strict rejection is precisely the event an operator has to be able to
+    see, yet it used to be the least visible thing the hub emitted: the reject
+    fired before anything stamped ``request.state.obs_ctx``, so the ring
+    recorded a blank row (``model=''``, ``backend=''``, counter key
+    ``unknown``) and ``ObservatoryMiddleware`` could not recover it — its
+    fallback peeks a *JSON* body and a multipart request never parses. Stamp
+    the detail on the context and echo the same header trio a 200 carries,
+    with the served pair empty because nothing served.
+    """
+    detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    if ctx is not None and not getattr(ctx, "error_detail", ""):
+        ctx.error_detail = detail
+    headers = dict(exc.headers or {})
+    headers.setdefault(HEADER_REQUESTED_MODEL, _header_safe(requested))
+    headers.setdefault(HEADER_SERVED_MODEL, _header_safe(getattr(ctx, "served_model", "") or ""))
+    headers.setdefault(HEADER_SERVED_HOST, _header_safe(getattr(ctx, "served_host", "") or ""))
+    exc.headers = headers
+    return exc
+
+
 async def _proxy_audio(request: Request, *, default_role: str, ctx_path: str) -> Response:
     """Forward a multipart audio request to a whisper backend, failing over
     across the role's model chain (#348).
@@ -168,11 +327,15 @@ async def _proxy_audio(request: Request, *, default_role: str, ctx_path: str) ->
     The whisper-server already speaks the OpenAI ``/v1/audio/*`` shape, so we
     forward the bytes/form and pass the response back — the point of going
     through the hub (vs hitting :8090/:8091/:8098 directly) is the observability
-    ring. When the primary model's backend is *unavailable* (a connection
-    error/timeout or a 502/503/504), the request transparently retries the next
-    model in ``roles.audio.<role>`` instead of erroring — so a dead
-    ``parakeet@mac`` silently falls through to whisper, never a failed
-    dictation. A real client error (4xx) or a 200 is returned as-is.
+    ring. When a *role-addressed* request's primary backend is unavailable (a
+    connection error/timeout or a 502/503/504), it transparently retries the
+    next model in ``roles.audio.<role>`` instead of erroring — so a dead
+    ``parakeet@mac`` falls through to whisper, never a failed dictation. That
+    fallback is no longer *silent*: who served, and on which host, is stamped
+    on the request record and echoed in the response headers (#412). An
+    explicit ``model=`` is strict and never substituted at all — see
+    :func:`_whisper_chain_for_request`. A real client error (4xx) or a 200 is
+    returned as-is.
 
     For ``audio_translate`` the raw-bytes path can't be used: whisper-server
     exposes a single inference endpoint (``/v1/audio/transcriptions``) and wants
@@ -195,14 +358,48 @@ async def _proxy_audio(request: Request, *, default_role: str, ctx_path: str) ->
     # on the glossary path the caller chose ``whisper-vanilla`` to escape.
     model_name = ""
     try:
-        import re as _re
         pattern = rb'name="model"\r?\n\r?\n([^\r\n]+)'
-        match = _re.search(pattern, body[: 16 * 1024]) or _re.search(pattern, body)
+        match = re.search(pattern, body[: 16 * 1024]) or re.search(pattern, body)
         if match:
-            model_name = match.group(1).decode("ascii", errors="ignore").strip()
+            # Sanitize at the source: this value is echoed back in a response
+            # header and the pattern above only excludes CR/LF, so a control
+            # byte would otherwise reach h11 (see :func:`_header_safe`).
+            model_name = _header_safe(
+                match.group(1).decode("ascii", errors="ignore").strip()
+            )
     except Exception:  # noqa: BLE001
         pass
 
+    # Stamp the observability context *before* anything below can raise (#412).
+    # A strict rejection is the event that most needs to be visible, and the
+    # middleware cannot fill these in for a multipart request — see
+    # :func:`_observable_audio_error`.
+    ctx = getattr(request.state, "obs_ctx", None)
+    requested = model_name or default_role
+    if ctx is not None:
+        ctx.model = requested
+        ctx.backend = "whisper"
+
+    try:
+        return await _dispatch_audio(
+            request, body=body, model_name=model_name, requested=requested,
+            default_role=default_role, ctx_path=ctx_path, ctx=ctx,
+        )
+    except HTTPException as exc:
+        raise _observable_audio_error(exc, ctx, requested)
+
+
+async def _dispatch_audio(
+    request: Request, *, body: bytes, model_name: str, requested: str,
+    default_role: str, ctx_path: str, ctx,
+) -> Response:
+    """Resolve the chain, build the reusable payload, and walk the candidates.
+
+    Split out of :func:`_proxy_audio` purely so every ``HTTPException`` raised
+    on the way — strict rejection, malformed multipart, whole chain down — is
+    funnelled through one observability wrapper instead of each raise site
+    remembering to stamp the context (#412).
+    """
     chain = _whisper_chain_for_request(model_name, default_role=default_role)
     if not chain:
         raise HTTPException(status_code=503, detail="no whisper backend enabled on this host")
@@ -231,7 +428,6 @@ async def _proxy_audio(request: Request, *, default_role: str, ctx_path: str) ->
         send = {"content": body, "headers": fwd_headers}
         upstream_path = ctx_path
 
-    ctx = getattr(request.state, "obs_ctx", None)
     span = current_otel_span()
     client = get_async_client()  # fetch once, reuse for every candidate
 
@@ -239,8 +435,8 @@ async def _proxy_audio(request: Request, *, default_role: str, ctx_path: str) ->
     for idx, target in enumerate(chain):
         is_last = idx == len(chain) - 1
         try:
-            return await _forward_to_candidate(
-                target, send, upstream_path, default_role, model_name,
+            response = await _forward_to_candidate(
+                target, send, upstream_path, default_role, requested,
                 ctx, span, client, connect_fast=not is_last,
             )
         except _BackendUnavailable as bu:
@@ -251,30 +447,59 @@ async def _proxy_audio(request: Request, *, default_role: str, ctx_path: str) ->
                     target.id, bu.http_exc.status_code,
                 )
             continue
+        # Say who answered whenever it is not who this hub dispatched to: a
+        # chain fallback (idx > 0), or a peer hub that re-resolved the role on
+        # its own side. A degraded tier should be visible in the log, not only
+        # in the request ring (#412).
+        served = response.headers.get(HEADER_SERVED_MODEL) or target.id
+        if idx > 0:
+            logger.info(
+                "ℹ️ audio substitution: requested=%s served=%s (role fallback, "
+                "primary %s unavailable)",
+                requested, served, chain[0].id,
+            )
+        elif served != target.id:
+            logger.info(
+                "ℹ️ audio substitution: requested=%s served=%s (peer %s re-resolved "
+                "the role)",
+                requested, served, response.headers.get(HEADER_SERVED_HOST) or "?",
+            )
+        return response
     raise last_http_exc or HTTPException(status_code=503, detail="no audio backend answered")
 
 
 async def _forward_to_candidate(
     target: Model, send: dict, upstream_path: str, default_role: str,
-    model_name: str, ctx, span, client, *, connect_fast: bool,
+    requested: str, ctx, span, client, *, connect_fast: bool,
 ) -> Response:
     """POST the prepared payload to one candidate backend and return its
     Response, or raise :class:`_BackendUnavailable` when the backend is down so
     the caller can try the next model (#348). Records obs/OTel against the model
-    that actually served, and applies the #90 glossary to a 200 transcript."""
+    that actually served, and applies the #90 glossary to a 200 transcript.
+
+    The request record carries *three* names (#412): ``model`` is what the
+    caller asked for (stamped by :func:`_proxy_audio` before anything can
+    fail), while ``served_model`` and ``served_host`` are the chain member and
+    the machine that **answered** — so the Telemetry tab and
+    ``/admin/api/hub/requests/recent`` show ``requested=audio_transcribe
+    served=parakeet @mac-mini-m4`` instead of an indistinguishable success.
+
+    The served pair is written only *after* an upstream answers: stamping it up
+    front attributed a whole-chain 503 — and its error counter — to a model
+    that never ran. The same trio is echoed as ``X-Hub-Requested-Model`` /
+    ``X-Hub-Served-Model`` / ``X-Hub-Served-Host`` response headers: additive
+    metadata every OpenAI/Anthropic client ignores.
+    """
     import httpx as _httpx
 
     port = target.port
     remote = remote_base_url(target)
 
-    if ctx is not None:
-        ctx.model = model_name or target.id
-        ctx.backend = "whisper"
     if span is not None and hasattr(span, "set_attribute"):
         with safe_span("whisper_attrs"):
             span.set_attribute("gen_ai.system", "whisper")
             span.set_attribute("gen_ai.operation.name", default_role)
-            span.set_attribute("gen_ai.request.model", model_name or target.id)
+            span.set_attribute("gen_ai.request.model", requested)
             span.set_attribute("whisper.port", int(port))
             span.set_attribute("whisper.model_id", target.id)
     stash_trace_id_on_ctx(ctx, span)
@@ -304,6 +529,17 @@ async def _forward_to_candidate(
             detail=f"whisper backend {target.id} unavailable ({upstream.status_code})",
         ))
 
+    # A model has now genuinely answered — only here is it honest to say who
+    # served (#412). Before this point every candidate may still fail over.
+    served_model, served_host = _served_identity(target, upstream, remote=bool(remote))
+    if ctx is not None:
+        ctx.served_model = served_model
+        ctx.served_host = served_host
+    if span is not None and hasattr(span, "set_attribute"):
+        with safe_span("whisper_served"):
+            span.set_attribute("gen_ai.response.model", served_model)
+            span.set_attribute("hub.served_host", served_host)
+
     # Apply the committed transcription glossary (issue #90) to a 200 transcript
     # before returning. Deterministic literal fixes (e.g. "cloud code" →
     # "Claude Code") for acoustically-strong errors biasing can't solve. Wrapped
@@ -321,10 +557,21 @@ async def _forward_to_candidate(
         except Exception:  # noqa: BLE001 — never let post-processing fail the proxy
             out_content = upstream.content
 
-    out_headers = {
-        k: v for k, v in upstream.headers.items()
-        if k.lower() not in {"content-length", "transfer-encoding", "connection"}
+    # Drop the peer hub's own X-Hub-* trio from the passthrough: this hub
+    # re-states them below (folding in the peer's answer via
+    # :func:`_served_identity`), and leaving the originals in would emit the
+    # header twice with two different requested-model values.
+    _drop = {
+        "content-length", "transfer-encoding", "connection",
+        HEADER_REQUESTED_MODEL.lower(), HEADER_SERVED_MODEL.lower(),
+        HEADER_SERVED_HOST.lower(),
     }
+    out_headers = {
+        k: v for k, v in upstream.headers.items() if k.lower() not in _drop
+    }
+    out_headers[HEADER_REQUESTED_MODEL] = _header_safe(requested)
+    out_headers[HEADER_SERVED_MODEL] = _header_safe(served_model)
+    out_headers[HEADER_SERVED_HOST] = _header_safe(served_host)
     return Response(
         content=out_content,
         status_code=upstream.status_code,

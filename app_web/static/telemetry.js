@@ -10,7 +10,7 @@
  */
 
 import { els, state } from './state.js';
-import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtSecs, fmtTok, fmtCost, tokPair } from './api.js';
+import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtSecs, fmtTok, fmtCost, tokPair, modelLabel, modelLabelText } from './api.js';
 import { icon } from './_vendored/icons/icons.js';
 
 const HEALTH_POLL_MS = 8000;
@@ -211,14 +211,17 @@ function renderTraces() {
     const statusCls = rec.status >= 500 ? 'err' : (rec.status >= 400 ? 'warn' : 'ok');
     const tsStr = fmtClock(rec.ts) || '—';
     const latency = (rec.latency_ms || 0).toFixed(0) + 'ms';
-    const model = rec.model || '—';
+    // "requested → served @host" when the hub resolved one to the other; the
+    // tooltip carries the same string unclipped for a narrow viewport (#412).
+    const modelHtml = modelLabel(rec, '—');
+    const modelTitle = modelLabelText(rec, '—');
     const tid = (rec.trace_id || '').slice(0, 8) || '—';
     const expanded = state.telExpandedTraceId && state.telExpandedTraceId === rec.trace_id;
     if (expanded) li.classList.add('expanded');
 
     li.innerHTML =
       '<span class="req-time">' + tsStr + '</span>' +
-      '<span class="req-model" title="' + escapeAttr(model) + '">' + escapeHtml(model) + '</span>' +
+      '<span class="req-model" title="' + escapeAttr(modelTitle) + '">' + modelHtml + '</span>' +
       '<span class="req-latency">' + latency + '</span>' +
       '<span class="req-status ' + statusCls + '">' + rec.status + '</span>';
 

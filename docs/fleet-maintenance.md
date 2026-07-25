@@ -56,7 +56,34 @@ that a forgotten toggle self-heals within the hour.
 3. Observe `model_failover.py`'s probe/decide/act cycle move ownership after
    `fail_after_s` — the peer now stays down for the drain window instead of
    being resurrected within seconds.
-4. **Clear maintenance on the tower** once the drill is done (or let the
+4. **Verify with a backend-specific probe, never a role-level request** (#412).
+   A plain `POST /v1/audio/transcriptions` with no `model` addresses the
+   *transcribe role*, whose whole job is to fall back across models — a 200
+   there proves only that *something* transcribed, not that the model under
+   drill moved. That is what made the #405 drill unreadable: `model=whisper`
+   came back 200 in 794 ms from a host with no whisper-server bound at all —
+   a legitimate proxy hop to whisper's *owner*, but the record had no field
+   that said which machine answered, so it was indistinguishable from a
+   substitution. Prove the model itself, in this order:
+   - **Name the model explicitly** — `-F model=whisper`. Since #412 an
+     explicit model id is strict: it is either served by that model or it
+     fails naming it, and can never be answered by a different one.
+   - **Read back who served it, and where** — the response carries
+     `X-Hub-Served-Model` and `X-Hub-Served-Host` (plus
+     `X-Hub-Requested-Model`); the same trio shows up as
+     `requested → served @host` in the admin Hub/Telemetry request rows and in
+     `GET /admin/api/hub/requests/recent` (`served_model`, `served_host`). The
+     host is the field that answers "did it move?" — a 200 from `@gaming` and
+     a 200 from `@mac-mini-m4` are different outcomes.
+   - **Confirm the process on the new owner** — `Get-NetTCPConnection
+     -LocalPort 8090` (Windows) / `lsof -nP -iTCP:8090 -sTCP:LISTEN` (macOS,
+     Linux) on the host that took ownership, so a real `whisper-server` is
+     bound there rather than the request having been proxied elsewhere.
+   ```
+   curl -sS -D - -o /dev/null -F file=@clip.wav -F model=whisper \
+        http://<owner>:8000/v1/audio/transcriptions | grep -i x-hub-
+   ```
+5. **Clear maintenance on the tower** once the drill is done (or let the
    window expire):
    ```
    curl -X DELETE http://<tower>:8000/admin/api/fleet-maintenance/gaming

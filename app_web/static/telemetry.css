@@ -22,6 +22,18 @@ ul.tel-traces > li > .req-model   {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* On a narrow (vertical-terminal / phone) viewport the 1fr column is too tight
+ * for the "requested → served @host" triple (#412) — let it wrap instead of
+ * ellipsing away the part that carries the news. The tooltip still holds the
+ * full string either way. */
+@media (max-width: 560px) {
+  ul.tel-traces > li > .req-model {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
 ul.tel-traces > li > .req-latency { grid-area: latency; color: var(--muted); }
 ul.tel-traces > li > .req-status  { grid-area: status; }
 ul.tel-traces > li > .tel-trace-meta {

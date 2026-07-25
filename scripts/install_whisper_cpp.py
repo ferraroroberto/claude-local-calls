@@ -2,7 +2,9 @@
 
 Picks a release asset from ggerganov/whisper.cpp that matches this machine:
   - Windows x64 + NVIDIA  -> whisper-cublas-<cuda>-bin-x64.zip
-  - macOS arm64           -> whisper-bin-arm64.zip   (Metal build)
+  - macOS arm64           -> built from source (Metal) — upstream ships no
+    prebuilt macOS asset as of the pinned tag (#413); see
+    ``_macos_build_from_source``.
 
 Extracts into vendor/whisper.cpp/ at the project root, then renames the
 primary binary to `whisper-server[.exe]` (upstream ships it as `server[.exe]`).
@@ -18,6 +20,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -47,6 +50,7 @@ PINNED_TAG = "v1.8.6"
 RELEASES_URL = (
     f"https://api.github.com/repos/ggml-org/whisper.cpp/releases/tags/{PINNED_TAG}"
 )
+WHISPER_CPP_GIT_URL = "https://github.com/ggml-org/whisper.cpp"
 
 # Prefer the newest CUDA line upstream ships; fall back to older ones.
 WIN_CUDA_PREFS = ["cublas-12.4.0", "cublas-12.2.0", "cublas-11.8.0"]
@@ -111,6 +115,115 @@ def _linux_cuda_build_hint() -> str:
     )
 
 
+def _macos_find_cmake() -> Optional[str]:
+    """cmake's location on macOS, tolerant of a restricted non-interactive
+    PATH (``/usr/bin:/bin:/usr/sbin:/sbin``) that a launchd/SSH-triggered
+    "Fix" run gets even when an interactive shell's PATH has it via
+    Homebrew (#413 — confirmed on mac-mini-m4: ``cmake`` is on
+    ``/opt/homebrew/bin``, off that restricted PATH)."""
+    found = shutil.which("cmake")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/bin/cmake", "/usr/local/bin/cmake"):
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _macos_build_prereqs() -> str:
+    """Returns the cmake path if every from-source build prerequisite is
+    present; raises a clear, actionable InstallError otherwise (#413 scope:
+    "fail with a clear message when a build prerequisite is missing rather
+    than an asset-list dump")."""
+    cmake_path = _macos_find_cmake()
+    if not cmake_path:
+        raise InstallError(
+            "no macOS arm64 whisper.cpp release asset, and cmake is missing "
+            "so it cannot be built from source. Install it with "
+            "`brew install cmake`, then re-run."
+        )
+    try:
+        r = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        r = None
+    if r is None or r.returncode != 0:
+        raise InstallError(
+            "no macOS arm64 whisper.cpp release asset, and the Xcode Command "
+            "Line Tools are missing so it cannot be built from source. "
+            "Install them with `xcode-select --install`, then re-run."
+        )
+    return cmake_path
+
+
+def _macos_build_from_source() -> None:
+    """Build whisper-server from source for this pinned tag (#413) — no
+    prebuilt macOS asset exists as of ``PINNED_TAG``. Mirrors the recipe
+    hand-verified on mac-mini-m4: cmake configure (Metal + Accelerate BLAS
+    are auto-detected on Apple platforms), build the ``whisper-server``
+    target, flatten the binary plus every produced ``.dylib`` into
+    ``VENDOR_DIR``, then ``install_name_tool -add_rpath @loader_path`` each
+    so the flattened tree is self-contained after the source tree is
+    deleted.
+    """
+    cmake_path = _macos_build_prereqs()
+    tmp_root = Path(tempfile.mkdtemp(prefix="whisper-cpp-build-"))
+    try:
+        src_dir = tmp_root / "whisper.cpp"
+        build_dir = src_dir / "build"
+
+        log.info("cloning %s @ %s ...", WHISPER_CPP_GIT_URL, PINNED_TAG)
+        _run_build_step(
+            ["git", "clone", "--branch", PINNED_TAG, "--depth", "1", WHISPER_CPP_GIT_URL, str(src_dir)],
+            timeout=300,
+        )
+
+        log.info("configuring (cmake) ...")
+        _run_build_step(
+            [cmake_path, "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release", "-DWHISPER_BUILD_SERVER=ON"],
+            cwd=src_dir, timeout=300,
+        )
+
+        log.info("building whisper-server (this can take a few minutes) ...")
+        _run_build_step(
+            [cmake_path, "--build", str(build_dir), "--config", "Release", "-j", "--target", "whisper-server"],
+            cwd=src_dir, timeout=1800,
+        )
+
+        VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+        built_binary = build_dir / "bin" / "whisper-server"
+        if not built_binary.exists():
+            raise InstallError(f"build reported success but {built_binary} is missing")
+        shutil.copy2(built_binary, _server_binary())
+
+        dylibs = sorted(build_dir.rglob("*.dylib"))
+        log.info("flattening %d dylib(s) into %s", len(dylibs), VENDOR_DIR)
+        for dylib in dylibs:
+            shutil.copy2(dylib, VENDOR_DIR / dylib.name, follow_symlinks=False)
+
+        # Real (non-symlink) files only — a symlink shares its target's
+        # inode, so re-running install_name_tool on it errors with
+        # "would duplicate path" once the target has already been fixed.
+        flattened = [_server_binary()] + [VENDOR_DIR / d.name for d in dylibs]
+        for target in flattened:
+            if target.is_symlink():
+                continue
+            r = subprocess.run(
+                ["install_name_tool", "-add_rpath", "@loader_path", str(target)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode != 0:
+                raise InstallError(f"install_name_tool -add_rpath failed for {target}: {r.stderr.strip()}")
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _run_build_step(cmd: List[str], *, cwd: Optional[Path] = None, timeout: int) -> None:
+    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        tail = "\n".join(r.stdout.splitlines()[-20:] + r.stderr.splitlines()[-20:])
+        raise InstallError(f"build step failed: {' '.join(cmd)}\n{tail}")
+
+
 def _fetch_release() -> dict:
     log.info("querying %s ...", RELEASES_URL)
     req = urllib.request.Request(RELEASES_URL, headers={"Accept": "application/vnd.github+json"})
@@ -141,6 +254,9 @@ def _purge_vendor() -> None:
 
 
 def _pick_assets(release: dict) -> List[dict]:
+    """Windows only — the darwin platform has no reliable prebuilt asset as
+    of ``PINNED_TAG`` (#413) and is handled separately by ``_find_macos_asset``
+    plus a from-source fallback."""
     assets = release.get("assets") or []
     names = [a["name"] for a in assets]
 
@@ -160,19 +276,20 @@ def _pick_assets(release: dict) -> List[dict]:
             f"assets available: {names}"
         )
 
-    if sys.platform == "darwin":
-        if platform.machine() != "arm64":
-            raise InstallError(
-                f"only darwin arm64 is supported; this is {platform.machine()}"
-            )
-        pick = find(lambda n: n.startswith("whisper-") and "arm64" in n and n.endswith((".zip", ".tar.gz")))
-        if not pick:
-            raise InstallError(
-                f"no macOS arm64 asset in release {release.get('tag_name')}. assets: {names}"
-            )
-        return [pick]
-
     raise InstallError(f"unsupported platform: {sys.platform}")
+
+
+def _find_macos_asset(release: dict) -> Optional[dict]:
+    """A prebuilt macOS arm64 asset, if the pinned tag happens to publish one
+    (upstream did not as of v1.8.6 — #413). Checked first so a future
+    ``PINNED_TAG`` bump onto a release that does ship one uses it instead of
+    building from source."""
+    assets = release.get("assets") or []
+    for a in assets:
+        n = a["name"].lower()
+        if n.startswith("whisper-") and "arm64" in n and n.endswith((".zip", ".tar.gz")):
+            return a
+    return None
 
 
 def _normalise_binary_name() -> None:
@@ -219,6 +336,38 @@ def main(argv: Optional[List[str]] = None) -> int:
         # above; reaching here means it's missing (or --force purged it) and
         # must be compiled from source.
         raise InstallError(_linux_cuda_build_hint())
+
+    if sys.platform == "darwin":
+        if platform.machine() != "arm64":
+            raise InstallError(
+                f"only darwin arm64 is supported; this is {platform.machine()}"
+            )
+        release = _fetch_release()
+        tag = release.get("tag_name", "?")
+        asset = _find_macos_asset(release)
+        VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+        if asset:
+            log.info("release %s: macOS arm64 asset found", tag)
+            archive = VENDOR_DIR / asset["name"]
+            if not archive.exists():
+                download(asset["browser_download_url"], archive)
+            extract(archive, VENDOR_DIR)
+            archive.unlink(missing_ok=True)
+            flatten_if_nested(VENDOR_DIR)
+            _normalise_binary_name()
+        else:
+            log.info(
+                "release %s: no macOS arm64 asset — building whisper-server "
+                "from source (Metal)", tag,
+            )
+            _macos_build_from_source()
+
+        if not already_installed():
+            raise InstallError(
+                f"installed but {_server_binary()} still missing or non-runnable"
+            )
+        log.info("installed: %s", _server_binary())
+        return 0
 
     release = _fetch_release()
     tag = release.get("tag_name", "?")

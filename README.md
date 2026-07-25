@@ -943,7 +943,7 @@ local-llm-hub/
 │   ├── download_models.py    # huggingface_hub → models/
 │   ├── detect_machine_specs.py   # populate config/machine_specs.yaml
 │   ├── install_llama_cpp.py      # CUDA-Windows / Metal-macOS release
-│   ├── install_whisper_cpp.py    # whisper.cpp CUDA/Metal release → vendor/whisper.cpp/
+│   ├── install_whisper_cpp.py    # whisper.cpp CUDA-Windows release; macOS builds Metal from source (#413) → vendor/whisper.cpp/
 │   ├── install_tts.py           # pip -r requirements-tts.txt + Piper/Kokoro assets + warm TTS
 │   ├── portable_capture.py      # standalone psutil sampler, SSH-delivered to hub-less machines (#316)
 │   └── verify-before-ship.ps1    # byte-compile + pytest + Playwright on Chromium

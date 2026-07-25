@@ -12,6 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .host_profile import HostProfile, _load_config, all_hosts, resolve as resolve_host
 
+# ``startup:`` policy values (#422) — see the field docstring on ``Model``.
+STARTUP_EAGER = "eager"
+STARTUP_ON_DEMAND = "on_demand"
+
 
 @dataclass(frozen=True)
 class Model:
@@ -87,6 +91,19 @@ class Model:
     # off-GPU / virtual rows are 0; subscription rows leave it None. A None
     # value contributes 0 to the sum. See config/models.yaml for the estimates.
     est_vram_mb: Optional[int] = None
+    # Process-lifecycle policy (#422). ``eager`` (the default — today's
+    # behavior) means the model may be autostarted with the hub and kept
+    # resident by the reconcile/failover loops. ``on_demand`` means nothing
+    # starts it eagerly: the first request that routes to it spawns the
+    # backend (the request waits for readiness — same pattern as the lazy
+    # whisper proxy), and ``src.on_demand``'s idle watchdog stops it again
+    # after ``idle_unload_minutes`` without traffic. Any unknown value is
+    # normalized to ``eager`` so a typo can't silently disable a model.
+    startup: str = STARTUP_EAGER
+    # Only meaningful for ``startup: on_demand`` — minutes without a request
+    # after which the idle watchdog unloads the backend. ``None`` disables
+    # idle unload (the model stays up once demanded until stopped by hand).
+    idle_unload_minutes: Optional[int] = None
 
     @property
     def host_chain(self) -> List[str]:
@@ -153,6 +170,17 @@ def _parse_host_chain(row: Dict) -> Tuple[List[str], List[str]]:
     return [], []
 
 
+def _parse_startup(row: Dict) -> str:
+    """Normalize a row's ``startup:`` to a known policy (#422).
+
+    Anything other than the literal ``on_demand`` reads as ``eager`` — a
+    typo'd value must degrade to today's always-on behavior, never to a
+    model that silently refuses to start.
+    """
+    raw = str(row.get("startup") or STARTUP_EAGER).strip().lower()
+    return STARTUP_ON_DEMAND if raw == STARTUP_ON_DEMAND else STARTUP_EAGER
+
+
 def _row_to_model(model_id: str, row: Dict) -> Model:
     hosts, cpu_hosts = _parse_host_chain(row)
     return Model(
@@ -176,6 +204,11 @@ def _row_to_model(model_id: str, row: Dict) -> Model:
         hosts=hosts,
         cpu_hosts=cpu_hosts,
         est_vram_mb=int(row["est_vram_mb"]) if row.get("est_vram_mb") is not None else None,
+        startup=_parse_startup(row),
+        idle_unload_minutes=(
+            int(row["idle_unload_minutes"])
+            if row.get("idle_unload_minutes") is not None else None
+        ),
     )
 
 
@@ -336,6 +369,9 @@ def autostart_model_ids(host: Optional[HostProfile] = None) -> List[str]:
     process, so they are excluded even if listed by mistake, and rows owned
     by a *different* host (``m.host`` set and not this one) are remote —
     never autostarted locally, the owning host's own tray does that.
+    ``startup: on_demand`` rows (#422) are excluded too — even when a stale
+    profile still lists one, on-demand means the first *request* loads it,
+    never hub start.
     """
     from src.startup_profile import (
         DEFAULT_PROFILE_PATH,
@@ -350,7 +386,10 @@ def autostart_model_ids(host: Optional[HostProfile] = None) -> List[str]:
         legacy = (cfg.get("tray") or {}).get("autostart_models") or []
         raw = [str(item) for item in legacy if item] if isinstance(legacy, list) else []
 
-    valid = set(launchable_local_ids(host))
+    on_demand = {
+        m.id for m in local_models(host) if m.startup == STARTUP_ON_DEMAND
+    }
+    valid = set(launchable_local_ids(host)) - on_demand
     return [model_id for model_id in raw if model_id in valid]
 
 def resolve(name: str, host: Optional[HostProfile] = None) -> Optional[Model]:

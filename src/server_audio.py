@@ -20,11 +20,17 @@ from typing import List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from . import on_demand as _on_demand
 from .audio_proxy import build_whisper_upstream_request
 from .http_client import get_async_client
 from .model_registry import Model
 from .remote_proxy import remote_auth_token_for_model, remote_base_url
-from .server_common import current_otel_span, safe_span, stash_trace_id_on_ctx
+from .server_common import (
+    current_otel_span,
+    ensure_backend_ready_or_503,
+    safe_span,
+    stash_trace_id_on_ctx,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -750,6 +756,17 @@ async def audio_speech(request: Request) -> Response:
     if remote:
         headers.update(_remote_audio_headers(target) or {})
 
+    # On-demand lifecycle (#422): a cold ``startup: on_demand`` local TTS
+    # backend is spawned here and the request blocks until it answers
+    # (distinct 503 on load failure) — same hook as the chat routes. Off the
+    # event loop: the readiness poll is a blocking sleep/probe cycle.
+    if remote is None:
+        import asyncio as _asyncio
+        await _asyncio.to_thread(ensure_backend_ready_or_503, target)
+    track_on_demand = remote is None and _on_demand.is_on_demand(target)
+    if track_on_demand:
+        _on_demand.request_started(target.id)
+
     def _passthrough_headers(upstream) -> dict:
         return {
             k: v for k, v in upstream.headers.items()
@@ -765,6 +782,8 @@ async def audio_speech(request: Request) -> Response:
         try:
             upstream = await stream_cm.__aenter__()
         except _httpx.HTTPError as exc:
+            if track_on_demand:
+                _on_demand.request_finished(target.id)
             raise _audio_upstream_error(exc, backend="tts-server", port=port)
 
         async def _forward():
@@ -772,6 +791,8 @@ async def audio_speech(request: Request) -> Response:
                 async for piece in upstream.aiter_bytes():
                     yield piece
             finally:
+                if track_on_demand:
+                    _on_demand.request_finished(target.id)
                 await stream_cm.__aexit__(None, None, None)
 
         return StreamingResponse(
@@ -786,6 +807,9 @@ async def audio_speech(request: Request) -> Response:
         upstream = await client.post(upstream_url, content=body, headers=headers)
     except _httpx.HTTPError as exc:
         raise _audio_upstream_error(exc, backend="tts-server", port=port)
+    finally:
+        if track_on_demand:
+            _on_demand.request_finished(target.id)
 
     return Response(
         content=upstream.content,

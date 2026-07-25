@@ -170,18 +170,20 @@ hosts:
     icon: monitor
     address: 192.168.0.16
     ssh_user: gaming
-    # Owns the GPU voice pair (#323): whisper STT + orpheus TTS moved here from
-    # the tower to free its VRAM for the agentic lanes. whisper_translate +
-    # whisper_vanilla joined in #370, moving the remaining whisper backends
-    # off tower entirely. A non-empty list also makes this host placeable
-    # from the fleet grid (its hub runs under the #341 systemd unit;
-    # LOCAL_LLM_HUB_HOST=gaming pinned in its local .env).
+    # Owns the whisper STT trio (#323/#370): whisper + whisper_translate +
+    # whisper_vanilla moved here from the tower to free its VRAM for the
+    # agentic lanes. Orpheus moved BACK to tower in #422 (the 1070 renders it
+    # at 0.71x real-time — unusable for streamed playback); gaming stays in
+    # its chain as the degraded fallback, so it keeps orpheus in `enabled`
+    # and pre-stages the weights. A non-empty list also makes this host
+    # placeable from the fleet grid (its hub runs under the #341 systemd
+    # unit; LOCAL_LLM_HUB_HOST=gaming pinned in its local .env).
     enabled: [whisper, orpheus, whisper_translate, whisper_vanilla]
     # GTX 1070 8 GB (docs/machines.md) — the tightest ceiling in the fleet and
-    # the reason #375 exists: it now carries whisper + orpheus + whisper_translate
-    # + whisper_vanilla (#370) without overcommitting — 2000 + 2800 + 0 + 2000 =
-    # 6800 MB, comfortably under the 8192 ceiling. The grid sums their
-    # `est_vram_mb` against this and warns if the set exceeds 8 GB (#375).
+    # the reason #375 exists: it carries the whisper trio (2000 + 0 + 2000 =
+    # 4000 MB) with orpheus (2200 MB) only as a failover tenant — 6200 MB
+    # worst-case, under the 8192 ceiling. The grid sums their `est_vram_mb`
+    # against this and warns if the set exceeds 8 GB (#375).
     vram_mb: 8192
     # Wired-NIC MAC used for Wake-on-LAN (#356) — WiFi WOL is unsupported.
     mac: d4:5d:64:d6:7e:a0
@@ -226,6 +228,20 @@ hosts:
 # (parakeet on the Mac ANE, virtual aliases sharing another backend) are 0 —
 # they cost RAM/ANE, not discrete VRAM. Subscription rows (claude/gemini) have
 # no field at all. A row with no `est_vram_mb` contributes 0 to the sum.
+#
+# --- On-demand lifecycle (issue #422) ---
+# A row may declare `startup: on_demand` (default `eager` — always-on, the
+# pre-#422 behavior). An on-demand model is never started eagerly: not by hub
+# autostart, not by the fleet reconcile loop, not by the failover engine. The
+# first request that routes to it spawns the backend and waits for readiness
+# (src/on_demand.py — the hub-level generalization of the whisper-server-lazy
+# proxy pattern); `idle_unload_minutes: <int>` then arms the idle watchdog,
+# which stops the backend after that many minutes without a request. A model
+# stopped that way (or by hand) STAYS down until the next request. Before an
+# on-demand load, the hub checks the #375 budget math (running est_vram_mb sum
+# + the candidate vs the host's vram_mb ceiling) and logs a loud warning on
+# overcommit — warning only, never a block: WDDM overcommit degrades
+# transiently and idle unload recovers it.
 models:
   # --- Claude subscription path (`claude -p` CLI) ---
   # One row per Claude model the CLI exposes. The hub routes the
@@ -482,6 +498,14 @@ models:
     host: tower  # owning host (#178) — cross-enabled on mac-mini-m4 below
     engine: llama-server
     port: 8087
+    # On-demand since #422: this is the single heaviest local model (~13.4 GB)
+    # and the user rarely calls it, yet keeping it hot pinned most of tower's
+    # 16 GB and forced orpheus onto the gaming GTX 1070 (0.71x real-time,
+    # compute-bound — the root cause of app-launcher#599's crackling). The
+    # first agentic_heavy request loads it (~tens of seconds from NVMe) and
+    # 30 idle minutes unload it again, freeing the VRAM for the voice path.
+    startup: on_demand
+    idle_unload_minutes: 30
     # MoE IQ4_XS ~13.4 GB on GPU (row header), confirmed by the 2026-07-23
     # co-residency measurement (#386) ≈ 13400 MB — the single heaviest local
     # model; only fits the 16 GB tower.
@@ -786,24 +810,33 @@ models:
   orpheus:
     display_name: orpheus-tts
     backend: tts
-    # Owned by the gaming satellite since #323 (llama-server CUDA-built for
-    # sm_61; ~2× real-time there) — cross-enabled on tower + mac-mini-m4.
+    # Back on tower since #422: the gaming GTX 1070 synthesizes at 0.71x
+    # real-time with the GPU pegged (measured 2026-07-25) — every streamed
+    # playback starved and stuttered — while tower's 5060 Ti sustains 1.84x
+    # with SNAC on CPU. Tower fits it now that gemma4_26b is on-demand.
+    # Gaming stays in the chain as the degraded-but-up fallback (slower than
+    # real-time, but audible) via the #342 failover/failback machinery.
     # The audio_speech ROLE stays piper (tower CPU); orpheus serves explicit
-    # `model=orpheus` requests, proxied to gaming's hub.
-    host: gaming
+    # `model=orpheus` requests.
+    hosts: [tower, gaming]
     engine: tts-server
     tts_engine: orpheus
     port: 8093
     internal_port: 18093          # llama-server child (loopback) for the GGUF
-    # 3B Llama Q4_K_M GGUF (~2.2 GB weights) on llama-server + the small SNAC
-    # audio codec decoded in-process ≈ 2800 MB. Shares gaming's GTX 1070.
-    est_vram_mb: 2800
+    # 3B Llama Q4_K_M GGUF (~2.2 GB weights + 8K KV) on llama-server ≈ 2200 MB.
+    # SNAC decodes on CPU since #422 (see the --device note below), saving the
+    # ~1 GB the codec used to hold on-GPU.
+    est_vram_mb: 2200
     hf_repo: "isaiahbjork/orpheus-3b-0.1-ft-Q4_K_M-GGUF"
     hf_pattern: "*q4_k_m*.gguf"
     model_path: "models/orpheus-3b-0.1-ft-q4_k_m.gguf"
     args:
+      # SNAC on CPU (#422): measured *faster* than GPU SNAC on the 5060 Ti
+      # (1.84x vs 1.73x sustained) and saves ~1 GB VRAM on every host. Only
+      # the SNAC codec is affected — the llama-server child is hardcoded
+      # `-ngl 99` in src/tts_engines/orpheus.py, so the 3B GGUF stays on GPU.
       - "--device"
-      - "auto"
+      - "cpu"
 
   # --- Local Kokoro TTS (82M) — ONNX Runtime comparison option ---
   # Tiny Kokoro-82M path for voice comparison. Kept as an

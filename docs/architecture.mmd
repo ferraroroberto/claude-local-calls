@@ -109,6 +109,7 @@ flowchart TB
     SUPERVISOR["process_supervisor.py\nshared subprocess start/stop workflow"]
     SERVPROC["server_process.py\nhub's own Popen + kill-port"]
     BACKPROC["backend_process.py\nper-model Popen: llama-server ·\nwhisper-server · tts_server shim ·\nparakeet_server"]
+    ONDEMAND["on_demand.py (issue #422)\nstartup: on_demand lifecycle:\nspawn-on-first-request (request waits for\nreadiness) + idle-unload watchdog +\nVRAM overcommit warning (#375 math)"]
     WATCHDOG["_respawn_watchdog.py\ndetached: wait for parent PID to die,\nthen relaunch (stdlib-only, issue #198)"]
   end
   RUNMODEL --> BACKPROC
@@ -117,19 +118,22 @@ flowchart TB
   SERVPROC --> SUPERVISOR
   BACKPROC --> SUPERVISOR
   BACKPROC -.spawns.-> PARAKEETSRV
+  SRV -->|ensure_ready before dispatch (chat/messages/speech)| ONDEMAND
+  LIFECYCLE -->|idle-unload loop| ONDEMAND
+  ONDEMAND -->|start/stop + reachability| BACKPROC
 
   subgraph ext["External processes / subscriptions"]
     CLAUDEBIN["claude -p CLI\n(Claude Code subscription)"]
     AGYBIN["agy Antigravity CLI\n(Google AI Pro/Ultra subscription)"]
     LLAMA["llama-server (vendor/llama.cpp)\nQwen3.5-4B :8088 · Gemma4-26B-A4B :8087\n+ ad-hoc :8081/:8082/:8086"]
-    TTS["tts_engines/ (piper · kokoro · chatterbox)\nvia tts_server.py shim :8092/:8095/:8096\n(orpheus moved to gaming, #323)"]
+    TTS["tts_engines/ (piper · kokoro · chatterbox · orpheus)\nvia tts_server.py shim :8092/:8093/:8095/:8096\n(orpheus back on tower, gaming = fallback, #422)"]
     CCHOST["Any host Claude Code CLI session\n(incl. sub-agents — CLAUDE_CODE_ENABLE_TELEMETRY)"]
     MACMINI["Mac Mini (mac-mini-m4, 192.168.0.14)\npeer local-llm-hub install :8000\nowns qwen3.5-9b · parakeet-tdt-0.6b-v3"]
     PARAKEETWORKER["mac/parakeet-worker/ (Swift, ANE)\nFluidAudio Parakeet TDT 0.6B v3\nvia CoreML"]
     AGENTSVIEW["AgentsView server (optional, external)\nkenn-io/agentsview · :8080 (issue #280)"]
     SESSIONHOST["app-launcher session-host (:8446)\nloopback ConPTY/WS engine reused for the\nSSH terminal — needs app-launcher#558"]
     OPENCLAW["OpenClaw (Linux laptop, 192.168.0.11)\nmanaged-only machine: SSH reboot/shutdown/\nuptime + RDP (Machines console, #309)"]
-    GAMING["gaming (Ryzen Linux satellite, 192.168.0.16)\npeer local-llm-hub install :8000 (systemd, #341;\ninstall.py + bootstrap/sync parity #368)\nowns all whisper.cpp STT (turbo/translate/vanilla)\n+ orpheus (TTS) — #323/#370\nGTX 1070, CUDA sm_61 builds"]
+    GAMING["gaming (Ryzen Linux satellite, 192.168.0.16)\npeer local-llm-hub install :8000 (systemd, #341;\ninstall.py + bootstrap/sync parity #368)\nowns all whisper.cpp STT (turbo/translate/vanilla)\n#323/#370; orpheus fallback tier only since #422\nGTX 1070, CUDA sm_61 builds"]
   end
   CLAUDECLI --> CLAUDEBIN
   GEMINICLI --> AGYBIN
@@ -139,7 +143,7 @@ flowchart TB
   BACKPROC -.spawns.-> TTS
   CCHOST -->|OTLP/HTTP :8000/v1/metrics| OTELRECV
   REMOTEPROXY -->|forwards verbatim to owning :8000| MACMINI
-  REMOTEPROXY -->|all whisper.cpp STT + orpheus to owning :8000| GAMING
+  REMOTEPROXY -->|all whisper.cpp STT to owning :8000| GAMING
   REMOTEBOOT -->|SSH forced-command bootstrap/sync| MACMINI
   REMOTEBOOT -->|SSH forced-command bootstrap/sync (systemctl, #368)| GAMING
   PARAKEETSRV -.spawns.-> PARAKEETWORKER

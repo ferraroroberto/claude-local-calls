@@ -33,6 +33,24 @@ def resolve_model_or_400(model_name: str) -> Model:
     return m
 
 
+def ensure_backend_ready_or_503(model: Model) -> None:
+    """Bring a ``startup: on_demand`` local backend up before dispatch (#422).
+
+    No-op for eager rows and remote-owned models (``src.on_demand`` decides).
+    A cold on-demand backend is spawned here and the call blocks until it
+    answers — so the first request pays the load, exactly like the lazy
+    whisper proxy. A spawn/readiness failure surfaces as a distinct 503
+    rather than the generic connect-error 502, so "model failed to load" is
+    tellable apart from "model crashed mid-serve" in client logs.
+    """
+    from . import on_demand
+
+    try:
+        on_demand.ensure_ready(model)
+    except on_demand.OnDemandNotReady as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
 def client_id_from(request: Request) -> str:
     """Read ``X-Client-Id`` for telemetry attribution; empty string when absent."""
     return (request.headers.get("x-client-id") or "").strip()

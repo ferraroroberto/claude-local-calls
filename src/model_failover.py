@@ -353,6 +353,11 @@ async def _ensure_running_local(
 
     if model.virtual or model.backend not in ("openai", "whisper", "tts"):
         return None
+    # ``startup: on_demand`` (#422): ownership can move here, but nothing
+    # spawns the model until a request does — an idle-unloaded on-demand
+    # model must never be resurrected by this engine.
+    if getattr(model, "startup", None) == "on_demand":
+        return None
     if await asyncio.to_thread(bp.is_running, model.id):
         return None
     if start_local is not None:

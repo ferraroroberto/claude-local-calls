@@ -311,3 +311,41 @@ def _async_ret(value):
     async def _f(*args, **kwargs):
         return value
     return _f
+
+
+# --------------------------------------------------------------------------- #
+# On-demand rows (#422): the additive loop never starts them.
+# --------------------------------------------------------------------------- #
+def test_eager_start_ids_filters_on_demand_rows(monkeypatch):
+    from src import model_registry
+    from src.model_registry import Model
+
+    rows = [
+        Model(id="qwen35_4b", display_name="qwen3.5-4b", backend="openai", port=8088),
+        Model(id="gemma4_26b", display_name="gemma4-26b-a4b-it", backend="openai",
+              port=8087, startup="on_demand", idle_unload_minutes=30),
+    ]
+    monkeypatch.setattr(model_registry, "all_models",
+                        lambda *a, **kw: rows)
+
+    assert fr._eager_start_ids(["qwen35_4b", "gemma4_26b", "piper"]) == \
+        ["qwen35_4b", "piper"]
+
+
+def test_reconcile_local_skips_on_demand_models(monkeypatch):
+    from src import model_registry
+    from src.model_registry import Model
+
+    rows = [
+        Model(id="gemma4_26b", display_name="gemma4-26b-a4b-it", backend="openai",
+              port=8087, startup="on_demand", idle_unload_minutes=30),
+    ]
+    monkeypatch.setattr(model_registry, "all_models", lambda *a, **kw: rows)
+
+    started: list = []
+    monkeypatch.setattr(bp, "start",
+                        lambda mid: (started.append(mid), (True, "started"))[1])
+
+    result = _run(fr._reconcile_local(["gemma4_26b"]))
+    assert started == []
+    assert result["started"] == []

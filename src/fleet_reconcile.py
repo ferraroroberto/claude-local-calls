@@ -124,12 +124,30 @@ async def _remote_model_action(host_id: str, base: str, model_id: str, action: s
 # --------------------------------------------------------------------------- #
 # Per-host convergence.
 # --------------------------------------------------------------------------- #
+def _eager_start_ids(desired: List[str]) -> List[str]:
+    """``desired`` minus ``startup: on_demand`` rows (#422).
+
+    Placement keeps documenting intent (and the grid keeps counting the
+    VRAM estimate) for an on-demand model, but this loop must never start
+    one — the first *request* loads it, and an idle-unloaded or hand-stopped
+    on-demand model staying down is the whole point (the pre-#422 supervisor
+    resurrected a stopped ``gemma4_26b`` within minutes, observed live).
+    """
+    from .model_registry import STARTUP_ON_DEMAND, all_models
+
+    on_demand = {m.id for m in all_models() if m.startup == STARTUP_ON_DEMAND}
+    skipped = [m for m in desired if m in on_demand]
+    if skipped:
+        logger.debug("fleet reconcile: skipping on-demand model(s): %s", skipped)
+    return [m for m in desired if m not in on_demand]
+
+
 async def _reconcile_local(desired: List[str]) -> Dict[str, Any]:
     """Start the control node's own placed models directly (idempotent)."""
     from . import backend_process as bp
 
     started: List[Dict[str, Any]] = []
-    for model_id in desired:
+    for model_id in _eager_start_ids(desired):
         try:
             ok, msg = await asyncio.to_thread(bp.start, model_id)
         except Exception as exc:  # noqa: BLE001 — a bad row must not abort the pass
@@ -180,7 +198,10 @@ async def _reconcile_remote(host_id: str, desired: List[str]) -> Dict[str, Any]:
     base = _peer_base(owner)
     profile = await _remote_write_profile(host_id, base, desired)
     started: List[Dict[str, Any]] = []
-    for model_id in desired:
+    # The profile write-through above keeps the full placed set (the peer's
+    # own autostart filter skips on-demand rows, #422); only the eager subset
+    # is actively started here.
+    for model_id in _eager_start_ids(desired):
         started.append({"id": model_id, **await _remote_model_action(host_id, base, model_id, "start")})
     return {
         "reachable": True,

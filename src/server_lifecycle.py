@@ -150,6 +150,11 @@ async def wire_observatory_loop() -> None:
     # and arm the scheduled snapshot if it's enabled. No task is created when
     # it's off — the feature costs nothing until asked for.
     _BACKGROUND_TASKS.append(loop.create_task(_init_diagnostics()))
+    # On-demand idle watchdog (issue #422): periodically unloads a
+    # ``startup: on_demand`` model that has sat idle past its
+    # ``idle_unload_minutes`` window. Cheap when no row opts in — the pass
+    # scans the registry and finds no candidates.
+    _BACKGROUND_TASKS.append(loop.create_task(_on_demand_idle_loop()))
 
 
 async def _autostart_configured_backends() -> None:
@@ -270,6 +275,21 @@ async def _model_failover_loop() -> None:
         await model_failover.failover_loop(boot_delay_s=20.0)
     except Exception as exc:  # noqa: BLE001 — the shim must not crash startup
         logger.warning("model failover loop exited abnormally: %s", exc)
+
+
+async def _on_demand_idle_loop() -> None:
+    """Idle unload for ``startup: on_demand`` models (issue #422).
+
+    Thin lifecycle shim — the sweep cadence, the idle decision, and the
+    in-flight guard live in ``src.on_demand`` (``idle_unload_loop``),
+    keeping the policy unit-testable with no FastAPI app in the loop.
+    """
+    from . import on_demand
+
+    try:
+        await on_demand.idle_unload_loop()
+    except Exception as exc:  # noqa: BLE001 — the shim must not crash startup
+        logger.warning("on-demand idle loop exited abnormally: %s", exc)
 
 
 async def _resource_sampler() -> None:

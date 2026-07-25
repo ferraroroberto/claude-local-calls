@@ -212,6 +212,11 @@ hosts:
 #     fail_after_s: 90         # owner continuously down this long -> fail over
 #     failback_after_s: 600    # preferred host continuously up this long -> hand back
 #     policy: auto             # auto = hand back after the window; sticky = stay put
+#
+# fail_after_s races fleet_reconcile.py's own always-on resurrection of a down
+# peer (#411) — arm src.fleet_maintenance for the target host (via
+# /admin/api/fleet-maintenance) before inducing an outage, or reconcile wakes
+# the peer before this window is satisfied. See docs/fleet-maintenance.md.
 
 # `est_vram_mb` (issue #375) is a rough, static per-model GPU-VRAM footprint
 # estimate in MB — enough for the placement grid to flag a host overcommit

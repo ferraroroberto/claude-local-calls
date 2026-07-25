@@ -19,6 +19,15 @@ Explicit un-placement is a separate, deliberate action
 (:func:`apply_placement_change`, driven by the placement API's PATCH) — it stops
 the removed models and drops them from the host's profile.
 
+**Maintenance gate (#411):** this loop's own always-on convergence used to race
+``model_failover.py`` (#342) — a deliberately-stopped peer got SSH-resurrected
+here within seconds, well inside ``model_failover``'s ``fail_after_s`` window,
+so failover could never trigger on a drill-induced outage. :func:`reconcile_once`
+now checks ``src.fleet_maintenance.is_under_maintenance`` per host and skips a
+drained host entirely (no wake, no bootstrap, no profile write, no start) until
+its window expires or is cleared via ``/admin/api/fleet-maintenance`` — see
+that module's docstring for the full contract.
+
 Everything leans on existing idempotency: ``backend_process.start`` adopts a
 reachable port and no-ops if already running, and a forwarded ``/start`` returns
 409 "already running" — both treated as success here — so the loop is safe to
@@ -197,6 +206,7 @@ async def reconcile_once() -> Dict[str, Any]:
     empty placement is skipped entirely: no models to run means no reason to
     wake it.
     """
+    from . import fleet_maintenance
     from .fleet_placement import load_fleet_placement
     from .host_profile import resolve as resolve_host
 
@@ -205,6 +215,10 @@ async def reconcile_once() -> Dict[str, Any]:
     results: Dict[str, Any] = {}
     for host_id, desired in placement.items():
         if not desired:
+            continue
+        if fleet_maintenance.is_under_maintenance(host_id):
+            logger.info("fleet reconcile: host %s is under maintenance — skipping", host_id)
+            results[host_id] = {"maintenance": True, "reachable": None}
             continue
         try:
             results[host_id] = await _reconcile_host(host_id, list(desired), active_id)

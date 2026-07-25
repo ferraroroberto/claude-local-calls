@@ -195,7 +195,7 @@ boxes):
 | `mac-mini-m4` | `mac-mini.tail1121fd.ts.net` | `100.82.9.41` | Confirmed 2026-07-23 via `tailscale status` — the tailnet node is `mac-mini`. Recorded in `models.yaml` as the #396 LAN-failover target (it owns live models, so it's the peer where a wired failure hurts most). |
 | `openclaw` | `asus-linux.tail1121fd.ts.net` | `100.102.186.128` | Confirmed 2026-07-21 — the tailnet node is `asus-linux` (renamed from the earlier `laptop`). |
 | `gaming` | `gaming-linux.tail1121fd.ts.net` | `100.77.216.127` | Tailscale installed; its own tailnet node (#332). Confirmed 2026-07-21. |
-| `tower` | `tower.tail1121fd.ts.net` | *(not recorded)* | The hub box; serves Langfuse at `tower.tail1121fd.ts.net:3000`. Confirmed 2026-07-21. |
+| `tower` | `tower.tail1121fd.ts.net` | `100.107.242.100` | The hub box; serves Langfuse at `tower.tail1121fd.ts.net:3000`. Confirmed 2026-07-21; IP recorded 2026-07-25. |
 
 Since #396 these names are more than an inventory: every peer-connect path in the hub (model-proxy upstream, SSH ops, remote stats/liveness) dials the wired LAN `address:` first and falls back to the host's `tailscale:` magic-DNS name when the LAN path stops answering — by design, a wired-NIC failure moves a box to an unreserved Wi-Fi pool address, and only the tailnet name survives that. The failover is logged at info level and surfaces as a "via tailnet" badge on the Machines card.
 

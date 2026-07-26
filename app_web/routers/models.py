@@ -18,7 +18,6 @@ from src.host_profile import all_hosts, get_host, resolve as resolve_host
 from src.model_failover import effective_owner
 from src.model_registry import (
     Model,
-    all_models,
     cpu_resident_map,
     enabled_models,
     resolve as resolve_model,
@@ -78,7 +77,9 @@ def _add_failover_fields(row: Dict[str, Any], m: Model, owner_id: str) -> None:
     row["failover"] = owner_id != m.host_chain[0]
 
 
-def _add_placement_fields(row: Dict[str, Any], m: Model) -> None:
+def _add_placement_fields(
+    row: Dict[str, Any], m: Model, cpu_map: Dict[str, set]
+) -> None:
     """Annotate a tile row with its declared placement *intent* (#423) — the
     Phase 1 (#422) registry fields the read-only placement card renders.
 
@@ -92,46 +93,22 @@ def _add_placement_fields(row: Dict[str, Any], m: Model) -> None:
     if m.backend in ("claude", "gemini"):
         return
     row["placement"] = {
-        # Declared chain in priority order; ``cpu`` marks the degraded
-        # CPU-offload tier (#342). A bare ``host:`` row is a 1-element chain.
-        "chain": [{"id": h, "cpu": h in m.cpu_hosts} for h in m.host_chain],
+        # Declared chain in priority order; ``cpu`` marks the *effective*
+        # device on that host (#434) — sourced from
+        # ``model_registry.cpu_resident_map`` (the same source the fleet
+        # summary's device hints read), so an always-CPU row (piper, a
+        # whisper ``-ng`` row, #265) is tagged everywhere, not just a chain's
+        # degraded ``cpu: true`` tier (#342). A bare ``host:`` row is a
+        # 1-element chain.
+        "chain": [
+            {"id": h, "cpu": m.id in cpu_map.get(h, ())} for h in m.host_chain
+        ],
         "startup": m.startup,
         "idle_unload_minutes": m.idle_unload_minutes,
         "est_vram_mb": m.est_vram_mb,
         # #424: a virtual alias shares its parent row's process — its
         # placement is the parent's, so the editor never opens on it.
         "editable": not m.virtual,
-    }
-
-
-def _host_budgets(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Per-host VRAM budget context for the placement cards (#423).
-
-    Reuses the #375 grid's math shape: ``vram_mb`` is the host's declared
-    ceiling (``None`` for hosts with no discrete-VRAM notion — Apple-silicon
-    unified memory — which never warn), ``resident_est_vram_mb`` sums the
-    static ``est_vram_mb`` estimates of the models *currently reachable* on
-    that host (the grid's "running" leg; estimates come from the local
-    registry, keyed by id, so a peer's payload version can't skew the sum).
-    Rows resident on CPU on that host (``model_registry.cpu_resident_map``)
-    are excluded — they hold no GPU VRAM, so counting them faked overcommit
-    (#431). Only hosts that own at least one row in this payload appear.
-    """
-    est = {m.id: m.est_vram_mb or 0 for m in all_models()}
-    cpu = cpu_resident_map()
-    resident: Dict[str, int] = {}
-    for r in rows:
-        host = r.get("host")
-        if not host or not r.get("reachable"):
-            continue
-        if r.get("id") in cpu.get(host, ()):
-            continue
-        resident[host] = resident.get(host, 0) + est.get(r.get("id"), 0)
-    ceilings = {h.id: h.vram_mb for h in all_hosts()}
-    hosts_seen = {r.get("host") for r in rows if r.get("host")}
-    return {
-        h: {"vram_mb": ceilings.get(h), "resident_est_vram_mb": resident.get(h, 0)}
-        for h in sorted(hosts_seen)
     }
 
 
@@ -269,6 +246,7 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
     )
 
     rows: List[Dict[str, Any]] = []
+    cpu_map = cpu_resident_map()  # effective per-(model, host) device (#434)
     for m, reachable, device in zip(local_models, reach_results, device_results):
         # Virtual aliases share an existing backend's port and own no process,
         # so they're reachable but never independently start/stop-able.
@@ -293,13 +271,13 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
             "host": active.id,
         }
         _add_failover_fields(row, m, active.id)
-        _add_placement_fields(row, m)
+        _add_placement_fields(row, m, cpu_map)
         if device:
             row["device"] = device
         rows.append(row)
 
     if local_only:
-        return {"models": rows, "host_budgets": _host_budgets(rows), "config": _config_block()}
+        return {"models": rows, "config": _config_block()}
 
     # Remote-owned rows: one fetch per distinct owning host, merged in.
     # Trust the owner's own reachable/ownership/pid values — this hub has
@@ -320,10 +298,10 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
             else:
                 row = _offline_remote_row(m, host_id)
             _add_failover_fields(row, m, host_id)
-            _add_placement_fields(row, m)
+            _add_placement_fields(row, m, cpu_map)
             rows.append(row)
 
-    return {"models": rows, "host_budgets": _host_budgets(rows), "config": _config_block()}
+    return {"models": rows, "config": _config_block()}
 
 
 # --------------------------------------------------------------------- #

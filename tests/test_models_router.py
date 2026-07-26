@@ -98,8 +98,9 @@ def test_device_probe_not_fired_for_non_tts_backend(monkeypatch):
 
 
 # --------------------------------------------------------------------- #
-# Read-only placement fields (#423) — declared intent per row + per-host
-# VRAM budget context, consumed by the Models tab's placement cards.
+# Read-only placement fields (#423) — declared intent per row, consumed by
+# the Models tab's placement cards. (The per-host `host_budgets` block was
+# retired in #434: the Fleet summary card owns capacity now.)
 # --------------------------------------------------------------------- #
 
 def test_placement_fields_on_local_rows(monkeypatch):
@@ -154,49 +155,35 @@ def test_placement_chain_marks_cpu_tier_on_remote_row(monkeypatch):
     ]
 
 
-def test_host_budgets_sum_reachable_rows(monkeypatch):
-    """host_budgets carries the tower's declared ceiling and sums est_vram_mb
-    over the rows currently reachable there — qwen35_4b (2100) + gemma4_26b
-    (13400); the co-listening virtual alias contributes 0."""
-    monkeypatch.setattr(
-        models_router, "snapshot_listening_pids",
-        lambda: {8087: [111], 8088: [222]},
-    )
-    monkeypatch.setattr(bp, "is_reachable", lambda m, timeout=1.5: True)
+def test_placement_chain_marks_always_cpu_rows_everywhere(monkeypatch):
+    """#434: the chain ``cpu`` flag is the *effective* device per host
+    (``model_registry.cpu_resident_map``), not just the declared ``cpu: true``
+    chain tier — whisper_translate (whisper-server ``-ng``, #265) holds no GPU
+    anywhere, so its 1-element chain is tagged cpu on its owner, and piper
+    (always-CPU engine) likewise. orpheus stays untagged on both members."""
+    monkeypatch.setattr(models_router, "snapshot_listening_pids", lambda: {})
 
-    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
-    tower = body["host_budgets"]["tower"]
-    assert tower["vram_mb"] == 16384
-    assert tower["resident_est_vram_mb"] == 2100 + 13400
+    async def _offline(profile, **kwargs):
+        return None
 
+    monkeypatch.setattr(models_router.svc, "remote_models", _offline)
 
-def test_host_budgets_exclude_cpu_resident_rows(monkeypatch):
-    """A reachable row that is CPU-resident on its host contributes nothing to
-    the budget bar's resident sum (#431) — same exclusion as the fleet
-    summary's capacity math (``model_registry.cpu_resident_map``)."""
-    monkeypatch.setattr(
-        models_router, "snapshot_listening_pids",
-        lambda: {8087: [111], 8088: [222]},
-    )
-    monkeypatch.setattr(bp, "is_reachable", lambda m, timeout=1.5: True)
-    monkeypatch.setattr(
-        models_router, "cpu_resident_map", lambda: {"tower": {"gemma4_26b"}}
-    )
-
-    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
-    tower = body["host_budgets"]["tower"]
-    assert tower["resident_est_vram_mb"] == 2100  # gemma4_26b's 13400 excluded
+    body = _admin_client().get("/api/models").json()
+    translate = _row(body, "whisper_translate")["placement"]["chain"]
+    assert translate == [{"id": "gaming", "cpu": True}]
+    piper = _row(body, "piper")["placement"]["chain"]
+    assert piper == [{"id": "tower", "cpu": True}]
+    orpheus = _row(body, "orpheus")["placement"]["chain"]
+    assert [e["cpu"] for e in orpheus] == [False, False]
 
 
-def test_host_budgets_zero_when_nothing_reachable(monkeypatch):
-    """No reachable process rows → the tower budget reports 0 resident MB
-    (claude/gemini rows are 'reachable' but estimate-less, contributing 0)."""
+def test_host_budgets_block_is_gone(monkeypatch):
+    """#434 retired the per-card budget bar and its ``host_budgets`` payload —
+    capacity is the Fleet summary card's job now."""
     monkeypatch.setattr(models_router, "snapshot_listening_pids", lambda: {})
 
     body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
-    tower = body["host_budgets"]["tower"]
-    assert tower["vram_mb"] == 16384
-    assert tower["resident_est_vram_mb"] == 0
+    assert "host_budgets" not in body
 
 
 # --------------------------------------------------------------------- #

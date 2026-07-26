@@ -16,7 +16,6 @@ export async function fetchModels() {
   try {
     const body = await jsonApi('/admin/api/models');
     state.models = body.models || [];
-    state.hostBudgets = body.host_budgets || {};
     state.modelsConfig = body.config || null;
     renderConfigChip();
     renderModels();
@@ -197,10 +196,11 @@ function fillItem(li, m) {
 /* ---------- read-only placement card (#423) ----------
  * Renders the declared placement *intent* from config/models.yaml (the Phase 1
  * #422 registry fields the API now carries per row): the host chain in
- * priority order with the effective owner highlighted and degraded cpu tiers
- * marked, a startup-policy badge that reads the live state for on-demand
- * rows, the static VRAM estimate, and the owner host's budget bar (resident
- * estimate vs declared ceiling — the #375 grid math, surfaced per row).
+ * priority order with the effective owner highlighted and cpu-resident tiers
+ * marked (effective device per host — #434), and a startup-policy badge that
+ * reads the live state for on-demand rows. No size chip and no budget bar
+ * (#434): host capacity lives on the Fleet summary card, and the old
+ * per-card bar repeated the same machine fact on every card.
  * Subscription rows (claude/gemini) carry no `placement` key and get nothing.
  * On the single write host (#424) an edit button opens the inline editor. */
 function buildPlacement(m, editorOpen) {
@@ -230,7 +230,7 @@ function buildPlacement(m, editorOpen) {
       pill.textContent = entry.id + (entry.cpu ? ' · cpu' : '');
       pill.title = (owner ? 'Active owner'
         : (i === 0 ? 'Preferred host' : 'Fallback host'))
-        + (entry.cpu ? ' — degraded CPU tier' : '');
+        + (entry.cpu ? ' — CPU-resident on this host (holds no GPU VRAM)' : '');
       chainEl.appendChild(pill);
     });
     line.appendChild(chainEl);
@@ -238,13 +238,8 @@ function buildPlacement(m, editorOpen) {
 
   line.appendChild(startupBadge(m, p));
 
-  if (p.est_vram_mb) {
-    const vr = document.createElement('span');
-    vr.className = 'placement-vram muted';
-    vr.textContent = '~' + fmtGb(p.est_vram_mb) + ' VRAM';
-    vr.title = 'Static worst-case GPU-VRAM estimate (est_vram_mb) — not live telemetry';
-    line.appendChild(vr);
-  }
+  // #434: no per-card size chip and no host budget bar — the cards stay
+  // light; sizes/capacity live in the placement editor and the Fleet summary.
 
   // Edit affordance (#424): only where this hub may write (tower — the
   // single-writer contract) and the row's placement is its own (a virtual
@@ -261,9 +256,6 @@ function buildPlacement(m, editorOpen) {
     line.appendChild(btn);
   }
   wrap.appendChild(line);
-
-  const budget = budgetBar(m);
-  if (budget) wrap.appendChild(budget);
   return wrap;
 }
 
@@ -290,32 +282,6 @@ function startupBadge(m, p) {
     el.title = 'Always-on: autostarted and kept resident';
   }
   return el;
-}
-
-/* The owner host's VRAM budget bar: resident estimate vs declared ceiling.
- * Hosts with no `vram_mb` ceiling (Apple-silicon unified memory) render no
- * bar — there is no honest denominator (#375). Overcommit tints the fill
- * `attention`, matching the fleet grid's advisory warning. */
-function budgetBar(m) {
-  const b = m.host && state.hostBudgets ? state.hostBudgets[m.host] : null;
-  if (!b || !b.vram_mb) return null;
-  const used = b.resident_est_vram_mb || 0;
-  const pct = Math.min(100, Math.round((used / b.vram_mb) * 100));
-  const row = document.createElement('div');
-  row.className = 'placement-budget';
-  row.title = 'Estimated VRAM of models currently resident on ' + m.host
-    + ' vs its ' + fmtGb(b.vram_mb) + ' ceiling — static estimates, not live telemetry';
-  const bar = document.createElement('span');
-  bar.className = 'placement-budget-bar' + (used > b.vram_mb ? ' over' : '');
-  const fill = document.createElement('span');
-  fill.style.width = pct + '%';
-  bar.appendChild(fill);
-  const label = document.createElement('span');
-  label.className = 'placement-budget-label muted';
-  label.textContent = m.host + ' · ' + fmtGb(used) + ' / ' + fmtGb(b.vram_mb);
-  row.appendChild(bar);
-  row.appendChild(label);
-  return row;
 }
 
 // MB → compact "X.X GB" (same formatting as the fleet grid's capacity note).

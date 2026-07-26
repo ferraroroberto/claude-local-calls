@@ -70,9 +70,6 @@ export const state = {
 
   // Models tab — "Active only" filter, default on (issue #266).
   modelsActiveOnly: true,
-  // Models tab — per-host VRAM budget context for the placement cards
-  // (issue #423): host_id -> { vram_mb, resident_est_vram_mb }.
-  hostBudgets: {},
   // Models tab — config-as-code context (#424): models.yaml HEAD sha,
   // whether this hub may write (tower only), and the fleet host list the
   // chain editor offers. Null until the first /admin/api/models fetch.

@@ -27,7 +27,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter
 
 from src import backend_process as bp
-from src import fleet_reconcile, remote_stats, services as svc
+from src import fleet_reconcile, remote_stats, services as svc, system_stats
 from src.host_profile import HostProfile, all_hosts, resolve as resolve_host
 from src.model_registry import (
     all_models,
@@ -135,6 +135,12 @@ async def _host_status(
         # Display-only capacity context (#431) — total system RAM where the
         # machines registry documents it; None where the fact isn't known.
         "ram_mb": profile.ram_mb,
+        # Live RAM snapshot (#434) — the same {used_gb, total_gb, percent}
+        # block the Machines tab shows, so the capacity line can read
+        # used/total instead of just the declared fact. Filled per branch
+        # below; None wherever no live figure is available (host off, no SSH),
+        # in which case the UI falls back to the declared `ram_mb` total.
+        "ram": None,
     }
 
     if hid == active_id:
@@ -149,6 +155,7 @@ async def _host_status(
         return {
             **base, "local": True, "reachable": True, "dormant": False,
             "running": running, "external": external,
+            "ram": system_stats.ram_stats(),
             **_capacity(profile, placed, running, vram, devices),
         }
 
@@ -156,6 +163,7 @@ async def _host_status(
     # runs a hub. A dormant node is never live-probed (it's declared powered down).
     reachable = False if profile.dormant else await remote_stats.is_reachable(profile)
     running: List[str] = []
+    ram = None
     if reachable and runs_hub:
         # Only a hub-running peer exposes a models API for live running badges.
         rows = await svc.remote_models(profile, timeout_s=_GRID_PROBE_TIMEOUT_S) or []
@@ -163,9 +171,16 @@ async def _host_status(
             r["id"] for r in rows
             if isinstance(r, dict) and r.get("id") in eligible_set and r.get("reachable")
         ]
+    if reachable and profile.can_ssh:
+        # Live RAM over the same cached SSH probe the Machines tab uses (#434)
+        # — remote_stats.collect keeps a 30 s cache and this GET is
+        # tab-triggered (never polled), so no SSH storm. Best-effort: a failed
+        # probe leaves ram None and the UI shows the declared total.
+        stats = await remote_stats.collect(profile)
+        ram = stats.get("ram") if stats else None
     return {
         **base, "local": False, "reachable": reachable,
-        "dormant": profile.dormant, "running": running, "external": [],
+        "dormant": profile.dormant, "running": running, "external": [], "ram": ram,
         **_capacity(profile, placed, running, vram, devices),
     }
 

@@ -82,10 +82,6 @@ FAKE_MODELS = {
             },
         },
     ],
-    "host_budgets": {
-        "tower": {"vram_mb": 16384, "resident_est_vram_mb": 4300},
-        "gaming": {"vram_mb": 8192, "resident_est_vram_mb": 4000},
-    },
     "config": BASE_CONFIG,
 }
 

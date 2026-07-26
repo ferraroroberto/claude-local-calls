@@ -1,18 +1,19 @@
 """End-to-end tests for the Models tab's read-only placement cards (#423).
 
-UI over the extended ``/admin/api/models`` payload (placement intent per row
-+ per-host VRAM budget context). Same discipline as the fleet-placement grid
+UI over the extended ``/admin/api/models`` payload (placement intent per
+row). Same discipline as the fleet-placement grid
 suite: the GET contract is pinned with route interception so the render is
 deterministic and no real backend is started — the SPA is the unit under
 test (the API itself is covered in ``tests/test_models_router.py``).
 
 What they lock in:
   * chain pills render in priority order with the effective owner
-    highlighted and the degraded ``cpu: true`` tier marked;
+    highlighted and cpu-resident tiers marked — including an always-CPU row
+    (whisper_translate's ``-ng``) whose *owner* pill carries the tag (#434);
   * the startup badge reads the policy + live state truthfully — ``eager``,
     ``on-demand · loaded``, ``on-demand · idle-unloaded``;
-  * the owner host's budget bar renders used-vs-ceiling, tints ``over`` on
-    overcommit, and is absent for a host with no declared ceiling;
+  * the cards stay light (#434): no per-card size chip and no host budget
+    bar anywhere — capacity is the Fleet summary card's job;
   * subscription rows (claude) carry no placement section at all.
 """
 
@@ -54,8 +55,7 @@ FAKE_MODELS = {
             },
         },
         {
-            # Remote-owned chain with a degraded cpu last resort; its owner
-            # host (gaming) overcommits its ceiling in host_budgets below.
+            # Remote-owned chain with a degraded cpu last resort.
             "id": "whisper", "display_name": "whisper-large-v3-turbo",
             "backend": "whisper", "engine": "whisper-server", "port": 8090,
             "url": None, "aliases": [], "controllable": True,
@@ -73,7 +73,21 @@ FAKE_MODELS = {
             },
         },
         {
-            # Row owned by a host with no declared VRAM ceiling — no bar.
+            # Always-CPU row (#265/#434): whisper-server `-ng` holds no GPU
+            # anywhere, so the effective-device flag tags its owner pill.
+            "id": "whisper_translate", "display_name": "whisper-medium-translate",
+            "backend": "whisper", "engine": "whisper-server", "port": 8091,
+            "url": None, "aliases": [], "controllable": True,
+            "ownership": "ours", "pid": 999, "reachable": True,
+            "model_path": None, "host": "gaming",
+            "placement": {
+                "chain": [{"id": "gaming", "cpu": True}],
+                "startup": "eager", "idle_unload_minutes": None,
+                "est_vram_mb": 0,
+            },
+        },
+        {
+            # Row owned by the ceiling-less Mac Mini (unified memory).
             "id": "parakeet", "display_name": "parakeet-tdt-0.6b-v3",
             "backend": "whisper", "engine": "parakeet-server", "port": 8098,
             "url": None, "aliases": ["parakeet"], "controllable": True,
@@ -108,11 +122,6 @@ FAKE_MODELS = {
             "model_path": None, "host": "tower",
         },
     ],
-    "host_budgets": {
-        "tower": {"vram_mb": 16384, "resident_est_vram_mb": 4300},
-        "gaming": {"vram_mb": 8192, "resident_est_vram_mb": 9000},
-        "mac-mini-m4": {"vram_mb": None, "resident_est_vram_mb": 0},
-    },
 }
 
 
@@ -153,8 +162,8 @@ def test_chain_pills_render_with_owner_highlight(page, admin_url):
     assert "owner" in (pills.nth(0).get_attribute("class") or "")
     assert pills.nth(1).inner_text() == "gaming"
     assert "owner" not in (pills.nth(1).get_attribute("class") or "")
-    # The static VRAM estimate rides the same line (2200 MB → ~2.1 GB).
-    assert "2.1 GB VRAM" in orpheus.locator(".placement-vram").inner_text()
+    # #434: no size chip on the card — sizes live in the editor + summary.
+    assert orpheus.locator(".placement-vram").count() == 0
 
 
 def test_degraded_cpu_tier_is_marked(page, admin_url):
@@ -186,23 +195,26 @@ def test_startup_badge_reads_policy_and_live_state(page, admin_url):
     assert "good" in (chatter_badge.get_attribute("class") or "")
 
 
-def test_budget_bar_used_vs_ceiling_and_overcommit_tint(page, admin_url):
+def test_always_cpu_owner_pill_carries_cpu_tag(page, admin_url):
+    """#434: whisper_translate's effective device is CPU by design (#265) —
+    its owner pill must read `gaming · cpu`, matching the fleet summary."""
     _open_models_tab(page, admin_url)
 
-    # Tower (orpheus's owner): 4.2 / 16.0 GB, within budget → no .over tint.
-    orpheus_budget = _item(page, "orpheus").locator(".placement-budget")
-    assert orpheus_budget.count() == 1
-    label = orpheus_budget.locator(".placement-budget-label").inner_text()
-    assert "tower" in label and "4.2" in label and "16.0" in label
-    bar_cls = orpheus_budget.locator(".placement-budget-bar").get_attribute("class") or ""
-    assert "over" not in bar_cls
+    pills = _item(page, "whisper_translate").locator(".place-pill")
+    assert pills.count() == 1
+    assert "gaming" in pills.first.inner_text()
+    assert "cpu" in pills.first.inner_text()
+    assert "owner" in (pills.first.get_attribute("class") or "")
 
-    # Gaming (whisper's owner) overcommits 9000/8192 → the .over tint.
-    whisper_bar = _item(page, "whisper").locator(".placement-budget-bar")
-    assert "over" in (whisper_bar.get_attribute("class") or "")
 
-    # Mac Mini declares no ceiling — no bar at all, never a fake denominator.
-    assert _item(page, "parakeet").locator(".placement-budget").count() == 0
+def test_cards_carry_no_capacity_bar_or_size_chip(page, admin_url):
+    """#434: the per-card host budget bar and the `~X GB` size chip are gone
+    everywhere — the Fleet summary card owns capacity."""
+    _open_models_tab(page, admin_url)
+
+    assert page.locator("#modelsList .placement-budget").count() == 0
+    assert page.locator("#modelsList .placement-vram").count() == 0
+    assert "VRAM" not in page.locator("#modelsList").inner_text()
 
 
 def test_subscription_row_has_no_placement_section(page, admin_url):

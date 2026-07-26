@@ -112,6 +112,10 @@ hosts:
     # No `vram_mb` (#375): Apple-silicon unified memory has no fixed VRAM
     # partition to check a model set against, so the placement grid skips the
     # capacity warning for this host rather than inventing a misleading ceiling.
+    # 16 GB unified memory (docs/machines.md) — display-only context on the
+    # fleet summary (#431/#434): doubles as the unified-memory ceiling shown
+    # against the GPU estimate, never a warning input.
+    ram_mb: 16384
     # SSH login used for the remote-bootstrap/sync endpoints (#181) — not a
     # secret, just which account the forced-command key logs in as. The
     # private key itself lives outside git (LOCAL_LLM_HUB_SSH_KEY in .env).

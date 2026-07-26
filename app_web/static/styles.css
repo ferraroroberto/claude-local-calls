@@ -85,10 +85,15 @@
   --bottom-tabs-label: 11px;
   --tabbar-bg: rgba(255, 255, 255, 0.85);
   --tabbar-border: rgba(31, 35, 40, 0.12);
-  color-scheme: light dark;
+  /* Follow the html[data-theme] stamp, not the OS: `light dark` here let the
+     UA paint native widgets (checkboxes, selects) by OS preference, so a
+     dark-mode phone showed black checkboxes on the light theme (#428). The
+     boot script always stamps data-theme pre-paint, so this never flashes. */
+  color-scheme: light;
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;       /* native widgets match the stamped theme (#428) */
   --bg: #0d1117;            /* canvas (GitHub dark canvas) */
   --card: #161b22;          /* elevated card surface */
   --card-off: #010409;      /* canvas-subtle (true black inset) */

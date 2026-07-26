@@ -1604,7 +1604,11 @@ per-query cost, and — like the hub's own `:8000` — bound to `0.0.0.0`
 for LAN reachability but never meant to be port-forwarded to the public
 internet. Not otherwise integrated with this repo's Python/webapp code.
 `docker/searxng/config/` (the container-generated `settings.yml`,
-including a fresh random secret key) is gitignored.
+including a fresh random secret key) is gitignored — JSON output is off by
+default in SearXNG, so `start_searxng.bat` runs
+`docker/searxng/ensure_json_format.py` after every start to idempotently
+patch `search.formats` on the generated file (never touching `secret_key`),
+restarting the container only the one time it actually changes something.
 
 ## Coding agent usage (issues #20, #71, #231, #280)
 

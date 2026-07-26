@@ -690,34 +690,6 @@ h2 { display: flex; align-items: center; gap: 8px; }
   border-color: var(--accent-border-strong);
   font-weight: 600;
 }
-.placement-vram { font-size: var(--font-caption); }
-/* Budget bar: a thin meter, accent fill (the sparkline convention — accent
- * for neutral quantitative ink), `attention` only on overcommit (state,
- * matching .fleet-capacity-warn's advisory tone — never decoration). */
-.placement-budget {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.placement-budget-bar {
-  flex: 0 1 220px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--card-off);
-  border: 1px solid var(--line-muted);
-  overflow: hidden;
-}
-.placement-budget-bar > span {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  border-radius: var(--radius-pill);
-}
-.placement-budget-bar.over > span { background: var(--attention); }
-.placement-budget-label {
-  font-size: var(--font-caption);
-  white-space: nowrap;
-}
 /* Edit affordance (#424) — compact inline icon control on the placement
  * line, same sub-row scale as the glossary REPL row's delete button. */
 .placement-line .placement-edit-btn { width: 26px; min-height: 26px; }
@@ -1134,7 +1106,20 @@ h2 { display: flex; align-items: center; gap: 8px; }
 /* The .startup-list under a host group has no extra top margin — the head +
  * note already own the spacing above it. */
 .fleet-host .startup-list { margin-top: 2px; }
+/* Multi-line Running/Loadable values (#434): the label tops-out against the
+ * first model line instead of floating mid-list. */
+.fleet-host .startup-row { align-items: flex-start; }
 .fleet-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* One model per line (#434) — right-aligned by the parent .roles-row-value;
+ * both Running and Loadable read at the caption size (the old inline
+ * `·`-joined Running flow wrapped awkwardly on phones). */
+.fleet-model-line {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

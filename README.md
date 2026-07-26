@@ -514,17 +514,18 @@ The Models tab tags every remote-owned tile with a small `on <host-id>`
 badge (e.g. `qwen3.5-9b` / `parakeet-tdt-0.6b-v3` both show `on
 mac-mini-m4`) so a displayed PID is never mistaken for a local process.
 
-**Placement cards (#423).** Each process-backed row in the Models
-tab also renders its declared placement *intent* straight from
+**Placement cards (#423, lightened #434).** Each process-backed row in the
+Models tab also renders its declared placement *intent* straight from
 `config/models.yaml`: the host chain in priority order (effective owner
-highlighted, `cpu: true` degraded tiers marked), a startup-policy badge that
-reads the live state honestly (`eager`, `on-demand · loaded`,
-`on-demand · idle-unloaded`), the static `est_vram_mb` estimate, and the
-owner host's VRAM budget bar (sum of the models currently resident there vs
-its `vram_mb` ceiling — the #375 grid math, tinted `attention` on
-overcommit; a host with no ceiling renders no bar). The data rides
-`GET /admin/api/models` as a per-row `placement` object plus a top-level
-`host_budgets` map.
+highlighted, cpu-resident tiers marked — the flag is the *effective* device
+per host from `model_registry.cpu_resident_map`, so an always-CPU row like
+`whisper-medium-translate`'s `-ng` is tagged on its owner too, matching the
+Fleet summary) and a startup-policy badge that reads the live state honestly
+(`eager`, `on-demand · loaded`, `on-demand · idle-unloaded`). No per-card
+size chip and no host budget bar (#434): capacity is the Fleet summary
+card's job, and the bar repeated the same machine fact on every card. The
+data rides `GET /admin/api/models` as a per-row `placement` object (the
+top-level `host_budgets` map was retired with the bar).
 
 **Editable placement — the UI writes through to git (#424).** On the single
 write host (`hub.config_write_host` in `models.yaml` — the tower) each
@@ -581,11 +582,14 @@ a live port and a forwarded `/start` returns a benign `409` — so the periodic
 pass is safe to repeat forever and is strictly **additive**: it never stops a
 model you started by hand.
 
-The **Fleet summary** card in the Models tab (#354, reworked #431) renders a
-read-only per-machine summary over **every** configured fleet host: the
-models **running** there right now (live state), the models **loadable** but
-not running (that host's chain members, including `on_demand` rows), and its
-estimated capacity (GPU-VRAM estimate vs ceiling, total RAM where known). It
+The **Fleet summary** card in the Models tab (#354, reworked #431, polished
+#434) renders a read-only per-machine summary over **every** configured
+fleet host: the models **running** there right now (live state), the models
+**loadable** but not running (that host's chain members, including
+`on_demand` rows) — both lists one model per line, right-aligned at one
+muted caption size, keeping the per-model device tag (#434) — and a
+**homogeneous capacity line** (`GPU ~<est> / <ceiling> · RAM <used?> /
+<total> GB`, the same shape on every machine). It
 carries **zero controls** beyond the collapse — placement is edited per model
 in the Models card (#424) or `config/models.yaml`. Liveness is the same
 hub-independent TCP probe the Machines tab uses (*is the box on?*), so a
@@ -604,14 +608,21 @@ heads-up that a placement change overcommits the box (e.g. `gaming`'s 8 GB
 GTX 1070), replacing the by-hand `nvidia-smi` glance. Rows resident on
 **CPU on that host** — piper's CPU-only engine, `-ng` whisper rows, a chain's
 degraded `cpu: true` tier — hold no GPU VRAM and are **excluded from the sum**
-(`model_registry.cpu_resident_map()`, #431); the same exclusion applies to the
-per-row host budget bars and the on-demand loader's headroom check, so every
-consumer inherits it. Hosts with no `vram_mb` (Apple-silicon unified memory,
-managed-only boxes) never warn. Each per-host status object in the `GET`
-response below therefore also carries `vram_mb` (ceiling or `null`),
-`est_vram_mb` (the summed, CPU-excluded desired/running footprint),
-`capacity_warning` (bool), and `ram_mb` (total or `null`). Estimates are
-static engineering approximations, not live telemetry.
+(`model_registry.cpu_resident_map()`, #431); the same exclusion applies to
+the model cards' effective-device pill tags and the on-demand loader's
+headroom check, so every consumer inherits it. Hosts with no `vram_mb`
+(Apple-silicon unified memory, managed-only boxes) never warn — on the
+capacity line their GPU denominator is the system-RAM total (on unified
+memory the GPU pool *is* system RAM; display context only, never a warning
+input). Each per-host status object in the `GET` response below therefore
+also carries `vram_mb` (ceiling or `null`), `est_vram_mb` (the summed,
+CPU-excluded desired/running footprint), `capacity_warning` (bool), `ram_mb`
+(declared total or `null`), and `ram` (#434 — the live `{used_gb, total_gb,
+percent}` snapshot: local psutil on the hub host, the Machines tab's cached
+SSH stats probe on reachable peers, `null` where no live figure exists, in
+which case the UI shows the declared total). GPU figures are static
+engineering approximations, not live telemetry; the RAM leg is live where
+present.
 
 Or drive the same API directly:
 

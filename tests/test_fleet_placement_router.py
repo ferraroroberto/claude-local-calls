@@ -20,6 +20,15 @@ from src import fleet_reconcile, remote_stats, services as svc  # noqa: E402
 from src import server as server_mod  # noqa: E402
 
 
+def _stub_collect(monkeypatch, stats=None):
+    """Keep the live-RAM probe (#434) off the network: remote_stats.collect
+    would SSH a reachable peer for its stats snapshot."""
+    async def collect(host):
+        return stats
+
+    monkeypatch.setattr(remote_stats, "collect", collect)
+
+
 def _stub_status(monkeypatch, reachable=True):
     """Keep GET off the network: local snapshot + a reachable Mac Mini. Peer
     liveness is the hub-independent TCP probe (remote_stats.is_reachable), not a
@@ -34,6 +43,7 @@ def _stub_status(monkeypatch, reachable=True):
 
     monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
     monkeypatch.setattr(svc, "remote_models", remote_models)
+    _stub_collect(monkeypatch)
 
 
 def test_get_lists_every_fleet_host_with_manageability(monkeypatch):
@@ -52,6 +62,7 @@ def test_get_lists_every_fleet_host_with_manageability(monkeypatch):
 
     monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
     monkeypatch.setattr(svc, "remote_models", remote_models)
+    _stub_collect(monkeypatch)
 
     client = TestClient(server_mod.app)
     body = client.get("/admin/api/fleet-placement").json()
@@ -124,6 +135,7 @@ def _stub_gaming_online(monkeypatch):
 
     monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
     monkeypatch.setattr(svc, "remote_models", remote_models)
+    _stub_collect(monkeypatch)
 
 
 def test_capacity_warning_when_over_ceiling(monkeypatch):
@@ -235,6 +247,7 @@ def test_capacity_excludes_cpu_resident_rows(monkeypatch):
 
     monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
     monkeypatch.setattr(svc, "remote_models", remote_models)
+    _stub_collect(monkeypatch)
     monkeypatch.setattr(
         fpr, "_vram_estimates",
         lambda: {"piper": 3000, "whisper": 2000, "qwen35_4b": 2100, "orpheus": 2200},
@@ -254,14 +267,49 @@ def test_capacity_excludes_cpu_resident_rows(monkeypatch):
 
 def test_ram_mb_surfaces_where_documented(monkeypatch):
     """``ram_mb`` (display-only, #431) rides each host row where machines.md
-    documents the fact — tower 128 GB, gaming 16 GB — and is None elsewhere."""
+    documents the fact — tower 128 GB, mac 16 GB unified (#434), gaming
+    16 GB — and is None elsewhere."""
     _stub_status(monkeypatch)
     client = TestClient(server_mod.app)
     hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
     assert hosts["tower"]["ram_mb"] == 131072
     assert hosts["gaming"]["ram_mb"] == 16384
-    assert hosts["mac-mini-m4"]["ram_mb"] is None
+    assert hosts["mac-mini-m4"]["ram_mb"] == 16384
     assert hosts["openclaw"]["ram_mb"] is None
+
+
+def test_live_ram_block_rides_reachable_ssh_peers(monkeypatch):
+    """#434: the capacity line reads RAM used/total live where available —
+    the local host snapshots itself; a reachable SSH peer carries the
+    ``ram`` block from the (cached) Machines-tab stats probe; a peer whose
+    probe fails (or a host that is off) reads None and the UI falls back to
+    the declared total."""
+    _stub_status(monkeypatch)
+    _stub_collect(
+        monkeypatch,
+        {"ram": {"used_gb": 5.2, "total_gb": 15.6, "percent": 33.3}},
+    )
+
+    client = TestClient(server_mod.app)
+    hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
+
+    # Local host: psutil snapshot — live values, assert shape not numbers.
+    assert set(hosts["tower"]["ram"]) == {"used_gb", "total_gb", "percent"}
+    # Reachable SSH peer: the collected block, verbatim.
+    assert hosts["mac-mini-m4"]["ram"] == {
+        "used_gb": 5.2, "total_gb": 15.6, "percent": 33.3,
+    }
+
+
+def test_live_ram_none_when_probe_fails(monkeypatch):
+    """A reachable peer whose SSH stats probe fails degrades to ram=None —
+    never an error, never a fabricated figure."""
+    _stub_status(monkeypatch)  # _stub_collect(None) baked in
+
+    client = TestClient(server_mod.app)
+    hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
+    assert hosts["mac-mini-m4"]["ram"] is None
+    assert hosts["openclaw"]["ram"] is None
 
 
 def test_foreign_adopted_backend_flagged_external(monkeypatch):

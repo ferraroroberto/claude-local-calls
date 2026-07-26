@@ -11,9 +11,16 @@ started: the SPA is the unit under test here (the API itself has its own
 unit tests in ``tests/test_fleet_placement_router.py``).
 
 What they lock in:
-  * per-host groups render with a status chip, a Running line (live state,
-    honest ``none``), a Loadable line (eligible-but-not-running, incl. the
-    cpu device hint), and a Capacity line (GPU est/ceiling + RAM where known);
+  * per-host groups render with a status chip, a Running list (live state,
+    honest ``none``), a Loadable list (eligible-but-not-running, incl. the
+    cpu device hint), and a Capacity line;
+  * #434: Running/Loadable render one model per line (``.fleet-model-line``,
+    muted caption size, right-aligned by the value column) — the old inline
+    ``·``-joined flow is gone;
+  * #434: the capacity line is the same shape on every machine — ``GPU ~est
+    / ceiling · RAM used/total`` with live RAM where the API carries a
+    ``ram`` block, the declared total otherwise, and the system-RAM total as
+    the GPU denominator on a unified-memory host (no bare "est" outlier);
   * **zero interactive controls** inside the card body — no toggles and no
     refresh button anywhere in the card;
   * an **offline** host renders the deferred-apply note (not an error) — the
@@ -47,6 +54,7 @@ FAKE_PLACEMENT = {
             "placed": ["whisper"], "running": ["whisper"], "external": [],
             "vram_mb": 16384, "est_vram_mb": 2048, "capacity_warning": False,
             "ram_mb": 131072,
+            "ram": {"used_gb": 45.5, "total_gb": 128.0, "percent": 35.5},
         },
         {
             "id": "mac-mini-m4", "display_name": "Mac Mini M4", "icon": "server",
@@ -56,8 +64,8 @@ FAKE_PLACEMENT = {
                 {"id": "qwen", "display_name": "Qwen"},
             ],
             "placed": ["parakeet"], "running": [], "external": [],
-            "vram_mb": None, "est_vram_mb": 0, "capacity_warning": False,
-            "ram_mb": None,
+            "vram_mb": None, "est_vram_mb": 4096, "capacity_warning": False,
+            "ram_mb": 16384, "ram": None,  # offline — no live figure (#434)
         },
         {
             # Enrolled as a managed machine, serves no models — shown honestly
@@ -66,7 +74,7 @@ FAKE_PLACEMENT = {
             "local": False, "reachable": True, "can_ssh": True, "runs_hub": False,
             "eligible": [], "placed": [], "running": [], "external": [],
             "vram_mb": None, "est_vram_mb": 0, "capacity_warning": False,
-            "ram_mb": None,
+            "ram_mb": None, "ram": None,
         },
     ],
 }
@@ -108,15 +116,30 @@ def test_fleet_summary_renders_read_only_host_groups(page, admin_url):
     tower = page.locator(".fleet-host", has_text="Tower")
     assert "This machine" in tower.locator(".hub-live-status").inner_text()
     # Running = live state; Loadable = eligible-but-not-running, with the
-    # low-emphasis cpu device hint riding the CPU-resident row.
-    assert "Whisper Turbo" in _row_value(tower, "Running")
-    loadable = _row_value(tower, "Loadable")
-    assert "Qwen3.5 4B" in loadable
-    assert "Piper TTS" in loadable and "cpu" in loadable
-    # Capacity: GPU estimate vs ceiling + documented RAM.
+    # low-emphasis cpu device hint riding the CPU-resident row. One model
+    # per line (#434) — .fleet-model-line, muted caption size, no inline
+    # `·` joiner between models.
+    running_row = tower.locator(".startup-row", has_text="Running")
+    running_lines = running_row.locator(".fleet-model-line")
+    assert running_lines.count() == 1
+    assert "Whisper Turbo" in running_lines.first.inner_text()
+    assert "muted" in (running_lines.first.get_attribute("class") or "")
+    assert "small" in (running_lines.first.get_attribute("class") or "")
+
+    loadable_row = tower.locator(".startup-row", has_text="Loadable")
+    loadable_lines = loadable_row.locator(".fleet-model-line")
+    assert loadable_lines.count() == 2, "one line per loadable model"
+    texts = [loadable_lines.nth(i).inner_text() for i in range(2)]
+    assert any("Qwen3.5 4B" in t for t in texts)
+    assert any("Piper TTS" in t and "cpu" in t for t in texts)
+    for i in range(2):
+        cls = loadable_lines.nth(i).get_attribute("class") or ""
+        assert "muted" in cls and "small" in cls
+
+    # Capacity (#434): homogeneous shape — GPU est/ceiling · live RAM used/total.
     capacity = _row_value(tower, "Capacity")
     assert "GPU ~2.0 GB / 16.0 GB" in capacity
-    assert "RAM 128 GB" in capacity
+    assert "RAM 45.5 / 128 GB" in capacity
 
     # #431: a summary, not a control plane — zero interactive controls in the
     # whole card (no switches, no refresh button, no sync icons).
@@ -146,6 +169,14 @@ def test_offline_host_shows_deferred_note_not_error(page, admin_url):
     assert page.locator("#fleetPlacementBody .empty-state").count() == 0
     assert "none" in _row_value(mac, "Running").lower()
     assert "Parakeet" in _row_value(mac, "Loadable")
+
+    # #434: identical capacity shape on the ceiling-less unified-memory host
+    # — system RAM is the GPU denominator, declared total when offline (no
+    # live figure), never a bare "GPU ~X GB est" outlier.
+    capacity = _row_value(mac, "Capacity")
+    assert "GPU ~4.0 GB / 16.0 GB" in capacity
+    assert "RAM 16 GB" in capacity
+    assert "est" not in capacity
 
 
 def test_external_adopted_backend_labelled(page, admin_url):

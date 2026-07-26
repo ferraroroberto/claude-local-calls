@@ -2,9 +2,11 @@
  *
  * A per-machine summary over GET /admin/api/fleet-placement: for each fleet
  * host — the models running there right now (live state), the models it
- * could load but isn't running (chain members, including on-demand rows),
- * and its estimated capacity (GPU-VRAM estimate vs declared ceiling, total
- * RAM where known). Zero controls beyond the collapse: placement is edited
+ * could load but isn't running (chain members, including on-demand rows) —
+ * one model per line, right-aligned, caption-sized (#434) — and a
+ * homogeneous capacity line: GPU estimate vs ceiling, RAM used/total where
+ * a live figure exists (declared total otherwise), the same shape on every
+ * machine. Zero controls beyond the collapse: placement is edited
  * per model in the Models card (#424) or config/models.yaml — the old
  * toggle grid and its PATCH surface were retired in #430/#431.
  *
@@ -100,8 +102,17 @@ function modelNameHtml(model, id, external) {
   return html;
 }
 
+/* One model per line (#434): Running and Loadable render as stacked,
+ * right-aligned lines, both at the same muted caption size — the old
+ * `·`-joined inline Running flow wrapped awkwardly on phones and read at a
+ * different size than Loadable. The per-model device tag stays inline. */
+function modelLine(innerHtml) {
+  return '<span class="fleet-model-line muted small">' + innerHtml + '</span>';
+}
+
 /* One summary line: a quiet left label ("Running", "Loadable", "Capacity")
- * and a right-aligned value — the roles-card row idiom, no new CSS. */
+ * and a right-aligned value — the roles-card row idiom (value lines stack
+ * via .fleet-model-line, #434). */
 function summaryRow(label, valueHtml, title) {
   const li = document.createElement('li');
   li.className = 'startup-row';
@@ -112,14 +123,29 @@ function summaryRow(label, valueHtml, title) {
   return li;
 }
 
+/* Homogeneous capacity line (#434): `GPU ~<est> / <ceiling> · RAM <used?> /
+ * <total> GB` — the same shape on every machine, never a bare "GPU ~X GB
+ * est" outlier. The GPU ceiling is the declared `vram_mb`; a host without
+ * one (Apple-silicon unified memory) uses its system-RAM total — on unified
+ * memory the GPU pool *is* system RAM (display context only; the #375
+ * advisory warning still keys off `vram_mb` alone). RAM reads used/total
+ * from the live snapshot when the API carries one, declared total only
+ * otherwise (host off / no SSH). */
 function capacityHtml(host) {
+  const live = host.ram || null;
+  const ramTotalMb = live && live.total_gb ? live.total_gb * 1024 : (host.ram_mb || 0);
+  const gpuCeilMb = host.vram_mb || ramTotalMb;
   const parts = [];
-  if (host.vram_mb) {
-    parts.push('GPU ~' + fmtGb(host.est_vram_mb) + ' / ' + fmtGb(host.vram_mb));
-  } else if (host.est_vram_mb) {
-    parts.push('GPU ~' + fmtGb(host.est_vram_mb) + ' est');
+  if (host.est_vram_mb || gpuCeilMb) {
+    parts.push('GPU ~' + fmtGb(host.est_vram_mb)
+      + (gpuCeilMb ? ' / ' + fmtGb(gpuCeilMb) : ''));
   }
-  if (host.ram_mb) parts.push('RAM ' + fmtGbWhole(host.ram_mb));
+  if (live && live.used_gb != null && live.total_gb) {
+    parts.push('RAM ' + Number(live.used_gb).toFixed(1) + ' / '
+      + Math.round(live.total_gb) + ' GB');
+  } else if (ramTotalMb) {
+    parts.push('RAM ' + fmtGbWhole(ramTotalMb));
+  }
   return parts.length
     ? '<span class="muted small">' + parts.join(' · ') + '</span>'
     : '';
@@ -177,18 +203,16 @@ function buildHostGroup(host) {
 
   const runningHtml = running.length
     ? running.map(function (id) {
-        return modelNameHtml(byId[id], id, !!externalSet[id]);
-      }).join('<span class="muted"> · </span>')
+        return modelLine(modelNameHtml(byId[id], id, !!externalSet[id]));
+      }).join('')
     : '<span class="muted small">none</span>';
   list.appendChild(summaryRow('Running', runningHtml,
     'Models serving on this machine right now (live state)'));
 
   if (loadable.length) {
-    const loadableHtml = '<span class="muted small">'
-      + loadable.map(function (m) {
-          return escapeHtml(m.display_name) + (m.device ? ' · ' + escapeHtml(m.device) : '');
-        }).join(' · ')
-      + '</span>';
+    const loadableHtml = loadable.map(function (m) {
+      return modelLine(escapeHtml(m.display_name) + deviceHint(m));
+    }).join('');
     list.appendChild(summaryRow('Loadable', loadableHtml,
       'Enabled chain members this machine could serve but is not running — '
       + 'includes on-demand rows that load on first request'));
@@ -197,9 +221,9 @@ function buildHostGroup(host) {
   const cap = capacityHtml(host);
   if (cap) {
     list.appendChild(summaryRow('Capacity', cap,
-      'Static estimates (not live telemetry): GPU-VRAM footprint of desired + running '
-      + 'models (CPU-resident rows excluded) vs the declared ceiling; total system RAM '
-      + 'where documented'));
+      'GPU: static footprint estimate of desired + running models (CPU-resident rows '
+      + 'excluded) vs the declared ceiling — system-RAM total on unified-memory hosts. '
+      + 'RAM: live used/total where the machine answers stats, declared total otherwise.'));
   }
 
   group.appendChild(list);

@@ -1125,6 +1125,13 @@ h2 { display: flex; align-items: center; gap: 8px; }
   white-space: nowrap;
   min-width: 0;
 }
+/* Single-line values (Capacity, an honest "none") are inline spans inside
+ * .roles-row-value: without a matching font-size their anonymous line box is
+ * struck at the inherited body size, seating the caption-sized text below
+ * the label's baseline (#436) — block .fleet-model-line values never had
+ * the problem. Scoped to the fleet card; the roles card keeps its own
+ * rhythm. */
+.fleet-host .roles-row-value { font-size: var(--font-caption); }
 
 /* ---------- Model decisions card — role/placement summary rows (#373) ----------
  * Same .startup-row/.startup-list rhythm as the Startup + Fleet placement

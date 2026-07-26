@@ -17,10 +17,16 @@ What they lock in:
   * #434: Running/Loadable render one model per line (``.fleet-model-line``,
     muted caption size, right-aligned by the value column) — the old inline
     ``·``-joined flow is gone;
-  * #434: the capacity line is the same shape on every machine — ``GPU ~est
-    / ceiling · RAM used/total`` with live RAM where the API carries a
-    ``ram`` block, the declared total otherwise, and the system-RAM total as
-    the GPU denominator on a unified-memory host (no bare "est" outlier);
+  * #434/#436: the capacity line is the same shape on every machine and
+    **live-first** — ``GPU used/total`` from the API's ``gpu`` block (the
+    Machines tab's probe figures, 1-decimal) and ``RAM used/total`` from its
+    ``ram`` block where they exist; the ``~``-prefixed est/ceiling GPU form
+    and the declared RAM total appear only as fallbacks (no live figure),
+    with the system-RAM total as the GPU denominator on a unified-memory
+    host (no bare "est" outlier);
+  * #436: the Capacity value renders at the same caption size as the block
+    ``.fleet-model-line`` values — the inherited body-size line box used to
+    seat it below the label's baseline;
   * **zero interactive controls** inside the card body — no toggles and no
     refresh button anywhere in the card;
   * an **offline** host renders the deferred-apply note (not an error) — the
@@ -55,6 +61,8 @@ FAKE_PLACEMENT = {
             "vram_mb": 16384, "est_vram_mb": 2048, "capacity_warning": False,
             "ram_mb": 131072,
             "ram": {"used_gb": 45.5, "total_gb": 128.0, "percent": 35.5},
+            # Live GPU figures (#436) — the Machines tab's probe numbers.
+            "gpu": {"used_mb": 1945.6, "total_mb": 8192.0},
         },
         {
             "id": "mac-mini-m4", "display_name": "Mac Mini M4", "icon": "server",
@@ -65,7 +73,9 @@ FAKE_PLACEMENT = {
             ],
             "placed": ["parakeet"], "running": [], "external": [],
             "vram_mb": None, "est_vram_mb": 4096, "capacity_warning": False,
-            "ram_mb": 16384, "ram": None,  # offline — no live figure (#434)
+            # offline — no live figures (#434/#436): the ~estimate + declared
+            # RAM total are the honest fallback.
+            "ram_mb": 16384, "ram": None, "gpu": None,
         },
         {
             # Enrolled as a managed machine, serves no models — shown honestly
@@ -74,7 +84,7 @@ FAKE_PLACEMENT = {
             "local": False, "reachable": True, "can_ssh": True, "runs_hub": False,
             "eligible": [], "placed": [], "running": [], "external": [],
             "vram_mb": None, "est_vram_mb": 0, "capacity_warning": False,
-            "ram_mb": None, "ram": None,
+            "ram_mb": None, "ram": None, "gpu": None,
         },
     ],
 }
@@ -136,10 +146,12 @@ def test_fleet_summary_renders_read_only_host_groups(page, admin_url):
         cls = loadable_lines.nth(i).get_attribute("class") or ""
         assert "muted" in cls and "small" in cls
 
-    # Capacity (#434): homogeneous shape — GPU est/ceiling · live RAM used/total.
+    # Capacity (#434/#436): live-first — the API's gpu/ram blocks verbatim at
+    # the Machines tab's 1-decimal format, no `~` anywhere on a live host.
     capacity = _row_value(tower, "Capacity")
-    assert "GPU ~2.0 GB / 16.0 GB" in capacity
-    assert "RAM 45.5 / 128 GB" in capacity
+    assert "GPU 1.9 / 8.0 GB" in capacity
+    assert "RAM 45.5 / 128.0 GB" in capacity
+    assert "~" not in capacity, "a live host must never show the estimate marker"
 
     # #431: a summary, not a control plane — zero interactive controls in the
     # whole card (no switches, no refresh button, no sync icons).
@@ -170,13 +182,32 @@ def test_offline_host_shows_deferred_note_not_error(page, admin_url):
     assert "none" in _row_value(mac, "Running").lower()
     assert "Parakeet" in _row_value(mac, "Loadable")
 
-    # #434: identical capacity shape on the ceiling-less unified-memory host
-    # — system RAM is the GPU denominator, declared total when offline (no
-    # live figure), never a bare "GPU ~X GB est" outlier.
+    # #434/#436: identical capacity shape on the ceiling-less unified-memory
+    # host — with no live gpu/ram figures the `~` estimate is the honest
+    # fallback: system RAM as the GPU denominator, declared RAM total, never
+    # a bare "GPU ~X GB est" outlier.
     capacity = _row_value(mac, "Capacity")
     assert "GPU ~4.0 GB / 16.0 GB" in capacity
     assert "RAM 16 GB" in capacity
     assert "est" not in capacity
+
+
+def test_capacity_value_matches_model_line_typography(page, admin_url):
+    """#436: the Capacity value (an inline span in .roles-row-value) must
+    render at the same caption font size as the block .fleet-model-line
+    values — without the scoped font-size rule its anonymous line box was
+    struck at the inherited body size, seating the text below the label's
+    baseline while Running/Loadable aligned correctly."""
+    _install_routes(page)
+    _open_fleet_card(page, admin_url)
+
+    tower = page.locator(".fleet-host", has_text="Tower")
+    cap_value = tower.locator(
+        ".startup-row", has_text="Capacity"
+    ).locator(".roles-row-value")
+    model_line = tower.locator(".fleet-model-line").first
+    font = "el => getComputedStyle(el).fontSize"
+    assert cap_value.evaluate(font) == model_line.evaluate(font)
 
 
 def test_external_adopted_backend_labelled(page, admin_url):

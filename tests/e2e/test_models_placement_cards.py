@@ -14,6 +14,10 @@ What they lock in:
     ``on-demand · loaded``, ``on-demand · idle-unloaded``;
   * the cards stay light (#434): no per-card size chip and no host budget
     bar anywhere — capacity is the Fleet summary card's job;
+  * #436: the meta line ends with ``· ~X GB`` (the registry's est_vram_mb)
+    only on rows that load a model process of their own — a virtual alias
+    sharing another row's process (qwen35_4b_nothink) and subscription rows
+    show no size;
   * subscription rows (claude) carry no placement section at all.
 """
 
@@ -111,6 +115,21 @@ FAKE_MODELS = {
                 "chain": [{"id": "tower", "cpu": False}],
                 "startup": "on_demand", "idle_unload_minutes": 15,
                 "est_vram_mb": 2000,
+            },
+        },
+        {
+            # Virtual alias (#436): shares qwen35_4b's process on :8088 —
+            # engine None, not controllable, est_vram_mb 0. Loads no model
+            # process of its own, so the meta line must show no size.
+            "id": "qwen35_4b_nothink", "display_name": "qwen3.5-4b-nothink",
+            "backend": "openai", "engine": None, "port": 8088,
+            "url": None, "aliases": ["agentic_light_nothink"],
+            "controllable": False, "ownership": "none", "pid": None,
+            "reachable": True, "model_path": None, "host": "tower",
+            "placement": {
+                "chain": [{"id": "tower", "cpu": False}],
+                "startup": "eager", "idle_unload_minutes": None,
+                "est_vram_mb": 0,
             },
         },
         {
@@ -215,6 +234,23 @@ def test_cards_carry_no_capacity_bar_or_size_chip(page, admin_url):
     assert page.locator("#modelsList .placement-budget").count() == 0
     assert page.locator("#modelsList .placement-vram").count() == 0
     assert "VRAM" not in page.locator("#modelsList").inner_text()
+
+
+def test_meta_line_carries_size_only_for_process_rows(page, admin_url):
+    """#436: the meta line ends with `· ~X GB` — the registry's static
+    est_vram_mb, the same figure the removed #434 chip showed — only on rows
+    that actually load a model process. The virtual nothink alias (shares
+    :8088, est 0) and the subscription row show no size."""
+    _open_models_tab(page, admin_url)
+
+    orpheus_meta = _item(page, "orpheus").locator(".app-meta").inner_text()
+    assert "~2.1 GB" in orpheus_meta          # 2200 MB → 2.1 GB
+    gemma_meta = _item(page, "gemma4_26b").locator(".app-meta").inner_text()
+    assert "~13.1 GB" in gemma_meta           # 13400 MB → 13.1 GB
+    nothink_meta = _item(page, "qwen35_4b_nothink").locator(".app-meta").inner_text()
+    assert "GB" not in nothink_meta, "virtual alias must carry no size"
+    claude_meta = _item(page, "claude_haiku").locator(".app-meta").inner_text()
+    assert "GB" not in claude_meta, "subscription row must carry no size"
 
 
 def test_subscription_row_has_no_placement_section(page, admin_url):

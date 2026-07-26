@@ -173,7 +173,15 @@ function fillItem(li, m) {
     // app_web/routers/models.py's _probe_device (#371). Omitted (not
     // guessed) for stopped/loading rows and backends with no device concept.
     (m.device ? ' · ' + m.device : '') +
-    (m.aliases && m.aliases.length ? ' · ' + m.aliases.join(', ') : '');
+    (m.aliases && m.aliases.length ? ' · ' + m.aliases.join(', ') : '') +
+    // Model footprint (#436) — the registry's static est_vram_mb, the same
+    // figure the removed #434 size chip showed, back as a meta-line suffix
+    // per user review. Truthy-only: shown only for rows that actually load
+    // a model process of their own — virtual aliases sharing another row's
+    // process (qwen35_4b_nothink) and CPU/ANE rows declare 0 and show
+    // nothing; subscription rows carry no placement block at all.
+    (m.placement && m.placement.est_vram_mb
+      ? ' · ~' + fmtGb(m.placement.est_vram_mb) : '');
   main.appendChild(meta);
 
   // Placement card (#423) — declared intent under the runtime meta; the

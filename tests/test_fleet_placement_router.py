@@ -16,17 +16,20 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app_web.routers import fleet_placement as fpr  # noqa: E402
 from src import backend_process as bp  # noqa: E402
-from src import fleet_reconcile, remote_stats, services as svc  # noqa: E402
+from src import fleet_reconcile, remote_stats, services as svc, system_stats  # noqa: E402
 from src import server as server_mod  # noqa: E402
 
 
 def _stub_collect(monkeypatch, stats=None):
-    """Keep the live-RAM probe (#434) off the network: remote_stats.collect
-    would SSH a reachable peer for its stats snapshot."""
+    """Keep the live probes off the network/subprocess: remote_stats.collect
+    would SSH a reachable peer for its stats snapshot (#434), and the local
+    GPU snapshot (#436) would spawn a real nvidia-smi. Tests that assert the
+    live-GPU path override gpu_stats after calling this."""
     async def collect(host):
         return stats
 
     monkeypatch.setattr(remote_stats, "collect", collect)
+    monkeypatch.setattr(system_stats, "gpu_stats", lambda: [])
 
 
 def _stub_status(monkeypatch, reachable=True):
@@ -310,6 +313,47 @@ def test_live_ram_none_when_probe_fails(monkeypatch):
     hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
     assert hosts["mac-mini-m4"]["ram"] is None
     assert hosts["openclaw"]["ram"] is None
+
+
+def test_live_gpu_block_rides_local_and_ssh_peers(monkeypatch):
+    """#436: the capacity line reads GPU used/total live from the same probe
+    plumbing the Machines tab uses — local nvidia-smi snapshot on the hub
+    host, the cached SSH stats probe on reachable peers — so the two tabs
+    can never disagree while both are live. First GPU only."""
+    _stub_status(monkeypatch)
+    _stub_collect(monkeypatch, {
+        "ram": {"used_gb": 5.2, "total_gb": 15.6, "percent": 33.3},
+        "gpus": [{"name": "GTX 1070", "used_mb": 1900.0, "total_mb": 8192.0,
+                  "vram_percent": 23.2, "util_percent": 2.0}],
+    })
+    # After _stub_collect (which parks gpu_stats at []) — the local live path.
+    monkeypatch.setattr(
+        system_stats, "gpu_stats",
+        lambda: [{"name": "RTX 5080", "used_mb": 3100.0, "total_mb": 16384.0,
+                  "vram_percent": 18.9, "util_percent": 5.0}],
+    )
+
+    client = TestClient(server_mod.app)
+    hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
+    # Local host: the nvidia-smi snapshot, reduced to {used_mb, total_mb}.
+    assert hosts["tower"]["gpu"] == {"used_mb": 3100.0, "total_mb": 16384.0}
+    # Reachable SSH peer: the collected block's first GPU, same reduction.
+    assert hosts["mac-mini-m4"]["gpu"] == {"used_mb": 1900.0, "total_mb": 8192.0}
+
+
+def test_live_gpu_none_without_probe(monkeypatch):
+    """A host with no live GPU metric — no nvidia-smi (the Mac's unified
+    memory), a failed SSH probe, or a powered-off box — degrades to
+    gpu=None so the UI falls back to the ~estimate, never a fabricated
+    figure (#436)."""
+    _stub_status(monkeypatch)  # _stub_collect(None) baked in
+    monkeypatch.setattr(system_stats, "gpu_stats", lambda: [])
+
+    client = TestClient(server_mod.app)
+    hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
+    assert hosts["tower"]["gpu"] is None
+    assert hosts["mac-mini-m4"]["gpu"] is None
+    assert hosts["openclaw"]["gpu"] is None
 
 
 def test_foreign_adopted_backend_flagged_external(monkeypatch):

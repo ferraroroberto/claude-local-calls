@@ -588,8 +588,14 @@ fleet host: the models **running** there right now (live state), the models
 **loadable** but not running (that host's chain members, including
 `on_demand` rows) — both lists one model per line, right-aligned at one
 muted caption size, keeping the per-model device tag (#434) — and a
-**homogeneous capacity line** (`GPU ~<est> / <ceiling> · RAM <used?> /
-<total> GB`, the same shape on every machine). It
+**homogeneous capacity line** (`GPU <used> / <total> · RAM <used> / <total>
+GB`, the same shape on every machine). The capacity figures are **live-first**
+(#436): GPU and RAM used/total come from the same probes the Machines tab
+reads (local psutil/nvidia-smi, the cached SSH stats probe on peers), at the
+same 1-decimal format, so the two tabs can never disagree while both are
+live; the `~`-prefixed `est_vram_mb` sum vs the declared ceiling appears
+only as a fallback where no live GPU figure exists (host offline, or a
+unified-memory host with no discrete-GPU metric). It
 carries **zero controls** beyond the collapse — placement is edited per model
 in the Models card (#424) or `config/models.yaml`. Liveness is the same
 hub-independent TCP probe the Machines tab uses (*is the box on?*), so a
@@ -617,12 +623,18 @@ memory the GPU pool *is* system RAM; display context only, never a warning
 input). Each per-host status object in the `GET` response below therefore
 also carries `vram_mb` (ceiling or `null`), `est_vram_mb` (the summed,
 CPU-excluded desired/running footprint), `capacity_warning` (bool), `ram_mb`
-(declared total or `null`), and `ram` (#434 — the live `{used_gb, total_gb,
+(declared total or `null`), `ram` (#434 — the live `{used_gb, total_gb,
 percent}` snapshot: local psutil on the hub host, the Machines tab's cached
 SSH stats probe on reachable peers, `null` where no live figure exists, in
-which case the UI shows the declared total). GPU figures are static
-engineering approximations, not live telemetry; the RAM leg is live where
-present.
+which case the UI shows the declared total), and `gpu` (#436 — the live
+`{used_mb, total_mb}` snapshot from the same plumbing: local nvidia-smi,
+the cached SSH probe on peers, `null` where the host reports no GPU metric,
+in which case the UI falls back to the `~` estimate vs the ceiling). The
+`est_vram_mb` figures remain static engineering approximations feeding the
+advisory warning and the no-live-figure fallback only. Each **model card's
+meta line** ends with the same `· ~X GB` static footprint (#436) — shown
+only for rows that actually load a model process; virtual aliases sharing
+another row's process and CPU/ANE rows show nothing.
 
 Or drive the same API directly:
 

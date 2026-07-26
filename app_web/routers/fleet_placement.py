@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 
@@ -68,6 +68,19 @@ def _device_hints() -> Dict[str, Dict[str, str]]:
         host_id: {mid: "cpu" for mid in ids}
         for host_id, ids in cpu_resident_map().items()
     }
+
+
+def _gpu_snapshot(gpus: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """First GPU's live ``{used_mb, total_mb}`` out of a stats probe (#436) —
+    the same figures the Machines tab renders, so the two tabs can never
+    disagree while both are live. ``None`` when the host reports no GPU
+    metric (no nvidia-smi — the Mac's unified memory, a failed probe), in
+    which case the UI falls back to the ``~`` static estimate. First entry
+    only: every probe in this fleet reports at most one GPU per host."""
+    for g in gpus or []:
+        if g.get("total_mb"):
+            return {"used_mb": g.get("used_mb"), "total_mb": g.get("total_mb")}
+    return None
 
 
 def _capacity(
@@ -141,6 +154,13 @@ async def _host_status(
         # below; None wherever no live figure is available (host off, no SSH),
         # in which case the UI falls back to the declared `ram_mb` total.
         "ram": None,
+        # Live GPU snapshot (#436) — {used_mb, total_mb} from the same probe
+        # plumbing the Machines tab reads (local nvidia-smi, cached SSH stats
+        # on peers), so the capacity line and the Machines tab can never
+        # disagree. None where no live figure exists (host off, no GPU
+        # metric) — the UI then falls back to the ~est_vram_mb estimate vs
+        # the declared ceiling.
+        "gpu": None,
     }
 
     if hid == active_id:
@@ -156,6 +176,7 @@ async def _host_status(
             **base, "local": True, "reachable": True, "dormant": False,
             "running": running, "external": external,
             "ram": system_stats.ram_stats(),
+            "gpu": _gpu_snapshot(system_stats.gpu_stats()),
             **_capacity(profile, placed, running, vram, devices),
         }
 
@@ -164,6 +185,7 @@ async def _host_status(
     reachable = False if profile.dormant else await remote_stats.is_reachable(profile)
     running: List[str] = []
     ram = None
+    gpu = None
     if reachable and runs_hub:
         # Only a hub-running peer exposes a models API for live running badges.
         rows = await svc.remote_models(profile, timeout_s=_GRID_PROBE_TIMEOUT_S) or []
@@ -172,15 +194,18 @@ async def _host_status(
             if isinstance(r, dict) and r.get("id") in eligible_set and r.get("reachable")
         ]
     if reachable and profile.can_ssh:
-        # Live RAM over the same cached SSH probe the Machines tab uses (#434)
-        # — remote_stats.collect keeps a 30 s cache and this GET is
-        # tab-triggered (never polled), so no SSH storm. Best-effort: a failed
-        # probe leaves ram None and the UI shows the declared total.
+        # Live RAM + GPU over the same cached SSH probe the Machines tab uses
+        # (#434, GPU #436) — remote_stats.collect keeps a 30 s cache and this
+        # GET is tab-triggered (never polled), so no SSH storm. Best-effort: a
+        # failed probe leaves both None and the UI shows the declared total /
+        # the ~estimate.
         stats = await remote_stats.collect(profile)
         ram = stats.get("ram") if stats else None
+        gpu = _gpu_snapshot(stats.get("gpus")) if stats else None
     return {
         **base, "local": False, "reachable": reachable,
-        "dormant": profile.dormant, "running": running, "external": [], "ram": ram,
+        "dormant": profile.dormant, "running": running, "external": [],
+        "ram": ram, "gpu": gpu,
         **_capacity(profile, placed, running, vram, devices),
     }
 

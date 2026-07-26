@@ -68,6 +68,12 @@ function fmtGbWhole(mb) {
   return Math.round(Number(mb || 0) / 1024) + ' GB';
 }
 
+// GB number → 1-decimal string — the Machines tab's fmtGbValue format, so a
+// live figure reads identically on both tabs (#436).
+function fmtGbValue(n) {
+  return Number.isFinite(n) ? n.toFixed(1) : '—';
+}
+
 /* An advisory VRAM-overcommit warning (issue #375). Shown only when the host
  * declares a `vram_mb` ceiling and the estimated footprint of its desired +
  * running models exceeds it — a heads-up, never a hard block. CPU-resident
@@ -123,26 +129,34 @@ function summaryRow(label, valueHtml, title) {
   return li;
 }
 
-/* Homogeneous capacity line (#434): `GPU ~<est> / <ceiling> · RAM <used?> /
- * <total> GB` — the same shape on every machine, never a bare "GPU ~X GB
- * est" outlier. The GPU ceiling is the declared `vram_mb`; a host without
- * one (Apple-silicon unified memory) uses its system-RAM total — on unified
- * memory the GPU pool *is* system RAM (display context only; the #375
- * advisory warning still keys off `vram_mb` alone). RAM reads used/total
- * from the live snapshot when the API carries one, declared total only
- * otherwise (host off / no SSH). */
+/* Homogeneous capacity line (#434, live-first since #436): `GPU <used> /
+ * <total> · RAM <used> / <total> GB` from the same live probes the Machines
+ * tab reads (local psutil/nvidia-smi, cached SSH stats on peers — the `gpu`
+ * / `ram` blocks the API carries), same 1-decimal format, so the two tabs
+ * can never disagree while both are live. The `~`-prefixed est_vram_mb sum
+ * vs the declared ceiling remains ONLY as the fallback where no live GPU
+ * figure exists (host offline, or a unified-memory host with no discrete-GPU
+ * metric — its ceiling stays the system-RAM total; the #375 advisory
+ * warning still keys off `vram_mb` alone). RAM falls back to the declared
+ * total when no live snapshot rides the API (host off / no SSH). */
 function capacityHtml(host) {
   const live = host.ram || null;
+  const gpu = host.gpu || null;
   const ramTotalMb = live && live.total_gb ? live.total_gb * 1024 : (host.ram_mb || 0);
-  const gpuCeilMb = host.vram_mb || ramTotalMb;
   const parts = [];
-  if (host.est_vram_mb || gpuCeilMb) {
-    parts.push('GPU ~' + fmtGb(host.est_vram_mb)
-      + (gpuCeilMb ? ' / ' + fmtGb(gpuCeilMb) : ''));
+  if (gpu && gpu.used_mb != null && gpu.total_mb) {
+    parts.push('GPU ' + fmtGbValue(gpu.used_mb / 1024) + ' / '
+      + fmtGbValue(gpu.total_mb / 1024) + ' GB');
+  } else {
+    const gpuCeilMb = host.vram_mb || ramTotalMb;
+    if (host.est_vram_mb || gpuCeilMb) {
+      parts.push('GPU ~' + fmtGb(host.est_vram_mb)
+        + (gpuCeilMb ? ' / ' + fmtGb(gpuCeilMb) : ''));
+    }
   }
   if (live && live.used_gb != null && live.total_gb) {
-    parts.push('RAM ' + Number(live.used_gb).toFixed(1) + ' / '
-      + Math.round(live.total_gb) + ' GB');
+    parts.push('RAM ' + fmtGbValue(Number(live.used_gb)) + ' / '
+      + fmtGbValue(Number(live.total_gb)) + ' GB');
   } else if (ramTotalMb) {
     parts.push('RAM ' + fmtGbWhole(ramTotalMb));
   }
@@ -221,8 +235,10 @@ function buildHostGroup(host) {
   const cap = capacityHtml(host);
   if (cap) {
     list.appendChild(summaryRow('Capacity', cap,
-      'GPU: static footprint estimate of desired + running models (CPU-resident rows '
-      + 'excluded) vs the declared ceiling — system-RAM total on unified-memory hosts. '
+      'GPU: live used/total from the same probe the Machines tab reads, where the '
+      + 'machine reports one; otherwise the ~static footprint estimate of desired + '
+      + 'running models (CPU-resident rows excluded) vs the declared ceiling — '
+      + 'system-RAM total on unified-memory hosts. '
       + 'RAM: live used/total where the machine answers stats, declared total otherwise.'));
   }
 

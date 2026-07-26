@@ -52,14 +52,9 @@ docker/langfuse/.env
 config/machine_specs.yaml
 
 # Runtime-mutated startup profile (issue #304) — the admin UI's Startup card
-# rewrites this on every autostart toggle, so it must not be tracked.
+# rewrites this on every service toggle, so it must not be tracked.
 # config/startup_profile.example.json is the committed template + fresh-clone default.
 config/startup_profile.json
-
-# Runtime-mutated fleet placement (issue #353) — the placement grid rewrites
-# this on every toggle, so it must not be tracked. The committed
-# config/fleet_placement.example.json is the template + fresh-clone default.
-config/fleet_placement.json
 
 # Runtime-mutated fleet maintenance drain markers (issue #411) — armed/cleared
 # via /admin/api/fleet-maintenance, so it must not be tracked. No committed

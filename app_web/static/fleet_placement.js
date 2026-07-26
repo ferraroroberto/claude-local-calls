@@ -1,28 +1,25 @@
-/* Models tab — "Fleet placement" card (issue #354).
+/* Models tab — "Fleet placement" card (issue #354, read-only since #430).
  *
- * The fleet-wide sibling of the local Startup card: a per-machine grid over
- * GET/PATCH /admin/api/fleet-placement — the always-on control plane's desired
- * state (#353). Each host is a group; each model that host can launch is a row
- * with the vendored fleet switch. Toggling a switch writes the fleet's *desired*
- * placement; the tower's reconcile loop converges the fleet (starting a newly
- * placed model, waking an offline satellite, stopping an un-placed one).
+ * A per-machine view over GET /admin/api/fleet-placement — the desired state
+ * is now *derived* from config/models.yaml (`hosts:` chains + `startup:
+ * eager|on_demand`, #430), so the grid renders it read-only: each host is a
+ * group; each model in that host's derived desired set is a row with a live
+ * status badge. Changing what runs where is a models.yaml edit, not a toggle
+ * here — the old PATCH surface (and config/fleet_placement.json behind it)
+ * was retired because it duplicated the registry. The card's full rework
+ * (summary layout, on-demand rows) is the #431 follow-up.
  *
- * A powered-off machine still renders its models with working toggles — desired
- * placement is editable while a host is offline and applies when it powers up,
+ * A powered-off machine still renders its desired models — the registry keeps
+ * their placement and the reconcile loop applies it when the box powers up,
  * so an unreachable host is a deferred-apply state, never an error. Same five
  * async lifecycle states as the Machines tab (design.md): loading / ready /
  * empty / stale / error.
  */
 
 import { els, state } from './state.js';
-import { jsonApi, patchJson, toast, escapeHtml } from './api.js';
-import { switchEl, setSwitch } from './_vendored/switch/switch.js';
+import { jsonApi, escapeHtml } from './api.js';
 import { icon } from './_vendored/icons/icons.js';
 import { emptyStateEl } from './_vendored/empty-state/empty-state.js';
-
-// A newly-placed model needs the reconcile pass a beat to start it before the
-// running badge can flip — refresh once shortly after a successful toggle.
-const RECONCILE_SETTLE_MS = 1000;
 
 export async function fetchFleetPlacement() {
   try {
@@ -45,13 +42,10 @@ function placedList(hostId) {
   return (p[hostId] || []).slice();
 }
 
-/* The live running badge for one model on one host. Only meaningful once the
- * model is placed — an un-placed row carries no badge (its switch is the whole
- * signal). Reachable-but-not-running is "pending" (reconcile will start it);
- * placed on an offline host is "deferred" until it powers up. */
+/* The live status badge for one desired model on one host.
+ * Reachable-but-not-running is "pending" (reconcile will start it); desired
+ * on an offline host is "deferred" until it powers up. */
 function modelBadge(host, modelId) {
-  const placed = placedList(host.id).includes(modelId);
-  if (!placed) return '';
   if ((host.running || []).includes(modelId)) return ' <span class="badge good">running</span>';
   if (host.reachable) return ' <span class="badge warn">pending</span>';
   return ' <span class="badge">deferred</span>';
@@ -64,7 +58,7 @@ function modelBadge(host, modelId) {
  * new CSS. Omitted (not guessed) for every other row, including other
  * 0-VRAM rows that aren't actually CPU (e.g. parakeet on the Mac's ANE). */
 function deviceHint(model) {
-  if (!model.device) return '';
+  if (!model || !model.device) return '';
   return ' <span class="muted small">· ' + escapeHtml(model.device) + '</span>';
 }
 
@@ -84,71 +78,35 @@ function fmtGb(mb) {
 }
 
 /* An advisory VRAM-overcommit warning (issue #375). Shown only when the host
- * declares a `vram_mb` ceiling and its placed/running models' estimated
- * footprint exceeds it — a heads-up, never a hard block (the toggle still
- * works). Hosts with no declared ceiling (Apple-silicon unified memory,
- * managed-only boxes) never carry it. Mirrors the muted `.fleet-host-note`
- * offline note, tinted as a warning. */
+ * declares a `vram_mb` ceiling and its desired/running models' estimated
+ * footprint exceeds it — a heads-up, never a hard block. Hosts with no
+ * declared ceiling (Apple-silicon unified memory, managed-only boxes) never
+ * carry it. Mirrors the muted `.fleet-host-note` offline note, tinted as a
+ * warning. */
 function capacityWarnEl(host) {
   if (!host.capacity_warning) return null;
   const p = document.createElement('p');
   p.className = 'fleet-host-note fleet-capacity-warn small';
-  p.title = 'Estimated GPU-VRAM footprint of this host’s placed models '
-    + 'exceeds its ' + fmtGb(host.vram_mb) + ' ceiling. Advisory only — '
-    + 'the placement is still applied.';
+  p.title = 'Estimated GPU-VRAM footprint of this host’s desired models '
+    + 'exceeds its ' + fmtGb(host.vram_mb) + ' ceiling. Advisory only.';
   p.innerHTML = icon('triangle-alert')
     + '<span>Over VRAM capacity — ~' + fmtGb(host.est_vram_mb)
-    + ' placed / ' + fmtGb(host.vram_mb) + ' GPU</span>';
+    + ' desired / ' + fmtGb(host.vram_mb) + ' GPU</span>';
   return p;
 }
 
-function buildModelRow(host, model) {
+function buildModelRow(host, model, modelId) {
   const li = document.createElement('li');
   li.className = 'startup-row';
 
   const label = document.createElement('span');
   label.className = 'startup-row-label';
-  label.innerHTML = '<span class="fleet-model-name">' + escapeHtml(model.display_name) + '</span>'
+  const name = model ? model.display_name : modelId;
+  label.innerHTML = '<span class="fleet-model-name">' + escapeHtml(name) + '</span>'
     + deviceHint(model)
-    + modelBadge(host, model.id);
+    + modelBadge(host, modelId);
   li.appendChild(label);
-
-  const on = placedList(host.id).includes(model.id);
-  const sw = switchEl(on, {
-    label: 'Place ' + model.display_name + ' on ' + (host.display_name || host.id),
-    onToggle: function (next, btn) {
-      if (btn.disabled) return;
-      btn.disabled = true;
-      applyPlacement(host, model.id, next)
-        .then(function () { setSwitch(btn, next); })
-        .catch(function (exc) {
-          setSwitch(btn, on);
-          toast(String(exc.message || exc), 'error');
-        })
-        .finally(function () { btn.disabled = false; });
-    },
-  });
-  li.appendChild(sw);
   return li;
-}
-
-/* PATCH the fleet's desired placement for one host, then reflect it locally so
- * the badge/switch stay in sync, and refresh once so the reconcile result (a
- * model starting) shows up. Placement is desired-state — not freshness-
- * sensitive like a reboot — so editing it is allowed even while status is
- * stale. */
-function applyPlacement(host, modelId, next) {
-  const cur = placedList(host.id);
-  const desired = next
-    ? (cur.includes(modelId) ? cur : cur.concat([modelId]))
-    : cur.filter(function (x) { return x !== modelId; });
-
-  return patchJson('/admin/api/fleet-placement', { [host.id]: desired }).then(function (body) {
-    if (body && body.placement) state.fleetPlacement.placement = body.placement;
-    else if (state.fleetPlacement) state.fleetPlacement.placement[host.id] = desired;
-    // Let the reconcile pass act, then repaint the running badges.
-    setTimeout(function () { fetchFleetPlacement(); }, RECONCILE_SETTLE_MS);
-  });
 }
 
 function buildHostGroup(host) {
@@ -168,35 +126,35 @@ function buildHostGroup(host) {
   const warn = capacityWarnEl(host);
   if (warn) group.appendChild(warn);
 
-  const eligible = host.eligible || [];
+  const placed = placedList(host.id);
 
-  // A host the control plane can't place onto — no toggles, an honest reason
-  // instead of a control that can't do what it says. A managed-only satellite
-  // runs no hub (it's driven directly over SSH); a hub host may simply have no
-  // models configured yet.
-  if (!eligible.length) {
+  // A host with nothing in its derived desired set — an honest note instead
+  // of an empty list. A managed-only satellite runs no hub (driven directly
+  // over SSH); a hub host may simply own only on-demand / no models.
+  if (!placed.length) {
     const note = document.createElement('p');
     note.className = 'fleet-host-note muted small';
     note.textContent = host.runs_hub
-      ? 'No models configured for this machine yet.'
-      : 'Runs model servers directly (no hub on this machine) — not placeable from here yet.';
+      ? 'No always-on models for this machine — on-demand rows load on first request.'
+      : 'Runs model servers directly (no hub on this machine).';
     group.appendChild(note);
     return group;
   }
 
-  // A manageable host that's powered off: its placement is remembered and
-  // applies on power-up — a deferred state, spelled out so it never reads as a
-  // failure. (Editing desired state while a machine is off is intentional.)
+  // A manageable host that's powered off: its desired set is kept in the
+  // registry and applies on power-up — a deferred state, never a failure.
   if (!host.local && !host.reachable) {
     const note = document.createElement('p');
     note.className = 'fleet-host-note muted small';
-    note.textContent = 'Offline — saved placement applies when this machine powers up.';
+    note.textContent = 'Offline — desired models apply when this machine powers up.';
     group.appendChild(note);
   }
 
+  const byId = {};
+  (host.eligible || []).forEach(function (m) { byId[m.id] = m; });
   const list = document.createElement('ul');
   list.className = 'startup-list';
-  eligible.forEach(function (m) { list.appendChild(buildModelRow(host, m)); });
+  placed.forEach(function (id) { list.appendChild(buildModelRow(host, byId[id], id)); });
   group.appendChild(list);
   return group;
 }
@@ -227,7 +185,7 @@ function renderFleetPlacement() {
 
   const hosts = (state.fleetPlacement && state.fleetPlacement.hosts) || [];
   if (!hosts.length) {
-    root.replaceChildren(emptyStateEl('server', 'No machines available to place models on.'));
+    root.replaceChildren(emptyStateEl('server', 'No machines in the fleet registry.'));
     if (note) note.hidden = true;
     return;
   }

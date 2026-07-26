@@ -551,78 +551,72 @@ sha, also on `/admin/api/version` as `config_sha`), so drift between hubs is
 visible by comparing their `/admin` pages. Non-write hosts render the cards
 read-only and 403 the write endpoint.
 
-### Fleet placement: always-on desired state (#353)
+### Fleet placement: registry-derived desired state (#353, #430)
 
-The per-machine autostart above (`startup_profile.json`) answers *"what
-should this box bring up when it boots?"*. **Fleet placement** answers the
-fleet-wide question — *"what should run on which machine, kept true even as
-boxes reboot or models die?"* — from a single control node (the tower).
+The per-machine service autostart above (`startup_profile.json`) answers
+*"which services should this box bring up when it boots?"*. **Fleet
+placement** answers the fleet-wide model question — *"what should run on
+which machine, kept true even as boxes reboot or models die?"* — and since
+#430 it is **derived from `config/models.yaml` itself**: a `startup: eager`
+row's desired host is the first member of its `hosts:` chain (or its bare
+`host:`) that enables it; `startup: on_demand` rows are never in the desired
+set (the first request loads them, `src/on_demand.py` unloads them idle).
+There is no separate placement file to keep in sync — the old
+`config/fleet_placement.json` and the `models` list inside
+`startup_profile.json` were retired because they duplicated (and drifted
+from) exactly this registry truth. Moving a model is a `models.yaml` edit
+(the Models-tab placement cards / swap-model), which the #424 config-write
+pipeline commits and syncs to every satellite.
 
-**`config/fleet_placement.json`** (gitignored live file; committed
-**[template](config/fleet_placement.example.json)** — a *copy-me* shape
-reference, **not** an auto-read fallback, so an absent file leaves the
-reconcile loop inert rather than enforcing an example across other machines)
-maps `{host_id: [model_id, …]}` — the models that *should* be running on each
-machine, including the tower's own. A background **reconcile loop**
-(`src/fleet_reconcile.py`, wired in `server_lifecycle.py`) enforces it on
-boot and every ~5 min (`LOCAL_LLM_HUB_FLEET_RECONCILE_INTERVAL_S`). For each
-host with placed models it: wakes an unreachable `can_ssh` satellite (same
-forced-command `bootstrap` as above); writes the desired set through to that
-host's own `startup_profile` (so it self-boots correctly on its *own* next
-reboot); and starts any placed model not already running. It leans entirely
-on existing idempotency — `backend_process.start` adopts a live port and a
-forwarded `/start` returns a benign `409` — so the periodic pass is safe to
-repeat forever and is strictly **additive**: it never stops a model you
-started by hand and didn't place.
+A background **reconcile loop** (`src/fleet_reconcile.py`, wired in
+`server_lifecycle.py`) converges the fleet to the derived state on boot and
+every ~5 min (`LOCAL_LLM_HUB_FLEET_RECONCILE_INTERVAL_S`). For each host with
+desired models it: wakes an unreachable `can_ssh` satellite (same
+forced-command `bootstrap` as above) and starts any desired model not already
+running. A satellite that was powered off applies its own set on power-up
+with no tower involvement — its hub derives the same desired set from its own
+synced `models.yaml` (`model_registry.desired_model_ids`) at startup. The
+loop leans entirely on existing idempotency — `backend_process.start` adopts
+a live port and a forwarded `/start` returns a benign `409` — so the periodic
+pass is safe to repeat forever and is strictly **additive**: it never stops a
+model you started by hand.
 
-Steer it from the **Fleet placement** card in the Models tab (#354): a
-per-machine grid over **every** configured fleet host, each model a switch —
-flip one on and the reconcile loop starts it there (waking a wake-capable
-satellite); an offline but manageable machine still shows its placement with an
-*"applies on power-up"* note rather than an error. Liveness is the same
-hub-independent TCP probe the Machines tab uses (*is the box on?*), so a
-**managed-only satellite that runs no hub** (`openclaw` — driven directly over
-SSH, no models registered) reads *online* honestly and is shown with a *"not
-placeable from here yet"* note instead of toggles that couldn't do anything. A
-host becomes placeable once it runs a hub and declares launchable models in
-`config/models.yaml` — `gaming` crossed exactly that line in #323 (systemd-run
-hub + the whisper/orpheus rows), so the grid now steers it like the Mac.
+The **Fleet placement** card in the Models tab (#354) renders the derived
+state read-only: a per-machine list over **every** configured fleet host,
+each desired model a row with a live badge (*running / pending / deferred*).
+Liveness is the same hub-independent TCP probe the Machines tab uses (*is the
+box on?*), so a **managed-only satellite that runs no hub** (`openclaw` —
+driven directly over SSH, no models registered) reads *online* honestly with
+a note instead of an empty grid. (The card's fuller rework is tracked in
+#431.)
 
 **Capacity awareness (#375):** each host row may declare a `vram_mb` GPU-VRAM
 ceiling and each GPU model a rough `est_vram_mb` footprint (both in
-`config/models.yaml`). The grid sums a host's placed models' `est_vram_mb` and
+`config/models.yaml`). The card sums a host's desired models' `est_vram_mb` and
 shows an **advisory** *"Over VRAM capacity"* warning on that host's row when the
 total exceeds its ceiling — a heads-up that a placement change overcommits the
 box (e.g. `gaming`'s 8 GB GTX 1070), replacing the by-hand `nvidia-smi` glance.
-It never blocks the PATCH. Hosts with no `vram_mb` (Apple-silicon unified
-memory, managed-only boxes) never warn. Each per-host status object in the
-`GET` response below therefore also carries `vram_mb` (ceiling or `null`),
-`est_vram_mb` (the summed placed/running footprint), and `capacity_warning`
-(bool). Estimates are static engineering approximations, not live telemetry.
+Hosts with no `vram_mb` (Apple-silicon unified memory, managed-only boxes)
+never warn. Each per-host status object in the `GET` response below therefore
+also carries `vram_mb` (ceiling or `null`), `est_vram_mb` (the summed
+desired/running footprint), and `capacity_warning` (bool). Estimates are
+static engineering approximations, not live telemetry.
 
 Or drive the same API directly:
 
 ```bash
-# See desired placement + live per-host status (eligible / reachable / running)
+# See the derived placement + live per-host status (eligible / reachable / running)
 curl -s http://127.0.0.1:8000/admin/api/fleet-placement | jq
-
-# Place parakeet + qwen on the Mac Mini (merge — other hosts untouched).
-# Un-placed models are stopped + de-profiled; newly-placed are started now.
-curl -s -X PATCH http://127.0.0.1:8000/admin/api/fleet-placement \
-  -H 'content-type: application/json' -d '{"mac-mini-m4": ["parakeet", "qwen"]}'
 
 # Force a convergence pass on demand (the loop already does this periodically)
 curl -s -X POST http://127.0.0.1:8000/admin/api/fleet-placement/reconcile
 ```
 
-Placing a model onto a machine that's powered *off* is remembered and applied
-when it next reports in. Since #374, `fleet_placement.json` is the **sole**
-cross-host source of truth for peer model placement: the reconcile loop owns all
-peer wake/sync uniformly (mac-mini, gaming, and any future satellite), so there
-is no longer a per-peer boot toggle to keep in sync with reality. `startup_profile.json`'s
-`models` list stays as each host's *own* materialized autostart — the reconcile
-write-through keeps a peer's copy in step with the tower's intent so it self-boots
-correctly even when the tower is down.
+Since #374 the reconcile loop owns all peer wake/sync uniformly (mac-mini,
+gaming, and any future satellite); since #430 the registry it converges on is
+the single cross-host source of placement truth — a model desired on a
+machine that's powered *off* is simply started when the box next reports in
+(or by the box itself, from its own registry, when it boots).
 
 ### Dynamic model fallback: ordered host chains (#342)
 
@@ -722,8 +716,11 @@ checks the #375 budget math (running `est_vram_mb` sum + the candidate vs
 the host's `vram_mb` ceiling) and logs a loud warning on overcommit —
 warning only, never a block: WDDM overcommit degrades transiently and idle
 unload recovers it. `gemma4_26b` (the single heaviest local model, rarely
-called) is the first on-demand row — which is what freed tower's VRAM for
-orpheus's #422 move back.
+called) was the first on-demand row — which is what freed tower's VRAM for
+orpheus's #422 move back. Since #430 the eager/on-demand split is also the
+fleet's desired-state source (see *Fleet placement* above), and the
+out-of-rotation rows (`gemma4_e4b`, `chatterbox`, `kokoro`, `glm`) are
+explicitly `on_demand` so the derived desired set matches what actually runs.
 
 ### Linux satellite lifecycle: systemd (#323, #368)
 
@@ -930,14 +927,12 @@ local-llm-hub/
 │   ├── run_tts_chatterbox.*     # chatterbox TTS on :8092 (on demand)
 │   └── run_all.*                # start everything enabled on this host
 ├── config/
-│   ├── models.yaml                   # hosts + models + roles + legacy tray autostart fallback
+│   ├── models.yaml                   # hosts + models + roles — placement truth (hosts chains + startup policy, #430)
 │   ├── diagnostics_apps.json         # process -> fleet-app attribution rules (#315, committed)
 │   ├── diagnostics_rules.json        # health-verdict thresholds (#315, committed)
 │   ├── diagnostics_settings.json     # retention + scheduled snapshot (#315, gitignored)
-│   ├── startup_profile.example.json  # template + fresh-clone default for what autostarts (#265)
-│   ├── startup_profile.json          # live autostart profile, rewritten by the admin UI (gitignored, #304)
-│   ├── fleet_placement.example.json  # copy-me shape template for fleet desired-state (#353)
-│   ├── fleet_placement.json          # live {host: [models]} placement, control-node only (gitignored, #353)
+│   ├── startup_profile.example.json  # template + fresh-clone default for service autostart (#265, services-only since #430)
+│   ├── startup_profile.json          # live service-autostart profile, rewritten by the admin UI (gitignored, #304)
 │   ├── fleet_maintenance.json        # live {host: {until, reason}} reconcile drain markers (gitignored, #411)
 │   └── webapp_config.json            # admin auth: bearer token, optional password, webauthn rp (gitignored)
 ├── webapp/                   # runtime data dir written by the /admin webapp
@@ -961,9 +956,8 @@ local-llm-hub/
 │   ├── model_registry.py     # YAML loader (resolves display_name + aliases)
 │   ├── config_write.py       # git-backed models.yaml placement writes: validate → ruamel
 │   │                         #   edit → config-bot commit → push + drift sync (#424)
-│   ├── startup_profile.py    # config/startup_profile.json load/save (#265)
-│   ├── fleet_placement.py    # config/fleet_placement.json load/save — fleet desired state (#353)
-│   ├── fleet_reconcile.py    # additive reconcile loop: wake/write-through/start placed models (#353)
+│   ├── startup_profile.py    # config/startup_profile.json load/save — service flags (#265, #430)
+│   ├── fleet_reconcile.py    # additive reconcile loop: wake + start registry-desired models (#353, #430)
 │   ├── fleet_maintenance.py  # config/fleet_maintenance.json load/save — reconcile drain markers (#411)
 │   ├── host_profile.py       # pick active host row
 │   ├── system_stats.py       # live RAM/CPU/GPU readings (consumed by Hub tab sparklines)
@@ -1191,24 +1185,23 @@ tray.bat
 
 Starts a resident system-tray icon (silent — no terminal window) that:
 
-- Auto-starts the hub on :8000. Hub startup then brings up everything
-  configured in **`config/startup_profile.json`** (gitignored live file; see
-  the committed **[template](config/startup_profile.example.json)**, issue #304)
-  (issue #265) — the same source the admin SPA's Models tab **Startup**
-  card reads and writes — for every launch surface (tray, `run_hub.bat`, or
-  `python -m src.run_backend hub`): the local model ids listed under
-  `models` (default `[qwen35_4b, whisper, whisper_translate,
-  whisper_vanilla, piper, orpheus]` — Qwen fast lane, both eager ASR slots
-  plus the unbiased-detection whisper-vanilla escape hatch, fast Piper
-  speech, and expressive Orpheus speech), and Docker + Langfuse if `docker` /
-  `langfuse` are `true` (via the same `launch_stack()` the Services card's
-  manual launch button uses). Peer wake/sync is *not* a startup-profile toggle
-  anymore (the `mac_mini_sync` flag was retired in #374) — it is owned by the
-  fleet reconcile loop, driven by `config/fleet_placement.json`. Toggle any item
-  off from the Startup card, or hand-edit the JSON. A fresh clone without that
-  file yet falls back to `config/models.yaml`'s legacy `tray.autostart_models`
-  list for local models only (no Docker/Langfuse autostart until a profile has
-  been saved once).
+- Auto-starts the hub on :8000. Hub startup then brings up, for every launch
+  surface (tray, `run_hub.bat`, or `python -m src.run_backend hub`):
+  - the **registry-derived model set** (#430) — every `startup: eager` row in
+    `config/models.yaml` whose preferred chain host is this machine
+    (`model_registry.desired_model_ids`; on the tower today that's
+    `qwen35_4b`, `piper`, and `orpheus`); `startup: on_demand` rows load on
+    first request instead;
+  - the **services** configured in **`config/startup_profile.json`**
+    (gitignored live file; see the committed
+    **[template](config/startup_profile.example.json)**, issues #265/#304 —
+    services-only since #430): Docker + Langfuse if `docker` / `langfuse` are
+    `true` (via the same `launch_stack()` the Services card's manual launch
+    button uses), and AgentsView if `agentsview` is `true`. Toggle any service
+    off from the admin SPA's Models tab **Startup** card, or hand-edit the
+    JSON. Peer wake/sync is *not* a startup-profile toggle (the
+    `mac_mini_sync` flag was retired in #374) — it is owned by the fleet
+    reconcile loop, driven by the registry-derived desired state.
 - Lets you toggle any other enabled local model on/off from the
   **🧠 Models** submenu (multiple may run concurrently).
 - Surfaces the admin webapp via **🚀 Open admin** — same `:8000/admin/`

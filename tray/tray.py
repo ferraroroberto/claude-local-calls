@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 import webbrowser
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -68,11 +68,13 @@ TUNNEL_CONFIG_PATH = PROJECT_ROOT / "webapp" / "cloudflared.yml"
 @dataclass(frozen=True)
 class TrayConfig:
     autostart_hub: bool = True
-    autostart_models: Tuple[str, ...] = field(default_factory=tuple)
     hub_ready_timeout_s: float = 30.0
 
 
 def load_tray_config() -> TrayConfig:
+    # Model autostart is not a tray concern: hub startup derives it from the
+    # registry (model_registry.desired_model_ids, #430) — the legacy
+    # `tray.autostart_models` list is gone.
     raw_path = Path(CONFIG_PATH)
     try:
         cfg = yaml.safe_load(raw_path.read_text(encoding="utf-8")) or {}
@@ -81,27 +83,9 @@ def load_tray_config() -> TrayConfig:
         return TrayConfig()
 
     section = cfg.get("tray") or {}
-    autostart_hub = bool(section.get("autostart_hub", True))
-    hub_ready_timeout = float(section.get("hub_ready_timeout_s", 30.0))
-
-    raw_models = section.get("autostart_models")
-    if raw_models is None:
-        candidates: List[str] = []
-    elif isinstance(raw_models, list):
-        candidates = [str(m) for m in raw_models if m]
-    else:
-        logger.warning(
-            "⚠️ tray.autostart_models must be a list (got %r) — skipping autostart",
-            raw_models,
-        )
-        candidates = []
-
-    valid_ids = {m.id for m in local_models() if m.backend in ("openai", "whisper", "tts")}
-    autostart_models = [m for m in candidates if m in valid_ids]
     return TrayConfig(
-        autostart_hub=autostart_hub,
-        autostart_models=tuple(autostart_models),
-        hub_ready_timeout_s=hub_ready_timeout,
+        autostart_hub=bool(section.get("autostart_hub", True)),
+        hub_ready_timeout_s=float(section.get("hub_ready_timeout_s", 30.0)),
     )
 
 

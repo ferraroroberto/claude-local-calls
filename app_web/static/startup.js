@@ -1,7 +1,9 @@
-/* Models tab — "Startup" card: what autostarts with the hub (issue #265).
+/* Models tab — "Startup" card: which services autostart with the hub (#265).
  *
- * Thin CRUD view over GET/PATCH /admin/api/startup-profile. Each row is the
- * vendored fleet switch (_vendored/switch) — optimistic-free: the toggle
+ * Thin CRUD view over GET/PATCH /admin/api/startup-profile. Services only
+ * since #430 — model autostart derives from config/models.yaml (hosts chains
+ * + startup policy), shown read-only in the Fleet placement card. Each row is
+ * the vendored fleet switch (_vendored/switch) — optimistic-free: the toggle
  * only flips once the PATCH confirms, and reverts on failure.
  */
 
@@ -29,16 +31,6 @@ function renderStartup() {
   (data.services || []).forEach(function (svc) {
     frag.appendChild(buildRow(svc.label, !!profile[svc.id], function (next) {
       return patchJson('/admin/api/startup-profile', { [svc.id]: next });
-    }));
-  });
-
-  frag.appendChild(sectionTitle('Models'));
-  const activeModels = new Set(profile.models || []);
-  (data.models || []).forEach(function (m) {
-    frag.appendChild(buildRow(m.display_name, activeModels.has(m.id), function (next) {
-      const models = new Set(profile.models || []);
-      if (next) models.add(m.id); else models.delete(m.id);
-      return patchJson('/admin/api/startup-profile', { models: Array.from(models) });
     }));
   });
 

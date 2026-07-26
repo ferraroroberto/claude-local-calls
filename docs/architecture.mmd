@@ -63,7 +63,7 @@ flowchart TB
     SSHTERM["ssh_terminal.py\nin-browser SSH terminal (#309): drives\napp-launcher's session-host over loopback"]
     DIAG["diagnostics/ (issue #315)\nsampler (in-hub asyncio task, no resident proc) ·\nattribution (process -> fleet app + ports, per-OS) ·\nrules (health verdict) · coverage (measured vs blind, #322) ·\nreport (summary/drift/md) · store (SQLite) ·\ningest (foreign portable capture, #316)"]
     PARAKEETSRV["parakeet_server.py\nOpenAI-shape ASR shim ->\nFluidAudio Parakeet CoreML worker"]
-    FLEETREC["fleet_reconcile.py (issue #353)\nadditive convergence: wake offline can-ssh\nsatellite -> write-through its startup_profile\n-> start placed-but-not-running models\n(fleet_placement.py = desired-state file)"]
+    FLEETREC["fleet_reconcile.py (issues #353, #430)\nadditive convergence: wake offline can-ssh\nsatellite -> start desired-but-not-running models\n(desired state derived from the registry:\nmodel_registry.desired_placement)"]
     WOL["wake_on_lan.py (issue #356)\nmagic-packet builder + UDP broadcast\n(true power-on beneath the SSH bootstrap)"]
     FAILOVER["model_failover.py (issue #342)\nordered hosts: chain -> live effective owner;\nfailover after fail_after_s, failback with\nfailback_after_s hysteresis (anti-flap);\ndecentralized: each host starts/stops only itself"]
     FLEETMAINT["fleet_maintenance.py (issue #411)\nhost-scoped drain marker: reconcile skips a\nmaintained host entirely, so a deliberate stop\nisn't resurrected before fail_after_s elapses"]
@@ -79,9 +79,9 @@ flowchart TB
   FLEETREC -->|skip host if under maintenance| FLEETMAINT
   FLEETREC -->|wake unreachable satellite| REMOTEBOOT
   FLEETREC -->|WOL cold satellite first (#364)| WOL
-  FLEETREC -->|start local placed models| BACKPROC
-  FLEETREC -->|peer profile-write + model start| MACMINI
-  FLEETREC -.reads.-> FLEETCFG
+  FLEETREC -->|start local desired models| BACKPROC
+  FLEETREC -->|peer model start| MACMINI
+  FLEETREC -.derives desired state.-> REG
   WROUT -->|models tab proxy check| REMOTEPROXY
   WROUT -->|hosts tab| REMOTEBOOT
   WROUT -->|machines tab| MACHINECON
@@ -160,8 +160,7 @@ flowchart TB
   WROUT -->|hub tab| SERVPROC
   WROUT -->|hub restart| WATCHDOG
   WROUT -->|models tab| BACKPROC
-  WROUT -->|fleet-placement tab: PATCH/reconcile| FLEETREC
-  WROUT -.reads/writes.-> FLEETCFG
+  WROUT -->|fleet-placement tab: reconcile (read-only grid, #430)| FLEETREC
   WROUT -->|models tab: PUT placement (#424)| CFGWRITE
   CFGWRITE -.comment-preserving edit + commit + push.-> MODELSYAML
   CFGWRITE -->|post-write + drift sync of satellites| REMOTEBOOT
@@ -181,11 +180,10 @@ flowchart TB
   WROUT -->|Code tab: AGY vendor via src/agentsview_usage.py| AGENTSVIEW
 
   subgraph cfg["Config + data"]
-    MODELSYAML[("config/models.yaml\nhosts (+ vram_mb ceiling) + model registry\n(+ est_vram_mb footprint) — fleet-placement\ngrid capacity warnings (issue #375)")]
+    MODELSYAML[("config/models.yaml\nhosts (+ vram_mb ceiling) + model registry\n(+ est_vram_mb footprint, #375) — placement truth:\nhosts chains + startup eager|on_demand (#430)")]
     WEBCFG[("config/webapp_config.json\nauth token + allowlist")]
     GLOSSARY[("config/transcription_glossary.json\nASR post-processing rules")]
-    STARTUPCFG[("config/startup_profile.json (gitignored; .example committed)\ndocker/langfuse/agentsview/models — each host's own autostart\n(issues #265, #304; mac_mini_sync retired #374)")]
-    FLEETCFG[("config/fleet_placement.json (gitignored; .example committed)\n{host_id: [model_id]} — sole cross-host desired state;\npeer wake/sync owned by reconcile (issues #353, #374)")]
+    STARTUPCFG[("config/startup_profile.json (gitignored; .example committed)\ndocker/langfuse/agentsview — each host's own service autostart\n(issues #265, #304; models list retired #430)")]
     MODELSDIR["models/ (gitignored)\nGGUF + whisper weights"]
     USAGEHIST[("data/code_usage_history.json\ndaily usage rollups — outlive\ntranscript pruning (issue #280)")]
     DIAGCFG[("config/diagnostics_apps.json + _rules.json (committed)\nprocess->app attribution + health thresholds;\nconfig/diagnostics_settings.json (gitignored)\nretention + scheduled snapshot (issue #315)")]
@@ -196,7 +194,6 @@ flowchart TB
   WSRV -.reads.-> WEBCFG
   AUDIOR -.reads.-> GLOSSARY
   BACKPROC -.reads.-> MODELSDIR
-  REG -.reads.-> STARTUPCFG
   LIFECYCLE -.reads.-> STARTUPCFG
   WROUT -.reads/writes.-> STARTUPCFG
   WROUT -.reads/writes.-> USAGEHIST

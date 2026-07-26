@@ -1,4 +1,0 @@
-{
-  "tower": ["whisper", "qwen35_4b", "piper"],
-  "mac-mini-m4": ["parakeet", "qwen"]
-}

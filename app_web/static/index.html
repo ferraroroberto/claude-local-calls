@@ -299,8 +299,9 @@
           <span class="collapse-chevron" aria-hidden="true">›</span>
         </summary>
         <div class="collapse-body">
-          <p class="muted small">What comes up automatically every time the hub launches — toggle
-            any item on or off; the setting persists to <code>config/startup_profile.json</code>.</p>
+          <p class="muted small">Services that come up automatically every time the hub launches — toggle
+            any item on or off; the setting persists to <code>config/startup_profile.json</code>.
+            Model autostart is derived from <code>config/models.yaml</code> (see Fleet placement below).</p>
           <ul id="startupList" class="startup-list"></ul>
         </div>
       </details>
@@ -320,10 +321,11 @@
           </span>
         </summary>
         <div class="collapse-body">
-          <p class="muted small">Which models should run on each machine across the fleet — toggle
-            a model on and the tower's reconcile loop starts it there (waking the machine if it's a
-            wake-capable satellite). An offline machine keeps its placement and applies it on power-up.
-            Desired state persists to <code>config/fleet_placement.json</code>.</p>
+          <p class="muted small">Which models should run on each machine across the fleet — derived
+            read-only from <code>config/models.yaml</code> (<code>hosts:</code> chains +
+            <code>startup: eager|on_demand</code>). The reconcile loop keeps the fleet converged,
+            waking wake-capable satellites; an offline machine applies its set on power-up. To change
+            placement, edit <code>models.yaml</code>.</p>
           <div id="fleetPlacementBody" class="fleet-placement">
             <div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-server"></use></svg><p class="empty-state-message">Reading fleet placement…</p></div>
           </div>

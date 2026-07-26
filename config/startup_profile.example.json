@@ -1,14 +1,5 @@
 {
   "docker": true,
   "langfuse": true,
-  "agentsview": true,
-  "models": [
-    "qwen35_4b",
-    "whisper",
-    "whisper_translate",
-    "whisper_vanilla",
-    "piper",
-    "orpheus",
-    "kokoro"
-  ]
+  "agentsview": true
 }

@@ -40,7 +40,7 @@ implementations live behind one common interface
 ## The TTS registry rows ([config/models.yaml](../config/models.yaml))
 
 ```yaml
-piper:                          # auto-loaded default (tray.autostart_models)
+piper:                          # auto-loaded default (startup: eager on tower, #430)
   display_name: piper-tts
   aliases: ["audio_speech"]     # the role alias clients should address
   backend: tts

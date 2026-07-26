@@ -354,43 +354,70 @@ def hub_peer_ids(active_id: Optional[str] = None) -> List[str]:
     ]
 
 
-def autostart_model_ids(host: Optional[HostProfile] = None) -> List[str]:
-    """Configured local backend ids to start with the hub.
-
-    ``config/startup_profile.json`` (issue #265) is the source of truth —
-    the admin UI's Startup card reads/writes it. The live file is gitignored
-    (issue #304); ``load_startup_profile`` falls back to the committed
-    ``startup_profile.example.json`` template, so the profile still drives a
-    fresh clone. Only when *neither* the live file nor the example exists do we
-    fall back to the legacy ``config/models.yaml`` → ``tray.autostart_models``
-    list so a clean checkout still autostarts something sensible. Either way
-    the raw id list is filtered through the active host and launchable
-    backend rows: virtual aliases share a real backend and never own a
-    process, so they are excluded even if listed by mistake, and rows owned
-    by a *different* host (``m.host`` set and not this one) are remote —
-    never autostarted locally, the owning host's own tray does that.
-    ``startup: on_demand`` rows (#422) are excluded too — even when a stale
-    profile still lists one, on-demand means the first *request* loads it,
-    never hub start.
+def preferred_owner(model: Model) -> Optional[str]:
+    """The first chain host that exists and enables ``model`` — the static
+    preferred owner (#342), independent of live reachability. ``None`` for an
+    unowned row (empty chain) or a chain with no eligible member. The dynamic
+    counterpart (where the model is *currently* served after a failover) is
+    ``src.model_failover.effective_owner``.
     """
-    from src.startup_profile import (
-        DEFAULT_PROFILE_PATH,
-        EXAMPLE_PROFILE_PATH,
-        load_startup_profile,
-    )
+    from .host_profile import get_host
 
-    if DEFAULT_PROFILE_PATH.exists() or EXAMPLE_PROFILE_PATH.exists():
-        raw: List[str] = load_startup_profile().models
-    else:
-        cfg = _load_config()
-        legacy = (cfg.get("tray") or {}).get("autostart_models") or []
-        raw = [str(item) for item in legacy if item] if isinstance(legacy, list) else []
+    for host_id in model.hosts:
+        profile = get_host(host_id)
+        if profile is not None and model.id in profile.enabled:
+            return host_id
+    return None
 
-    on_demand = {
-        m.id for m in local_models(host) if m.startup == STARTUP_ON_DEMAND
-    }
-    valid = set(launchable_local_ids(host)) - on_demand
-    return [model_id for model_id in raw if model_id in valid]
+
+def desired_model_ids(host: Optional[HostProfile] = None) -> List[str]:
+    """The models ``host`` should be running right now, derived from the
+    registry (#430) — no separate desired-state file.
+
+    A model belongs to a host's desired running set when it is launchable
+    there (enabled ∧ chain-member ∧ spawnable ∧ non-virtual, exactly
+    ``launchable_local_ids``), declares ``startup: eager`` (#422 —
+    ``on_demand`` rows are never desired; ``src.on_demand`` owns their
+    lifecycle), and is either unowned (an empty chain means "local
+    everywhere", the pre-#178 behavior) or preferred-owned by this host
+    (``preferred_owner`` — the first *eligible* chain member, so a chain
+    whose head names an unknown/non-enabling host falls through to the next
+    member). A degraded ``cpu: true`` tier deeper in a chain is just a
+    non-preferred member: it pre-stages weights and can inherit via
+    failover, but the model is never *desired* there.
+
+    This one derivation feeds both hub autostart on boot
+    (``server_lifecycle._autostart_configured_backends`` — how a satellite
+    that was offline applies its models when it powers up) and the fleet
+    reconcile loop (``fleet_reconcile.reconcile_once`` via
+    :func:`desired_placement`), replacing the retired
+    ``config/fleet_placement.json`` + ``startup_profile.json`` ``models``
+    lists (#430) — the registry's ``hosts:`` chains + ``startup:`` policy
+    are the sole source of placement truth.
+    """
+    profile = host or resolve_host()
+    launchable = set(launchable_local_ids(profile))
+    desired: List[str] = []
+    for m in all_models(apply_cpu_offload=False):
+        if m.id not in launchable or m.startup != STARTUP_EAGER:
+            continue
+        if m.hosts and preferred_owner(m) != profile.id:
+            continue
+        desired.append(m.id)
+    return desired
+
+
+def desired_placement() -> Dict[str, List[str]]:
+    """Fleet-wide ``{host_id: [model_id, ...]}`` desired state, derived from
+    the registry (#430) — :func:`desired_model_ids` per declared host. Hosts
+    with an empty desired set are omitted (nothing to run means no reason for
+    the reconcile loop to probe or wake them)."""
+    placement: Dict[str, List[str]] = {}
+    for h in all_hosts():
+        ids = desired_model_ids(h)
+        if ids:
+            placement[h.id] = ids
+    return placement
 
 def resolve(name: str, host: Optional[HostProfile] = None) -> Optional[Model]:
     """Look up a model by any of its names — registry id, display_name, or alias.

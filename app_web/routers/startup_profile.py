@@ -2,21 +2,20 @@
 
 Backs the declarative "what should be up at launch" control surface:
 ``config/startup_profile.json`` is owned by ``src.startup_profile``; this
-router is a thin CRUD shell over it plus the eligible-item metadata the
-card needs to render toggles (service labels + the local models this host
-can actually spawn).
+router is a thin CRUD shell over it plus the service labels the card needs
+to render toggles. **Services only** since #430 — the model autostart set is
+derived from ``config/models.yaml`` (``model_registry.desired_model_ids``),
+not toggled here.
 
-  * ``GET   /api/startup-profile`` → current profile + the full eligible-item
-    list (services, local models).
+  * ``GET   /api/startup-profile`` → current profile + the service items.
   * ``PATCH /api/startup-profile`` → merge-and-persist a partial update
-    (e.g. toggling one flag or one model id at a time), validating against
-    the active host's launchable model ids.
+    (e.g. toggling one flag at a time).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -24,31 +23,20 @@ from app_web.admin_forward import forward_admin_request
 from src import startup_profile as sp
 from src.host_profile import get_host
 from src.host_profile import resolve as resolve_host
-from src.model_registry import local_models
 from src.remote_proxy import remote_auth_token, remote_base_url_for_host
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Fixed metadata for the non-model startup toggles — labels the admin SPA
+# Fixed metadata for the service startup toggles — labels the admin SPA
 # renders next to each switch. Peer wake/sync is *not* here: since #374 it is
-# owned by the fleet reconcile loop (config/fleet_placement.json), not a
-# per-service startup flag — the old "Mac Mini sync" toggle was retired.
+# owned by the fleet reconcile loop, not a per-service startup flag — the old
+# "Mac Mini sync" toggle was retired.
 _SERVICE_ITEMS = [
     {"id": "docker", "label": "Docker"},
     {"id": "langfuse", "label": "Langfuse"},
     {"id": "agentsview", "label": "AgentsView"},
 ]
-
-_SPAWNABLE_BACKENDS = ("openai", "whisper", "tts")
-
-
-def _eligible_models() -> List[Dict[str, Any]]:
-    return [
-        {"id": m.id, "display_name": m.display_name}
-        for m in local_models()
-        if m.backend in _SPAWNABLE_BACKENDS and not m.virtual
-    ]
 
 
 def _remote_target(host: Optional[str]) -> Optional[str]:
@@ -78,10 +66,10 @@ def _host_headers(host: str) -> Dict[str, str]:
 
 @router.get("/api/startup-profile")
 async def get_startup_profile(host: Optional[str] = Query(None)) -> Dict[str, Any]:
-    """The addressed host's startup profile + eligible items.
+    """The addressed host's startup profile + service items.
 
     ``?host=<id>`` targets a peer hub's profile (forwarded, #352); omitted or
-    self → this host's own profile and locally-launchable models, unchanged.
+    self → this host's own profile, unchanged.
     """
     remote = _remote_target(host)
     if remote is not None:
@@ -96,7 +84,6 @@ async def get_startup_profile(host: Optional[str] = Query(None)) -> Dict[str, An
     return {
         "profile": profile.as_dict(),
         "services": _SERVICE_ITEMS,
-        "models": _eligible_models(),
     }
 
 
@@ -106,9 +93,9 @@ async def patch_startup_profile(
 ) -> Dict[str, Any]:
     """Merge ``payload`` over the addressed host's profile, validate, and persist.
 
-    Accepts a partial body — e.g. ``{"docker": false}`` or ``{"models": [...]}``
-    — so a single toggle click never has to resend the whole profile. ``?host=``
-    forwards the write to a peer hub (#352); omitted or self writes locally.
+    Accepts a partial body — e.g. ``{"docker": false}`` — so a single toggle
+    click never has to resend the whole profile. ``?host=`` forwards the write
+    to a peer hub (#352); omitted or self writes locally.
     """
     remote = _remote_target(host)
     if remote is not None:

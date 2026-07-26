@@ -99,7 +99,6 @@ Will edit config/models.yaml:
   ~ roles.agentic_light.model_id: gemma4_e4b → qwen3_4b
   ~ models.gemma4_e4b.aliases: ["agentic_light"] → []   (alias follows role)
   ~ models.qwen3_4b.aliases:  []  → ["agentic_light"]   (new role-holder)
-  ~ tray.autostart_models: gemma4_e4b → qwen3_4b
   ~ hosts.tower.enabled: + qwen3_4b
 Will write launchers/run_qwen3_4b.bat, .sh
 Will run: python scripts/download_models.py --only qwen3_4b   (~3 GB)
@@ -268,7 +267,7 @@ the hub end-to-end. Walk through these in order; ask the user to
 confirm before stopping anything they might still be using.
 
 1. **Inventory what's bound right now.** The hub adopts external
-   processes; the tray autostarts based on `tray.autostart_models`;
+   processes; the hub autostarts the registry-derived desired set (#430);
    per-model launchers may have been started by hand. Don't assume —
    look:
    ```
@@ -377,10 +376,10 @@ confirm before stopping anything they might still be using.
   - what was running, what was stopped, what was started
   - smoke test result (passed / skipped / failed counts)
   - the `curl` one-liner from §6.6 they can rerun any time
-  - any non-default tray follow-up — e.g. "next tray boot will
-    autostart `<new_id>` because `tray.autostart_models` was updated;
-    no action needed unless you also want to drop the previous holder
-    from `enabled:`."
+  - any non-default startup follow-up — e.g. "next hub boot will
+    autostart `<new_id>` because it is `startup: eager` on this host
+    (#430); no action needed unless you also want to drop the previous
+    holder from `enabled:`."
 - Optionally summarize the swap in the GitHub issue (or open one)
   rather than writing a dated changelog file.
 
@@ -400,8 +399,8 @@ requires it.
 - `models.<new_id>` row present with all the fields needed by
   `src.run_backend`
 - Active host's `enabled:` list contains the new id
-- `tray.autostart_models` reflects the new id (when the swapped role
-  is one the tray autostarts)
+- the new id is `startup: eager` on the intended host (when the swapped
+  role should autostart, #430)
 - `launchers/run_<new_id>.bat` and `.sh` exist and reference the new id
 - `launchers/run_all.{bat,sh}` knows about the new id
 - (If requested) weights downloaded to `models/`

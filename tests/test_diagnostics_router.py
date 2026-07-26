@@ -24,13 +24,13 @@ def _stub_real_backend_ops(monkeypatch):
 
     Entering ``TestClient(server_mod.app)`` runs the *real* ASGI lifespan —
     ``wire_observatory_loop`` inherits/autostarts this machine's actually-configured
-    backends (``config/startup_profile.json`` + ``config/models.yaml``) and its
+    backends (registry-derived, ``config/models.yaml``) and its
     shutdown counterpart really stops them. This suite doesn't exercise any of that
     (it's purely the diagnostics API), so without these stubs every test in this
     file was starting/killing this dev box's real ``qwen``/``piper`` backend
     processes on every ``with TestClient(...)`` enter/exit.
     """
-    monkeypatch.setattr(model_registry, "autostart_model_ids", lambda *a, **kw: [])
+    monkeypatch.setattr(model_registry, "desired_model_ids", lambda *a, **kw: [])
     monkeypatch.setattr(backend_process, "inherit_running_backends", lambda: 0)
     monkeypatch.setattr(backend_process, "start", lambda model_id: (True, "stubbed (test)"))
     monkeypatch.setattr(backend_process, "stop", lambda model_id: (True, "stubbed (test)"))

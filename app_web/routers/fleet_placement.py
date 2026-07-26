@@ -1,20 +1,21 @@
-"""Fleet placement API — the tower's fleet-wide desired-state control surface.
+"""Fleet placement API — the fleet's registry-derived desired-state view.
 
-Step 2 of the always-on control plane (#353). Backs the (Step 3) placement grid:
-``config/fleet_placement.json`` — owned by ``src.fleet_placement`` — maps each
-host to the models that *should* run on it, and a background reconcile loop
-(``src.fleet_reconcile``) enforces it. This router is a thin CRUD shell over that
-file plus the per-host status the grid renders (eligible models, reachability,
-what's actually running).
+Step 2 of the always-on control plane (#353), re-sourced in #430: the desired
+placement is **derived from ``config/models.yaml``**
+(``model_registry.desired_placement()`` — ``startup: eager`` rows on their
+preferred chain host), not a separate editable file — the old
+``config/fleet_placement.json`` + its PATCH surface were retired because they
+duplicated (and drifted from) the registry's ``hosts:`` chains + ``startup:``
+policy. This router is now a read-only status surface plus the on-demand
+reconcile trigger; changing *what runs where* is a ``models.yaml`` edit
+(``/admin/api/config/*`` cards or swap-model), applied by the reconcile loop.
 
-  * ``GET   /api/fleet-placement`` → desired placement + per-host status.
-  * ``PATCH /api/fleet-placement`` → merge a partial ``{host: [ids]}`` update,
-    persist it, and apply the delta now (stop un-placed, start newly-placed).
+  * ``GET   /api/fleet-placement`` → derived placement + per-host status.
   * ``POST  /api/fleet-placement/reconcile`` → run one additive convergence pass
     on demand (the loop already does this on boot + every few minutes).
 
-Local to the tower (the control node) — placement isn't host-addressed, unlike
-the startup profile: one machine holds the fleet's intent.
+Local to the tower (the control node) in practice, but harmless anywhere —
+every hub derives the same placement from the same synced registry.
 """
 
 from __future__ import annotations
@@ -23,13 +24,12 @@ import asyncio
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from src import backend_process as bp
-from src import fleet_placement as fp
 from src import fleet_reconcile, remote_stats, services as svc
 from src.host_profile import HostProfile, all_hosts, resolve as resolve_host
-from src.model_registry import all_models, launchable_local_ids
+from src.model_registry import all_models, desired_placement, launchable_local_ids
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -119,16 +119,15 @@ async def _host_status(
     vram: Dict[str, int],
     devices: Dict[str, str],
 ) -> Dict[str, Any]:
-    """One host's grid row: its placeable models, live status, capacity
+    """One host's grid row: its launchable models, live status, capacity
     headroom, and whether the control plane can manage it.
 
     Reachability is the **hub-independent TCP liveness** the Machines tab uses
     (``remote_stats.is_reachable`` — *is the box powered on?*), not a hub
     ``/health`` probe, so a managed-only satellite that runs no hub (``gaming``,
     ``openclaw``) still reads "online" honestly. ``runs_hub`` (a host declares
-    launchable models) is what the reconcile loop needs to *place* onto a peer;
-    a host with none is shown but not placeable — a real state, spelled out in
-    the UI rather than an offer that can't be honoured.
+    launchable models) tells the UI whether a hub answers there; a host with
+    none is shown with an honest note rather than an empty grid cell.
     """
     hid = profile.id
     eligible_ids = launchable_local_ids(profile)
@@ -148,8 +147,8 @@ async def _host_status(
     }
 
     if hid == active_id:
-        # Only the placeable (eligible) models that are up — so a grid cell reads
-        # "placed ✓ running / ✗ down". Excludes subscription + virtual rows.
+        # Only the launchable models that are up — so a grid cell reads
+        # "desired ✓ running / ✗ down". Excludes subscription + virtual rows.
         running = [m for m in bp.running_backends().keys() if m in eligible_set]
         return {
             **base, "local": True, "reachable": True, "dormant": False,
@@ -176,9 +175,9 @@ async def _host_status(
 
 @router.get("/api/fleet-placement")
 async def get_fleet_placement() -> Dict[str, Any]:
-    """Desired placement + a row for **every** fleet host: its placeable models,
-    live liveness, and whether it's manageable from here."""
-    placement = fp.load_fleet_placement()
+    """Registry-derived desired placement + a row for **every** fleet host: its
+    launchable models, live liveness, and whether it's manageable from here."""
+    placement = desired_placement()
     active_id = resolve_host().id
     names = _display_names()
     vram = _vram_estimates()
@@ -190,36 +189,6 @@ async def get_fleet_placement() -> Dict[str, Any]:
         )
     )
     return {"placement": placement, "hosts": list(statuses)}
-
-
-@router.patch("/api/fleet-placement")
-async def patch_fleet_placement(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Merge a partial ``{host_id: [model_id, ...]}`` update and apply it now.
-
-    Merge is per-host (a host present in the body replaces that host's list,
-    others untouched) — mirroring the startup profile's partial PATCH. After
-    persisting the validated placement, each touched host's delta is applied
-    immediately: un-placed models are stopped + de-profiled, newly-placed models
-    are started (waking an offline satellite if needed).
-    """
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-
-    old = fp.load_fleet_placement()
-    merged = {**old, **payload}
-    try:
-        clean = fp.save_fleet_placement(merged)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    active_id = resolve_host().id
-    applied: Dict[str, Any] = {}
-    for host_id in payload:
-        hid = str(host_id)
-        applied[hid] = await fleet_reconcile.apply_placement_change(
-            hid, old.get(hid, []), clean.get(hid, []), active_id
-        )
-    return {"ok": True, "placement": clean, "applied": applied}
 
 
 @router.post("/api/fleet-placement/reconcile")

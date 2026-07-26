@@ -158,6 +158,29 @@ def is_inherited(model_id: str) -> bool:
     return state.proc is None and _inherited_alive(state)
 
 
+def inherited_foreign(model_id: str) -> bool:
+    """True iff this model is alive via an inherited PID whose executable
+    lives **outside this repo** — an external sibling's server on a
+    mutex-shared port, adopted for control but never spawned by the hub
+    (#431). The canonical case: voice-transcriber's own ``whisper-server``
+    holding :8090 on the tower — the hub can route to it, but the fleet
+    summary must not claim the hub runs it. A backend the hub itself spawned
+    and re-adopted across a restart runs from ``vendor/`` inside this repo,
+    so it is *not* foreign. Best-effort: an unreadable exe path (access
+    denied, racing exit) reads as not-foreign rather than guessing.
+    """
+    state = _state_for(model_id)
+    if not (state.proc is None and _inherited_alive(state)):
+        return False
+    try:
+        import psutil
+
+        exe = Path(psutil.Process(state.inherited_pid).exe()).resolve()
+        return PROJECT_ROOT not in exe.parents
+    except Exception:  # noqa: BLE001 — display-only hint, never block
+        return False
+
+
 def pid(model_id: str) -> Optional[int]:
     state = _state_for(model_id)
     p = state.proc

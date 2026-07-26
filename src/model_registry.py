@@ -419,6 +419,40 @@ def desired_placement() -> Dict[str, List[str]]:
             placement[h.id] = ids
     return placement
 
+
+def cpu_resident_map() -> Dict[str, set]:
+    """``{host_id: {model_id, ...}}`` — rows that hold **no GPU VRAM** on that
+    host (#431). The single source every VRAM-capacity sum keys off (the fleet
+    summary card, the per-row host budgets, the on-demand headroom check): a
+    CPU-resident row must never count against a GPU ceiling.
+
+    Two independent ways a row lands on CPU:
+
+    * **Always, on every host** — piper's shim hardcodes CPU unconditionally
+      (``src/tts_engines/piper.py``, #371) and a ``whisper-server`` row that
+      *declares* ``-ng`` never touches the GPU (see ``whisper_translate``).
+    * **On one host only** — a failover chain's degraded last-resort tier
+      (``{id: tower, cpu: true}``, #342): GPU on the preferred members,
+      CPU-offloaded on the flagged one.
+
+    Reads ``all_models(apply_cpu_offload=False)`` deliberately: the registry
+    bakes the CPU rewrite in for the *active* host, so the default view would
+    show ``-ng`` on this box's row and smear that verdict across every other
+    chain member (#405). Deliberately **not** ``est_vram_mb == 0`` alone —
+    ``parakeet`` is also 0 but runs on the Mac's ANE via CoreML, a real (if
+    non-discrete-VRAM) device, not "cpu".
+    """
+    out: Dict[str, set] = {h.id: set() for h in all_hosts()}
+    for m in all_models(apply_cpu_offload=False):
+        always_cpu = m.tts_engine == "piper" or (
+            m.engine == "whisper-server" and "-ng" in m.args
+        )
+        for host_id, ids in out.items():
+            if always_cpu or host_id in m.cpu_hosts:
+                ids.add(m.id)
+    return out
+
+
 def resolve(name: str, host: Optional[HostProfile] = None) -> Optional[Model]:
     """Look up a model by any of its names — registry id, display_name, or alias.
 

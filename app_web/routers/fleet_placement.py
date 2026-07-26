@@ -29,7 +29,12 @@ from fastapi import APIRouter
 from src import backend_process as bp
 from src import fleet_reconcile, remote_stats, services as svc
 from src.host_profile import HostProfile, all_hosts, resolve as resolve_host
-from src.model_registry import all_models, desired_placement, launchable_local_ids
+from src.model_registry import (
+    all_models,
+    cpu_resident_map,
+    desired_placement,
+    launchable_local_ids,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,55 +59,38 @@ def _vram_estimates() -> Dict[str, int]:
 
 def _device_hints() -> Dict[str, Dict[str, str]]:
     """``{host_id: {model_id: "cpu"}}`` — CPU residency is per *(model, host)*,
-    so the grid can show a small 'cpu' hint per row (#387) — a model
+    so the summary can show a small 'cpu' hint per row (#387) — a model
     contributing 0 to the VRAM sum reads as *intentionally exempt*, not as an
-    omission.
-
-    Config-derived, no live probe. Two independent ways a row lands on CPU:
-
-    * **Always, on every host** — piper's shim hardcodes CPU unconditionally
-      (``src/tts_engines/piper.py``, #371) and a ``whisper-server`` row that
-      *declares* ``-ng`` never touches the GPU (see ``whisper_translate``).
-    * **On one host only** — a failover chain's degraded last-resort tier
-      (``{id: tower, cpu: true}``, #342): GPU on the preferred members,
-      CPU-offloaded on the flagged one.
-
-    Reads ``all_models(apply_cpu_offload=False)`` deliberately: the registry
-    bakes the CPU rewrite in for the *active* host, so the default view would
-    show ``-ng`` on this box's row and smear that verdict across every other
-    chain member (#405).
-
-    Deliberately **not** ``est_vram_mb == 0`` alone — ``parakeet`` is also 0
-    but runs on the Mac's ANE via CoreML, a real (if non-discrete-VRAM)
-    device, not "cpu"; and the ``qwen35_4b_moe`` virtual alias shares its
-    host row's GPU process. Display only (#387) — this never feeds the
-    capacity sum, which already keys off ``est_vram_mb``.
+    omission. Thin view over ``model_registry.cpu_resident_map()`` (#431) —
+    the same source the capacity sum excludes, so hint and math can't drift.
     """
-    hints: Dict[str, Dict[str, str]] = {h.id: {} for h in all_hosts()}
-    for m in all_models(apply_cpu_offload=False):
-        always_cpu = m.tts_engine == "piper" or (
-            m.engine == "whisper-server" and "-ng" in m.args
-        )
-        for host_id, per_host in hints.items():
-            if always_cpu or host_id in m.cpu_hosts:
-                per_host[m.id] = "cpu"
-    return hints
+    return {
+        host_id: {mid: "cpu" for mid in ids}
+        for host_id, ids in cpu_resident_map().items()
+    }
 
 
 def _capacity(
-    profile: HostProfile, placed: List[str], running: List[str], vram: Dict[str, int]
+    profile: HostProfile,
+    placed: List[str],
+    running: List[str],
+    vram: Dict[str, int],
+    devices: Dict[str, str],
 ) -> Dict[str, Any]:
     """The host's VRAM headroom against its declared ceiling (#375).
 
     Sums ``est_vram_mb`` over the union of *placed* (desired) and *running*
     (live) model ids — a model can be either without the other, and both draw
-    VRAM. The result is **advisory**: ``capacity_warning`` is True only when the
-    host declares a ``vram_mb`` ceiling AND the estimate exceeds it. A host with
-    no ceiling (Apple-silicon unified memory, managed-only boxes) never warns —
-    ``vram_mb`` is None and the sum is reported for context only.
+    VRAM. Rows resident on **CPU on this host** (``devices`` — piper, ``-ng``
+    whisper rows, a chain's degraded ``cpu: true`` tier) are excluded: they
+    hold no GPU VRAM, so counting them faked an overcommit on the tower
+    (#431). The result is **advisory**: ``capacity_warning`` is True only when
+    the host declares a ``vram_mb`` ceiling AND the estimate exceeds it. A
+    host with no ceiling (Apple-silicon unified memory, managed-only boxes)
+    never warns — ``vram_mb`` is None and the sum is reported for context only.
     """
     considered = list(dict.fromkeys([*placed, *running]))
-    est = sum(vram.get(m, 0) for m in considered)
+    est = sum(vram.get(m, 0) for m in considered if devices.get(m) != "cpu")
     ceiling = profile.vram_mb
     return {
         "vram_mb": ceiling,
@@ -144,15 +132,24 @@ async def _host_status(
         "icon": profile.icon or ("monitor" if hid == active_id else "server"),
         "can_ssh": profile.can_ssh, "runs_hub": runs_hub,
         "eligible": eligible, "placed": placed,
+        # Display-only capacity context (#431) — total system RAM where the
+        # machines registry documents it; None where the fact isn't known.
+        "ram_mb": profile.ram_mb,
     }
 
     if hid == active_id:
-        # Only the launchable models that are up — so a grid cell reads
-        # "desired ✓ running / ✗ down". Excludes subscription + virtual rows.
+        # Only the launchable models that are up — so a summary row reads
+        # honestly. Excludes subscription + virtual rows.
         running = [m for m in bp.running_backends().keys() if m in eligible_set]
+        # A live backend whose adopted PID is a *foreign* process (an external
+        # sibling on a mutex-shared port — voice-transcriber's whisper-server
+        # on :8090) is flagged so the summary can label it distinctly rather
+        # than claim the hub runs it (#431).
+        external = [m for m in running if bp.inherited_foreign(m)]
         return {
             **base, "local": True, "reachable": True, "dormant": False,
-            "running": running, **_capacity(profile, placed, running, vram),
+            "running": running, "external": external,
+            **_capacity(profile, placed, running, vram, devices),
         }
 
     # A peer: liveness by TCP connect (is the box on?), independent of whether it
@@ -168,8 +165,8 @@ async def _host_status(
         ]
     return {
         **base, "local": False, "reachable": reachable,
-        "dormant": profile.dormant, "running": running,
-        **_capacity(profile, placed, running, vram),
+        "dormant": profile.dormant, "running": running, "external": [],
+        **_capacity(profile, placed, running, vram, devices),
     }
 
 

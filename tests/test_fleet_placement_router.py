@@ -217,6 +217,70 @@ def test_cpu_chain_tier_marks_only_the_flagged_host(monkeypatch):
     assert device("gaming", "whisper_translate") == "cpu"
 
 
+def test_capacity_excludes_cpu_resident_rows(monkeypatch):
+    """CPU-resident rows must not count against the GPU ceiling (#431): piper
+    (always-CPU engine) and whisper (tower is its degraded ``cpu: true`` chain
+    tier) contribute nothing to the tower's sum even while running — the fix
+    for the false "Over VRAM capacity ~19 GB / 16 GB" on the tower. The same
+    rows still count on hosts where they are GPU-resident (whisper on gaming)."""
+    monkeypatch.setattr(
+        bp, "running_backends", lambda: {"piper": object(), "whisper": object()}
+    )
+
+    async def is_reachable(host):
+        return True
+
+    async def remote_models(owner, **kw):
+        return []
+
+    monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
+    monkeypatch.setattr(svc, "remote_models", remote_models)
+    monkeypatch.setattr(
+        fpr, "_vram_estimates",
+        lambda: {"piper": 3000, "whisper": 2000, "qwen35_4b": 2100, "orpheus": 2200},
+    )
+
+    client = TestClient(server_mod.app)
+    hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
+
+    t = hosts["tower"]
+    # Considered set: placed [qwen35_4b, piper, orpheus] ∪ running [piper,
+    # whisper] — piper + whisper are CPU on the tower, so only the GPU rows sum.
+    assert t["est_vram_mb"] == 2100 + 2200
+    assert t["capacity_warning"] is False
+    # CPU residency is per host: whisper still counts on GPU-preferred gaming.
+    assert hosts["gaming"]["est_vram_mb"] == 2000
+
+
+def test_ram_mb_surfaces_where_documented(monkeypatch):
+    """``ram_mb`` (display-only, #431) rides each host row where machines.md
+    documents the fact — tower 128 GB, gaming 16 GB — and is None elsewhere."""
+    _stub_status(monkeypatch)
+    client = TestClient(server_mod.app)
+    hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
+    assert hosts["tower"]["ram_mb"] == 131072
+    assert hosts["gaming"]["ram_mb"] == 16384
+    assert hosts["mac-mini-m4"]["ram_mb"] is None
+    assert hosts["openclaw"]["ram_mb"] is None
+
+
+def test_foreign_adopted_backend_flagged_external(monkeypatch):
+    """A live local backend whose adopted PID is a foreign process (an
+    external sibling on a mutex-shared port — voice-transcriber's
+    whisper-server on :8090) is listed in ``external`` so the summary labels
+    it distinctly instead of claiming the hub runs it (#431)."""
+    _stub_status(monkeypatch)
+    monkeypatch.setattr(bp, "running_backends", lambda: {"whisper": object()})
+    monkeypatch.setattr(bp, "inherited_foreign", lambda mid: mid == "whisper")
+
+    client = TestClient(server_mod.app)
+    hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
+    assert hosts["tower"]["running"] == ["whisper"]
+    assert hosts["tower"]["external"] == ["whisper"]
+    # Peers never carry the flag — their liveness is a reachability probe.
+    assert hosts["gaming"]["external"] == []
+
+
 def test_reconcile_endpoint_runs_a_pass(monkeypatch):
     async def fake_once():
         return {"mac-mini-m4": {"reachable": True}}

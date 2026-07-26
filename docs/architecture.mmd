@@ -160,7 +160,7 @@ flowchart TB
   WROUT -->|hub tab| SERVPROC
   WROUT -->|hub restart| WATCHDOG
   WROUT -->|models tab| BACKPROC
-  WROUT -->|fleet-placement tab: reconcile (read-only grid, #430)| FLEETREC
+  WROUT -->|fleet-placement tab: reconcile (read-only summary, #431)| FLEETREC
   WROUT -->|models tab: PUT placement (#424)| CFGWRITE
   CFGWRITE -.comment-preserving edit + commit + push.-> MODELSYAML
   CFGWRITE -->|post-write + drift sync of satellites| REMOTEBOOT

@@ -67,6 +67,11 @@ class HostProfile:
     # against — the Apple-silicon Mac Mini (unified memory) and managed-only
     # boxes that serve no models; a host with no ceiling never warns.
     vram_mb: Optional[int] = None
+    # Total system RAM in MB (#431), promoted from docs/machines.md's prose
+    # hardware facts like ``vram_mb`` above. Display-only context on the
+    # Models tab's fleet summary — never feeds a warning or a routing
+    # decision. Unset where the fact isn't documented.
+    ram_mb: Optional[int] = None
 
     @property
     def can_ssh(self) -> bool:
@@ -115,6 +120,7 @@ def _row_to_profile(host_id: str, row: Dict[str, Any], *, source: str) -> HostPr
         rdp=row.get("rdp"),
         mac=row.get("mac"),
         vram_mb=int(row["vram_mb"]) if row.get("vram_mb") is not None else None,
+        ram_mb=int(row["ram_mb"]) if row.get("ram_mb") is not None else None,
     )
 
 

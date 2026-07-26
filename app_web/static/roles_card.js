@@ -9,8 +9,8 @@
  * time you look, without a background timer.
  *
  * Two sections inside: a compact role → model list, and a compact per-host
- * placement summary — the per-model toggle grid stays on the Models tab
- * (Fleet placement card); this card links to it rather than duplicating it.
+ * placement summary — the fuller read-only Fleet summary lives on the
+ * Models tab (#431); this card links to it rather than duplicating it.
  */
 
 import { els } from './state.js';

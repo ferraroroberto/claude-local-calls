@@ -1,9 +1,10 @@
-/* Models tab — "Startup" card: which services autostart with the hub (#265).
+/* Models tab — "Service startup" card: which services autostart with the
+ * hub (#265; services-only since #430, renamed in #431).
  *
- * Thin CRUD view over GET/PATCH /admin/api/startup-profile. Services only
- * since #430 — model autostart derives from config/models.yaml (hosts chains
- * + startup policy), shown read-only in the Fleet placement card. Each row is
- * the vendored fleet switch (_vendored/switch) — optimistic-free: the toggle
+ * Thin CRUD view over GET/PATCH /admin/api/startup-profile. Model autostart
+ * lives elsewhere — per model (`startup: eager|on_demand`) in the placement
+ * cards, summarized read-only in the Fleet summary card. Each row is the
+ * vendored fleet switch (_vendored/switch) — optimistic-free: the toggle
  * only flips once the PATCH confirms, and reverts on failure.
  */
 
@@ -27,7 +28,8 @@ function renderStartup() {
   const profile = data.profile || {};
   const frag = document.createDocumentFragment();
 
-  frag.appendChild(sectionTitle('Services'));
+  // No section title: the card is single-purpose (services only, #431) —
+  // the card header already says what these rows are.
   (data.services || []).forEach(function (svc) {
     frag.appendChild(buildRow(svc.label, !!profile[svc.id], function (next) {
       return patchJson('/admin/api/startup-profile', { [svc.id]: next });
@@ -35,13 +37,6 @@ function renderStartup() {
   });
 
   root.replaceChildren(frag);
-}
-
-function sectionTitle(text) {
-  const li = document.createElement('li');
-  li.className = 'opt-group-title';
-  li.textContent = text;
-  return li;
 }
 
 function buildRow(label, on, apply) {

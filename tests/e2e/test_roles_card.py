@@ -10,8 +10,8 @@ What this locks in:
     background poll — mirrors the System Map lazy-load pattern);
   * expanding it renders one row per configured role and one row per fleet
     host;
-  * "View fleet placement" jumps to the Models tab and opens the existing
-    Fleet placement card instead of duplicating its grid here.
+  * "View fleet summary" jumps to the Models tab and opens the existing
+    Fleet summary card instead of duplicating it here.
 """
 
 from __future__ import annotations

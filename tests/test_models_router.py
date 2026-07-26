@@ -170,6 +170,24 @@ def test_host_budgets_sum_reachable_rows(monkeypatch):
     assert tower["resident_est_vram_mb"] == 2100 + 13400
 
 
+def test_host_budgets_exclude_cpu_resident_rows(monkeypatch):
+    """A reachable row that is CPU-resident on its host contributes nothing to
+    the budget bar's resident sum (#431) — same exclusion as the fleet
+    summary's capacity math (``model_registry.cpu_resident_map``)."""
+    monkeypatch.setattr(
+        models_router, "snapshot_listening_pids",
+        lambda: {8087: [111], 8088: [222]},
+    )
+    monkeypatch.setattr(bp, "is_reachable", lambda m, timeout=1.5: True)
+    monkeypatch.setattr(
+        models_router, "cpu_resident_map", lambda: {"tower": {"gemma4_26b"}}
+    )
+
+    body = _admin_client().get("/api/models", params={"local_only": "true"}).json()
+    tower = body["host_budgets"]["tower"]
+    assert tower["resident_est_vram_mb"] == 2100  # gemma4_26b's 13400 excluded
+
+
 def test_host_budgets_zero_when_nothing_reachable(monkeypatch):
     """No reachable process rows → the tower budget reports 0 resident MB
     (claude/gemini rows are 'reachable' but estimate-less, contributing 0)."""

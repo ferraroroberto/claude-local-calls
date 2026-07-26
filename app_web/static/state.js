@@ -182,7 +182,6 @@ export const els = {
   // Fleet placement card (issue #354)
   fleetPlacementBody: document.getElementById('fleetPlacementBody'),
   fleetPlacementStaleNote: document.getElementById('fleetPlacementStaleNote'),
-  fleetPlacementRefreshBtn: document.getElementById('fleetPlacementRefreshBtn'),
 
   // Model decisions card (issue #373) — Hub tab, role → model + placement
   rolesCard: document.getElementById('rolesCard'),

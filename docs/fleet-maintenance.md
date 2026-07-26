@@ -14,17 +14,17 @@ Left alone, reconcile almost always wins that race — a deliberately-stopped
 peer gets SSH-resurrected within seconds, long before failover's window can
 be satisfied. `src/fleet_maintenance.py` closes the gap: an operator arms a
 host-scoped drain window, and reconcile skips that host entirely (no wake, no
-SSH bootstrap, no profile write-through, no start) until the window expires
-or is cleared. This replaces the old workaround of hand-editing
+SSH bootstrap, no start) until the window expires or is cleared. This
+replaces the old workaround of hand-editing
 `LOCAL_LLM_HUB_FLEET_RECONCILE_INTERVAL_S` / `..._BOOT_DELAY_S` in `.env` on
 the tower, which still left the boot-pass racing a raised interval.
 
-Maintenance is **tower-local**, exactly like `fleet_placement.json` — it lives
-in `config/fleet_maintenance.json` next to it (gitignored, no committed
-example) and is only ever consulted by the tower's own reconcile loop.
-Explicit un-placement (`PATCH /admin/api/fleet-placement`) is **not** gated —
-that's a separate, deliberate action, not the additive resurrection this
-exists to pause.
+Maintenance is **tower-local** — it lives in `config/fleet_maintenance.json`
+(gitignored, no committed example) and is only ever consulted by the tower's
+own reconcile loop. Since #430 the desired state reconcile converges on is
+derived from `config/models.yaml` (`hosts:` chains + `startup:` policy);
+de-provisioning a model permanently is a registry edit, not something this
+drain marker does.
 
 ## API
 

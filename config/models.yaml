@@ -22,23 +22,13 @@ hub:
 # System-tray launcher (`tray.bat` → `python -m tray`).
 # Drives what `tray/app.py` does on startup. All keys are optional.
 #
-# Which local models autostart, plus whether Docker/Langfuse/the Mac Mini
-# come up automatically, is now controlled by config/startup_profile.json
-# (issue #265) — edit it from the admin SPA's Models tab "Startup" card, or
-# hand-edit the JSON. `autostart_models` below is a legacy fallback only:
-# model_registry.autostart_model_ids() uses it solely when
-# startup_profile.json doesn't exist yet (a fresh clone before the admin UI
-# has ever saved a profile), so it's kept in sync with that file's defaults
-# rather than removed outright.
+# Which local models come up with the hub is derived from the rows below
+# (#430): a `startup: eager` row autostarts on its preferred chain host
+# (`model_registry.desired_model_ids`); a `startup: on_demand` row loads on
+# first request. Service autostart (Docker/Langfuse/AgentsView) lives in
+# config/startup_profile.json (issue #265) — the admin SPA's Startup card.
 tray:
   autostart_hub: true
-  autostart_models:             # fallback only — see config/startup_profile.json
-    - qwen35_4b                 # agentic_light role — fast lane
-    - whisper                   # audio_transcribe role
-    - whisper_translate         # audio_translate role (eager CPU)
-    - whisper_vanilla           # unbiased-detection escape hatch, kept warm (#265)
-    - piper                     # audio_speech role — fast TTS default (~1 s through hub)
-    - orpheus                   # expressive TTS, kept warm for quality speech
   hub_ready_timeout_s: 30
 
 # Each host row also carries optional **machine-console** metadata (issue
@@ -247,6 +237,12 @@ hosts:
 # + the candidate vs the host's vram_mb ceiling) and logs a loud warning on
 # overcommit — warning only, never a block: WDDM overcommit degrades
 # transiently and idle unload recovers it.
+#
+# Since #430 the eager/on_demand split IS the fleet's desired state: a
+# `startup: eager` row autostarts and is kept resident on its preferred chain
+# host (first `hosts:`/`host:` member that enables it), derived by
+# model_registry.desired_model_ids() — there is no separate placement file or
+# autostart list to keep in sync. Moving a model = editing its chain here.
 models:
   # --- Claude subscription path (`claude -p` CLI) ---
   # One row per Claude model the CLI exposes. The hub routes the
@@ -367,7 +363,9 @@ models:
     port: 8082
     # MoE with `-ot .ffn_.*_exps.=CPU` (experts on CPU): only attention +
     # shared layers sit on GPU, so the VRAM footprint is a fraction of the
-    # full Q4_K_M — ~4000 MB. Out of the active rotation; ad-hoc bring-up only.
+    # full Q4_K_M — ~4000 MB. Out of the active rotation; ad-hoc bring-up only,
+    # so on_demand (#430): never eagerly desired even if re-enabled on a host.
+    startup: on_demand
     est_vram_mb: 4000
     hf_repo: "unsloth/GLM-4.5-Air-GGUF"
     # Multi-part GGUF in a Q4_K_M/ subdir — llama-server follows the
@@ -475,6 +473,12 @@ models:
     host: tower  # owning host (#178) — cross-enabled on mac-mini-m4 below
     engine: llama-server
     port: 8086
+    # On-demand (#430): out of the active rotation since qwen35_4b took the
+    # agentic_light role — it hasn't autostarted since, and the registry-derived
+    # desired set must say so explicitly now that there is no separate
+    # autostart list. First request loads it; 30 idle minutes unload it.
+    startup: on_demand
+    idle_unload_minutes: 30
     # 8B dense Q4_K_M, ~5 GB weights on disk, full GPU offload + 16K KV ≈ 5500 MB.
     est_vram_mb: 5500
     hf_repo: "unsloth/gemma-4-E4B-it-GGUF"
@@ -769,6 +773,11 @@ models:
     engine: tts-server
     tts_engine: chatterbox
     port: 8092
+    # On-demand (#430) — the "NOT autostarted" comment above, now enforced by
+    # the registry-derived desired set. First request loads it; 30 idle
+    # minutes unload it.
+    startup: on_demand
+    idle_unload_minutes: 30
     # ~0.5 B torch model on CUDA (`--device auto`) ≈ 2000 MB; on-demand only.
     est_vram_mb: 2000
     args:
@@ -776,8 +785,8 @@ models:
       - "auto"
 
   # --- Local Piper TTS — fast CPU VITS voices ---
-  # The auto-loaded default speech engine (tray.autostart_models) and the
-  # `audio_speech` role alias. Piper is optimized for local short-form TTS
+  # The auto-loaded default speech engine (startup: eager on tower, #430) and
+  # the `audio_speech` role alias. Piper is optimized for local short-form TTS
   # and is the low-latency path for assistant confirmations. The installer
   # downloads the standalone Piper binary into vendor/piper and voices into
   # models/piper.
@@ -857,6 +866,10 @@ models:
     engine: tts-server
     tts_engine: kokoro
     port: 8095
+    # On-demand (#430): a comparison voice, not part of the always-on set.
+    # First request loads it; 30 idle minutes unload it.
+    startup: on_demand
+    idle_unload_minutes: 30
     # Kokoro-82M int8 ONNX — tiny; ~500 MB even on the GPU path.
     est_vram_mb: 500
     model_path: "models/kokoro/kokoro-v1.0.int8.onnx"

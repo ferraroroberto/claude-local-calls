@@ -1,9 +1,11 @@
-"""Unit tests for src/fleet_reconcile.py (issue #353).
+"""Unit tests for src/fleet_reconcile.py (issues #353, #430).
 
 Covers the reconcile contract without any real network or process control:
-reachable-remote starts every placed model, an unreachable can-ssh host is
-woken, an already-running model is a benign no-op, the additive pass never
-stops anything, and an explicit un-place stops + de-profiles.
+the desired state comes from the registry (``model_registry.desired_placement``
+— monkeypatched here), a reachable remote starts every desired model, an
+unreachable can-ssh host is woken, an already-running model is a benign
+no-op, and the additive pass never stops anything. The derivation itself
+(eager/on_demand/chain rules) is unit-tested in ``test_model_registry.py``.
 """
 
 from __future__ import annotations
@@ -14,25 +16,25 @@ import os
 os.environ.setdefault("LOCAL_LLM_HUB_HOST", "tower")
 
 from src import backend_process as bp  # noqa: E402
-from src import fleet_maintenance, fleet_placement, fleet_reconcile as fr  # noqa: E402
-from src import remote_bootstrap, services, startup_profile  # noqa: E402
+from src import fleet_maintenance, fleet_reconcile as fr, model_registry  # noqa: E402
+from src import remote_bootstrap, services  # noqa: E402
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def _stub_peer_transport(monkeypatch, calls):
-    """Record start/stop/profile-writes instead of hitting a peer hub."""
-    async def write_profile(host_id, base, models):
-        calls.append(("profile", host_id, tuple(models)))
-        return {"ok": True, "status": 200}
+def _stub_desired(monkeypatch, placement):
+    """Pin the registry-derived desired placement (#430)."""
+    monkeypatch.setattr(model_registry, "desired_placement", lambda: placement)
 
+
+def _stub_peer_transport(monkeypatch, calls):
+    """Record start/stop actions instead of hitting a peer hub."""
     async def model_action(host_id, base, model_id, action):
         calls.append((action, host_id, model_id))
         return {"ok": True, "status": 200}
 
-    monkeypatch.setattr(fr, "_remote_write_profile", write_profile)
     monkeypatch.setattr(fr, "_remote_model_action", model_action)
 
 
@@ -51,30 +53,27 @@ def _stub_wol(monkeypatch, sent, *, fail=False):
 # --------------------------------------------------------------------------- #
 # reconcile_once — additive convergence
 # --------------------------------------------------------------------------- #
-def test_reachable_remote_starts_every_placed_model(monkeypatch, tmp_path):
+def test_reachable_remote_starts_every_desired_model(monkeypatch):
     calls: list = []
     _stub_peer_transport(monkeypatch, calls)
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
-                        lambda: {"mac-mini-m4": ["parakeet", "qwen"]})
+    _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet", "qwen"]})
     monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": True}))
 
     results = _run(fr.reconcile_once())
 
     starts = [c for c in calls if c[0] == "start"]
     assert {c[2] for c in starts} == {"parakeet", "qwen"}
-    assert ("profile", "mac-mini-m4", ("parakeet", "qwen")) in calls
     assert results["mac-mini-m4"]["reachable"] is True
     # additive: never a stop
     assert not [c for c in calls if c[0] == "stop"]
 
 
-def test_unreachable_can_ssh_host_is_woken(monkeypatch, tmp_path):
+def test_unreachable_can_ssh_host_is_woken(monkeypatch):
     calls: list = []
     _stub_peer_transport(monkeypatch, calls)
     _stub_wol(monkeypatch, [])
     woke = {"woke": []}
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
-                        lambda: {"mac-mini-m4": ["parakeet"]})
+    _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
     monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
 
     async def fake_bootstrap(host_id):
@@ -90,12 +89,11 @@ def test_unreachable_can_ssh_host_is_woken(monkeypatch, tmp_path):
     assert not [c for c in calls if c[0] == "start"]  # no start while down
 
 
-def test_woken_host_converges_in_same_pass(monkeypatch, tmp_path):
+def test_woken_host_converges_in_same_pass(monkeypatch):
     calls: list = []
     _stub_peer_transport(monkeypatch, calls)
     _stub_wol(monkeypatch, [])
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
-                        lambda: {"mac-mini-m4": ["parakeet"]})
+    _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
     monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
     monkeypatch.setattr(remote_bootstrap, "bootstrap_host", _async_ret({"ok": True}))
 
@@ -113,8 +111,7 @@ def test_unreachable_mac_host_gets_wol_then_bootstrap_same_pass(monkeypatch):
     sent: list = []
     _stub_wol(monkeypatch, sent)
     bootstraps: list = []
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
-                        lambda: {"mac-mini-m4": ["parakeet"]})
+    _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
     monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
 
     async def fake_bootstrap(host_id):
@@ -136,8 +133,7 @@ def test_unreachable_macless_host_sends_no_wol(monkeypatch):
     _stub_peer_transport(monkeypatch, calls)
     sent: list = []
     _stub_wol(monkeypatch, sent)
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
-                        lambda: {"openclaw": ["parakeet"]})  # no wired NIC, no mac
+    _stub_desired(monkeypatch, {"openclaw": ["parakeet"]})  # no wired NIC, no mac
     monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
     monkeypatch.setattr(remote_bootstrap, "bootstrap_host", _async_ret({"ok": False}))
 
@@ -153,8 +149,7 @@ def test_wol_send_failure_is_swallowed_and_pass_continues(monkeypatch):
     _stub_peer_transport(monkeypatch, calls)
     _stub_wol(monkeypatch, [], fail=True)
     bootstraps: list = []
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
-                        lambda: {"mac-mini-m4": ["parakeet"]})
+    _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
     monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
 
     async def fake_bootstrap(host_id):
@@ -170,7 +165,7 @@ def test_wol_send_failure_is_swallowed_and_pass_continues(monkeypatch):
     assert results["mac-mini-m4"]["reachable"] is True     # converged via SSH
 
 
-def test_empty_placement_host_is_skipped(monkeypatch):
+def test_empty_desired_host_is_skipped(monkeypatch):
     calls: list = []
     _stub_peer_transport(monkeypatch, calls)
     probed = {"n": 0}
@@ -179,16 +174,18 @@ def test_empty_placement_host_is_skipped(monkeypatch):
         probed["n"] += 1
         return {"reachable": True}
 
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement", lambda: {"mac-mini-m4": []})
+    # desired_placement() omits empty hosts by construction; an explicit empty
+    # entry must still be skipped without probing.
+    _stub_desired(monkeypatch, {"mac-mini-m4": []})
     monkeypatch.setattr(services, "peer_health", health)
 
     results = _run(fr.reconcile_once())
-    assert results == {}          # nothing placed → nothing converged
+    assert results == {}          # nothing desired → nothing converged
     assert probed["n"] == 0       # and no reason to even probe it
 
 
 def test_local_already_running_is_noop_success(monkeypatch):
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement", lambda: {"tower": ["whisper"]})
+    _stub_desired(monkeypatch, {"tower": ["whisper"]})
     monkeypatch.setattr(bp, "start", lambda mid: (False, "backend already running"))
     stops: list = []
     monkeypatch.setattr(bp, "stop", lambda mid: stops.append(mid) or (True, "stopped"))
@@ -217,8 +214,7 @@ def test_maintained_host_is_skipped_entirely(monkeypatch):
         probed["n"] += 1
         return {"reachable": False}
 
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
-                        lambda: {"mac-mini-m4": ["parakeet"]})
+    _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
     monkeypatch.setattr(services, "peer_health", health)
     monkeypatch.setattr(remote_bootstrap, "bootstrap_host", _async_ret({"ok": True}))
     monkeypatch.setattr(fleet_maintenance, "is_under_maintenance", lambda host_id: True)
@@ -228,14 +224,13 @@ def test_maintained_host_is_skipped_entirely(monkeypatch):
     assert results["mac-mini-m4"] == {"maintenance": True, "reachable": None}
     assert probed["n"] == 0                                # never even probed
     assert sent == []                                      # no WOL
-    assert not [c for c in calls if c[0] in ("start", "profile")]  # no convergence
+    assert not [c for c in calls if c[0] == "start"]       # no convergence
 
 
 def test_expired_maintenance_host_converges_normally(monkeypatch):
     calls: list = []
     _stub_peer_transport(monkeypatch, calls)
-    monkeypatch.setattr(fleet_placement, "load_fleet_placement",
-                        lambda: {"mac-mini-m4": ["parakeet"]})
+    _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
     monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": True}))
     # A real (non-monkeypatched) call against an empty maintenance file — the
     # host has no marker at all, i.e. the equivalent of an expired one.
@@ -247,105 +242,7 @@ def test_expired_maintenance_host_converges_normally(monkeypatch):
     assert ("start", "mac-mini-m4", "parakeet") in calls
 
 
-# --------------------------------------------------------------------------- #
-# apply_placement_change — explicit un-place stops + de-profiles
-# --------------------------------------------------------------------------- #
-def test_unplace_local_stops_and_deprofiles(monkeypatch):
-    stopped: list = []
-    monkeypatch.setattr(bp, "stop", lambda mid: stopped.append(mid) or (True, "stopped"))
-    monkeypatch.setattr(bp, "start", lambda mid: (True, "started"))
-
-    profile_saves: list = []
-    monkeypatch.setattr(startup_profile, "load_startup_profile",
-                        lambda: startup_profile.StartupProfile(models=["whisper", "piper"]))
-    monkeypatch.setattr(startup_profile, "save_startup_profile",
-                        lambda data, path=None: profile_saves.append(data) or None)
-
-    result = _run(fr.apply_placement_change("tower", ["whisper", "piper"], ["piper"], "tower"))
-
-    assert stopped == ["whisper"]                       # removed model stopped
-    assert profile_saves[0]["models"] == ["piper"]      # dropped from local profile
-    assert result["stopped"][0]["id"] == "whisper"
-
-
-def test_unplace_remote_stops_via_peer(monkeypatch):
-    calls: list = []
-    _stub_peer_transport(monkeypatch, calls)
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": True}))
-
-    _run(fr.apply_placement_change("mac-mini-m4", ["parakeet", "qwen"], ["qwen"], "tower"))
-
-    assert ("stop", "mac-mini-m4", "parakeet") in calls   # removed stopped on peer
-    assert ("start", "mac-mini-m4", "qwen") in calls      # survivor converged
-
-
-def test_unplace_last_remote_model_deprofiles_peer(monkeypatch):
-    # #360: emptying a remote host's placement must still write the profile
-    # through (models: []) so the un-placed model can't resurrect on reboot.
-    calls: list = []
-    _stub_peer_transport(monkeypatch, calls)
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": True}))
-
-    result = _run(fr.apply_placement_change("mac-mini-m4", ["parakeet"], [], "tower"))
-
-    assert ("stop", "mac-mini-m4", "parakeet") in calls
-    assert ("profile", "mac-mini-m4", ()) in calls        # empty write-through sent
-    assert result["converged"]["profile_written"] is True
-    assert not [c for c in calls if c[0] == "start"]
-
-
-def test_unplace_last_remote_model_soft_fails_when_peer_down(monkeypatch):
-    # Unreachable peer: the un-place itself must not error; no profile PATCH,
-    # no wake/bootstrap attempt — the stale entry waits for the peer's return.
-    calls: list = []
-    _stub_peer_transport(monkeypatch, calls)
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
-
-    result = _run(fr.apply_placement_change("mac-mini-m4", ["parakeet"], [], "tower"))
-
-    assert not [c for c in calls if c[0] == "profile"]
-    assert result["converged"] == {"reachable": False, "profile_written": False}
-
-
 def _async_ret(value):
     async def _f(*args, **kwargs):
         return value
     return _f
-
-
-# --------------------------------------------------------------------------- #
-# On-demand rows (#422): the additive loop never starts them.
-# --------------------------------------------------------------------------- #
-def test_eager_start_ids_filters_on_demand_rows(monkeypatch):
-    from src import model_registry
-    from src.model_registry import Model
-
-    rows = [
-        Model(id="qwen35_4b", display_name="qwen3.5-4b", backend="openai", port=8088),
-        Model(id="gemma4_26b", display_name="gemma4-26b-a4b-it", backend="openai",
-              port=8087, startup="on_demand", idle_unload_minutes=30),
-    ]
-    monkeypatch.setattr(model_registry, "all_models",
-                        lambda *a, **kw: rows)
-
-    assert fr._eager_start_ids(["qwen35_4b", "gemma4_26b", "piper"]) == \
-        ["qwen35_4b", "piper"]
-
-
-def test_reconcile_local_skips_on_demand_models(monkeypatch):
-    from src import model_registry
-    from src.model_registry import Model
-
-    rows = [
-        Model(id="gemma4_26b", display_name="gemma4-26b-a4b-it", backend="openai",
-              port=8087, startup="on_demand", idle_unload_minutes=30),
-    ]
-    monkeypatch.setattr(model_registry, "all_models", lambda *a, **kw: rows)
-
-    started: list = []
-    monkeypatch.setattr(bp, "start",
-                        lambda mid: (started.append(mid), (True, "started"))[1])
-
-    result = _run(fr._reconcile_local(["gemma4_26b"]))
-    assert started == []
-    assert result["started"] == []

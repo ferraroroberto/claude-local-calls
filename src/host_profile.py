@@ -80,7 +80,7 @@ class HostProfile:
 # contract is "edit the YAML and restart the hub to pick up changes," so a
 # single hub request shouldn't pay several YAML parses behind the scenes
 # (resolve() + hub_port() + hub_bind_host() + model_registry's all_models()/
-# autostart_model_ids() all read the same file). Keying on the path means
+# desired_model_ids() all read the same file). Keying on the path means
 # swapping ``CONFIG_PATH`` (as the tests do) transparently busts the cache.
 _CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
 

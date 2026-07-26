@@ -19,7 +19,7 @@ from src import backend_process, model_registry, server_lifecycle as sl, service
 
 def _stub_real_ops(monkeypatch):
     """No real subprocess/network side effects from the lifecycle tasks."""
-    monkeypatch.setattr(model_registry, "autostart_model_ids", lambda *a, **kw: [])
+    monkeypatch.setattr(model_registry, "desired_model_ids", lambda *a, **kw: [])
     monkeypatch.setattr(backend_process, "inherit_running_backends", lambda: 0)
 
     async def _no_launch():

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
-
 import yaml
 
-from src import host_profile, model_registry, startup_profile
+from src import host_profile, model_registry
 
 
 def _write_config(tmp_path, content: dict):
@@ -69,27 +67,29 @@ def test_env_override_wins(tmp_path, monkeypatch):
     assert "qwen" in ids
 
 
-def test_autostart_model_ids_filters_to_launchable_enabled_rows(tmp_path, monkeypatch):
-    # No live profile AND no example template for this resolved path —
-    # autostart_model_ids() falls back to the legacy config/models.yaml ->
-    # tray.autostart_models list (issue #304).
-    monkeypatch.setattr(startup_profile, "DEFAULT_PROFILE_PATH", tmp_path / "startup_profile.json")
-    monkeypatch.setattr(startup_profile, "EXAMPLE_PROFILE_PATH", tmp_path / "startup_profile.example.json")
+def test_desired_model_ids_filters_to_launchable_eager_rows(tmp_path, monkeypatch):
+    """#430: the desired set derives from the registry — eager ∧ launchable.
+    Virtual aliases, other-host rows, subscription backends, and unknown ids
+    can never appear; an unowned eager row (empty chain = local everywhere)
+    is included."""
     cfg = _write_config(tmp_path, {
         "hub": {"port": 8000},
-        "tray": {"autostart_models": [
-            "qwen", "qwen_virtual", "piper", "disabled", "claude", "missing",
-        ]},
         "hosts": {
-            "pc": {"platform": "win32", "default": True, "enabled": ["qwen", "qwen_virtual", "piper"]},
+            "pc": {"platform": "win32", "default": True,
+                   "enabled": ["qwen", "qwen_virtual", "piper", "remote"]},
+            "mac": {"platform": "darwin", "enabled": ["remote"]},
         },
         "models": {
+            # Unowned (no host:) → local everywhere it is enabled.
             "qwen": {"display_name": "qwen3.5-9b", "backend": "openai", "port": 8081},
             "qwen_virtual": {
                 "display_name": "qwen3.5-9b-nothink", "backend": "openai",
                 "port": 8081, "virtual": True,
             },
             "piper": {"display_name": "piper-tts", "backend": "tts", "port": 8096},
+            # Cross-enabled here but owned by mac — proxied, never desired here.
+            "remote": {"display_name": "r", "backend": "openai", "port": 8082,
+                       "host": "mac"},
             "disabled": {"display_name": "gemma", "backend": "openai", "port": 8087},
             "claude": {"display_name": "claude-haiku-4-5", "backend": "claude"},
         },
@@ -97,34 +97,66 @@ def test_autostart_model_ids_filters_to_launchable_enabled_rows(tmp_path, monkey
     _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
-    assert model_registry.autostart_model_ids() == ["qwen", "piper"]
+    # Order follows the YAML `models:` mapping — safe_dump sorts keys here.
+    assert model_registry.desired_model_ids() == ["piper", "qwen"]
 
 
-def test_autostart_model_ids_prefers_startup_profile_when_present(tmp_path, monkeypatch):
-    profile_path = tmp_path / "startup_profile.json"
-    profile_path.write_text(
-        json.dumps({"docker": True, "langfuse": True, "models": ["piper"]}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(startup_profile, "DEFAULT_PROFILE_PATH", profile_path)
+def test_desired_model_ids_chain_and_cpu_tier_rules(tmp_path, monkeypatch):
+    """#430 chain rules: a model is desired only on its *preferred* chain host
+    — the first member that exists and enables it. A chain head that names an
+    unknown host or one that doesn't enable the row falls through to the next
+    member (chain-fallback); a degraded ``cpu: true`` tier deeper in the chain
+    is a candidate runner (launchable) but never desired there."""
     cfg = _write_config(tmp_path, {
         "hub": {"port": 8000},
-        # Legacy YAML list deliberately differs from the profile above —
-        # if this id shows up in the result, the fallback branch ran
-        # instead of the startup_profile.json branch.
-        "tray": {"autostart_models": ["qwen"]},
         "hosts": {
-            "pc": {"platform": "win32", "default": True, "enabled": ["qwen", "piper"]},
+            "pc":  {"platform": "win32", "default": True,
+                    "enabled": ["whisper", "fallthrough"]},
+            "mac": {"platform": "darwin", "enabled": ["whisper", "fallthrough"]},
         },
         "models": {
-            "qwen": {"display_name": "qwen3.5-9b", "backend": "openai", "port": 8081},
-            "piper": {"display_name": "piper-tts", "backend": "tts", "port": 8096},
+            # mac preferred, pc is the degraded CPU last resort.
+            "whisper": {
+                "display_name": "w", "backend": "whisper", "engine": "whisper-server",
+                "port": 8090, "hosts": ["mac", {"id": "pc", "cpu": True}],
+            },
+            # Chain head names a host that doesn't exist → next member wins.
+            "fallthrough": {
+                "display_name": "f", "backend": "openai", "port": 8083,
+                "hosts": ["ghost", "pc", "mac"],
+            },
+        },
+    })
+    _patch_config_path(monkeypatch, cfg)
+
+    monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
+    # whisper is launchable on pc (chain member) but desired only on mac.
+    assert "whisper" in model_registry.launchable_local_ids()
+    assert model_registry.desired_model_ids() == ["fallthrough"]
+
+    monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "mac")
+    assert model_registry.desired_model_ids() == ["whisper"]
+
+
+def test_desired_placement_aggregates_per_host(tmp_path, monkeypatch):
+    """#430: the fleet-wide map is desired_model_ids per declared host, with
+    empty hosts omitted (no reason to probe or wake them)."""
+    cfg = _write_config(tmp_path, {
+        "hub": {"port": 8000},
+        "hosts": {
+            "pc":  {"platform": "win32", "default": True, "enabled": ["a", "b"]},
+            "mac": {"platform": "darwin", "enabled": ["b"]},
+            "bare": {"platform": "linux"},   # no enabled list → omitted
+        },
+        "models": {
+            "a": {"display_name": "a", "backend": "openai", "port": 8081, "host": "pc"},
+            "b": {"display_name": "b", "backend": "openai", "port": 8082, "host": "mac"},
         },
     })
     _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
-    assert model_registry.autostart_model_ids() == ["piper"]
+    assert model_registry.desired_placement() == {"pc": ["a"], "mac": ["b"]}
 
 
 def test_launchable_local_ids_excludes_remote_virtual_and_nonspawnable(tmp_path, monkeypatch):
@@ -570,14 +602,10 @@ def test_startup_and_idle_unload_fields(tmp_path, monkeypatch):
     assert typo.startup == model_registry.STARTUP_EAGER
 
 
-def test_autostart_model_ids_excludes_on_demand_rows(tmp_path, monkeypatch):
-    """#422: an on_demand row never autostarts with the hub, even when a
-    stale startup profile still lists it — the first request loads it."""
-    profile_path = tmp_path / "startup_profile.json"
-    profile_path.write_text(
-        json.dumps({"models": ["qwen", "gemma"]}), encoding="utf-8",
-    )
-    monkeypatch.setattr(startup_profile, "DEFAULT_PROFILE_PATH", profile_path)
+def test_desired_model_ids_excludes_on_demand_rows(tmp_path, monkeypatch):
+    """#422/#430: an on_demand row is never in the desired set — not hub
+    autostart, not the reconcile loop's derived placement. The first request
+    loads it (src/on_demand.py owns that lifecycle)."""
     cfg = _write_config(tmp_path, {
         "hub": {"port": 8000},
         "hosts": {
@@ -594,5 +622,6 @@ def test_autostart_model_ids_excludes_on_demand_rows(tmp_path, monkeypatch):
     _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
-    assert model_registry.autostart_model_ids() == ["qwen"]
+    assert model_registry.desired_model_ids() == ["qwen"]
+    assert model_registry.desired_placement() == {"pc": ["qwen"]}
 

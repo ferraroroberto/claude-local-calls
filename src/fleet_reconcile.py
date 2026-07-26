@@ -1,32 +1,40 @@
-"""Fleet reconcile — converge each host to its desired placement (#353).
+"""Fleet reconcile — converge each host to its registry-derived desired state.
 
-Step 2 of the always-on control plane. Reads ``config/fleet_placement.json``
-(``src/fleet_placement.py``) and, for every host with placed models, makes the
-live fleet match intent:
+Step 2 of the always-on control plane (#353), re-sourced in #430: the desired
+running set per host is **derived from ``config/models.yaml``**
+(``model_registry.desired_placement()`` — ``startup: eager`` rows on their
+preferred chain host), replacing the retired ``config/fleet_placement.json``.
+For every host with desired models, one pass makes the live fleet match the
+registry:
 
   * an **unreachable** satellite that ``can_ssh`` → wake it via
     ``remote_bootstrap.bootstrap_host`` (the tower holds the forced-command
     key); once it answers, converge it in the same pass;
-  * a **reachable remote** host → write its ``startup_profile`` through to the
-    desired set (so it self-boots correctly on its *own* next reboot, via
-    Step 1's host-addressable profile API) and start any placed model not up;
-  * the **local** (control-node) host → start its placed models via
+  * a **reachable remote** host → start any desired model not up via its own
+    hub's models API. No profile write-through is needed any more: the peer
+    self-boots its desired set from its *own* synced ``models.yaml``
+    (``server_lifecycle._autostart_configured_backends`` →
+    ``model_registry.desired_model_ids``), even when the tower is down;
+  * the **local** (control-node) host → start its desired models via
     ``backend_process.start`` directly.
 
 The periodic pass (:func:`reconcile_once`) is **additive**: it starts missing
-placed models but never stops one that was started by hand and isn't placed.
-Explicit un-placement is a separate, deliberate action
-(:func:`apply_placement_change`, driven by the placement API's PATCH) — it stops
-the removed models and drops them from the host's profile.
+desired models but never stops one that was started by hand. ``startup:
+on_demand`` rows (#422) are never in the desired set — ``src.on_demand`` owns
+their load/unload lifecycle, so an idle-unloaded or hand-stopped on-demand
+model staying down is by design (the pre-#422 supervisor resurrected a
+stopped ``gemma4_26b`` within minutes, observed live). Stopping an eager
+model permanently is a config edit: flip its row to ``on_demand`` or move its
+chain in ``models.yaml``.
 
 **Maintenance gate (#411):** this loop's own always-on convergence used to race
 ``model_failover.py`` (#342) — a deliberately-stopped peer got SSH-resurrected
 here within seconds, well inside ``model_failover``'s ``fail_after_s`` window,
 so failover could never trigger on a drill-induced outage. :func:`reconcile_once`
 now checks ``src.fleet_maintenance.is_under_maintenance`` per host and skips a
-drained host entirely (no wake, no bootstrap, no profile write, no start) until
-its window expires or is cleared via ``/admin/api/fleet-maintenance`` — see
-that module's docstring for the full contract.
+drained host entirely (no wake, no bootstrap, no start) until its window
+expires or is cleared via ``/admin/api/fleet-maintenance`` — see that module's
+docstring for the full contract.
 
 Everything leans on existing idempotency: ``backend_process.start`` adopts a
 reachable port and no-ops if already running, and a forwarded ``/start`` returns
@@ -83,26 +91,6 @@ def _peer_headers(host_id: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-async def _remote_write_profile(host_id: str, base: str, models: List[str]) -> Dict[str, Any]:
-    """PATCH a peer's own ``startup_profile`` to the desired model set.
-
-    Sends only ``{"models": [...]}`` — the peer's profile PATCH merges it over
-    that host's docker/langfuse/etc. flags and validates the ids against its
-    *own* launchable set (#265). So the satellite self-boots the placed set on
-    its next reboot even if the tower is down.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=_PEER_TIMEOUT_S) as client:
-            r = await client.patch(
-                f"{base}/admin/api/startup-profile",
-                json={"models": list(models)},
-                headers=_peer_headers(host_id),
-            )
-        return {"ok": r.status_code < 400, "status": r.status_code}
-    except httpx.HTTPError as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-
-
 async def _remote_model_action(host_id: str, base: str, model_id: str, action: str) -> Dict[str, Any]:
     """POST ``/admin/api/models/{id}/{start|stop}`` to a peer hub.
 
@@ -124,30 +112,12 @@ async def _remote_model_action(host_id: str, base: str, model_id: str, action: s
 # --------------------------------------------------------------------------- #
 # Per-host convergence.
 # --------------------------------------------------------------------------- #
-def _eager_start_ids(desired: List[str]) -> List[str]:
-    """``desired`` minus ``startup: on_demand`` rows (#422).
-
-    Placement keeps documenting intent (and the grid keeps counting the
-    VRAM estimate) for an on-demand model, but this loop must never start
-    one — the first *request* loads it, and an idle-unloaded or hand-stopped
-    on-demand model staying down is the whole point (the pre-#422 supervisor
-    resurrected a stopped ``gemma4_26b`` within minutes, observed live).
-    """
-    from .model_registry import STARTUP_ON_DEMAND, all_models
-
-    on_demand = {m.id for m in all_models() if m.startup == STARTUP_ON_DEMAND}
-    skipped = [m for m in desired if m in on_demand]
-    if skipped:
-        logger.debug("fleet reconcile: skipping on-demand model(s): %s", skipped)
-    return [m for m in desired if m not in on_demand]
-
-
 async def _reconcile_local(desired: List[str]) -> Dict[str, Any]:
-    """Start the control node's own placed models directly (idempotent)."""
+    """Start the control node's own desired models directly (idempotent)."""
     from . import backend_process as bp
 
     started: List[Dict[str, Any]] = []
-    for model_id in _eager_start_ids(desired):
+    for model_id in desired:
         try:
             ok, msg = await asyncio.to_thread(bp.start, model_id)
         except Exception as exc:  # noqa: BLE001 — a bad row must not abort the pass
@@ -161,7 +131,7 @@ async def _reconcile_local(desired: List[str]) -> Dict[str, Any]:
 
 
 async def _reconcile_remote(host_id: str, desired: List[str]) -> Dict[str, Any]:
-    """Wake (if needed) + write-through profile + start placed models on a peer."""
+    """Wake (if needed) + start the desired models on a peer."""
     from . import remote_bootstrap, services
     from .host_profile import get_host
 
@@ -196,18 +166,13 @@ async def _reconcile_remote(host_id: str, desired: List[str]) -> Dict[str, Any]:
             return {"reachable": False, "wol_sent": wol_sent, "woke": woke}
 
     base = _peer_base(owner)
-    profile = await _remote_write_profile(host_id, base, desired)
     started: List[Dict[str, Any]] = []
-    # The profile write-through above keeps the full placed set (the peer's
-    # own autostart filter skips on-demand rows, #422); only the eager subset
-    # is actively started here.
-    for model_id in _eager_start_ids(desired):
+    for model_id in desired:
         started.append({"id": model_id, **await _remote_model_action(host_id, base, model_id, "start")})
     return {
         "reachable": True,
         "wol_sent": wol_sent,
         "woke": woke,
-        "profile_written": profile.get("ok"),
         "started": started,
     }
 
@@ -219,19 +184,19 @@ async def _reconcile_host(host_id: str, desired: List[str], active_id: str) -> D
 
 
 async def reconcile_once() -> Dict[str, Any]:
-    """One additive convergence pass over the whole fleet placement.
+    """One additive convergence pass over the registry-derived fleet state.
 
-    Starts every placed-but-not-running model (waking an offline can-ssh
-    satellite first). Never stops anything — an un-placement is the caller's
-    explicit :func:`apply_placement_change`, not this loop's job. A host with an
-    empty placement is skipped entirely: no models to run means no reason to
-    wake it.
+    Starts every desired-but-not-running model (waking an offline can-ssh
+    satellite first). Never stops anything — de-provisioning a model is a
+    ``models.yaml`` edit (``startup: on_demand`` / a chain move), not this
+    loop's job. A host with an empty desired set is omitted from the derived
+    placement entirely: no models to run means no reason to wake it.
     """
     from . import fleet_maintenance
-    from .fleet_placement import load_fleet_placement
     from .host_profile import resolve as resolve_host
+    from .model_registry import desired_placement
 
-    placement = load_fleet_placement()
+    placement = desired_placement()
     active_id = resolve_host().id
     results: Dict[str, Any] = {}
     for host_id, desired in placement.items():
@@ -247,91 +212,3 @@ async def reconcile_once() -> Dict[str, Any]:
             logger.warning("fleet reconcile: host %s raised: %s", host_id, exc)
             results[host_id] = {"ok": False, "error": str(exc)}
     return results
-
-
-# --------------------------------------------------------------------------- #
-# Explicit un-placement (PATCH-driven) — the one path allowed to stop things.
-# --------------------------------------------------------------------------- #
-def _drop_local_profile_models(removed: List[str]) -> None:
-    """Drop un-placed ids from the *local* startup profile so they don't
-    resurrect on the next reboot. Remote hosts get the same effect for free —
-    the reconcile write-through rewrites their profile to the new desired set.
-    """
-    from .startup_profile import load_startup_profile, save_startup_profile
-
-    current = load_startup_profile().as_dict()
-    kept = [m for m in current.get("models", []) if m not in set(removed)]
-    if kept != current.get("models", []):
-        save_startup_profile({**current, "models": kept})
-
-
-async def _unplace(host_id: str, removed: List[str], active_id: str) -> List[Dict[str, Any]]:
-    from . import backend_process as bp
-    from .host_profile import get_host
-
-    results: List[Dict[str, Any]] = []
-    if host_id == active_id:
-        for model_id in removed:
-            try:
-                ok, msg = await asyncio.to_thread(bp.stop, model_id)
-            except Exception as exc:  # noqa: BLE001
-                results.append({"id": model_id, "ok": False, "detail": str(exc)})
-                continue
-            results.append({"id": model_id, "ok": bool(ok), "detail": msg})
-            logger.info("fleet reconcile: local stop %s -> %s", model_id, msg)
-        _drop_local_profile_models(removed)
-        return results
-
-    owner = get_host(host_id)
-    if owner is None or not owner.address:
-        return [{"id": m, "ok": False, "error": "no address configured"} for m in removed]
-    base = _peer_base(owner)
-    for model_id in removed:
-        results.append({"id": model_id, **await _remote_model_action(host_id, base, model_id, "stop")})
-    return results
-
-
-async def apply_placement_change(
-    host_id: str, old_ids: List[str], new_ids: List[str], active_id: str
-) -> Dict[str, Any]:
-    """Apply a single host's placement delta immediately (PATCH-driven, #353).
-
-    Removed ids are **stopped** and de-profiled (the only path that stops a
-    model — the periodic loop never does). Then the host is converged additively
-    to ``new_ids`` (start newly-placed / write-through the peer profile). A
-    remote host's de-profiling happens implicitly in the converge write-through,
-    which rewrites its profile to exactly ``new_ids`` — including when
-    ``new_ids`` is empty (#360): skipping the converge entirely there left the
-    peer's profile holding the un-placed model, resurrecting it on the peer's
-    next reboot. The empty-set write-through goes straight to the profile PATCH
-    (reachability-checked, soft-fail) — never the wake/bootstrap machinery,
-    which exists to *start* things, not to erase a line from a profile.
-    """
-    removed = [m for m in old_ids if m not in set(new_ids)]
-    stopped = await _unplace(host_id, removed, active_id) if removed else []
-    if new_ids:
-        converged = await _reconcile_host(host_id, list(new_ids), active_id)
-    elif removed and host_id != active_id:
-        converged = await _deprofile_remote(host_id)
-    else:
-        converged = {}
-    return {"stopped": stopped, "converged": converged}
-
-
-async def _deprofile_remote(host_id: str) -> Dict[str, Any]:
-    """Rewrite a remote peer's profile to no models (last-model un-place, #360).
-
-    Reachable peer → PATCH ``{"models": []}``; unreachable/unknown peer →
-    soft-fail (the stale profile entry survives until the peer is next up, but
-    the un-place itself never errors on it)."""
-    from . import services
-    from .host_profile import get_host
-
-    owner = get_host(host_id)
-    if owner is None or not owner.address:
-        return {"reachable": False, "error": "no address configured"}
-    health = await services.peer_health(host_id)
-    if not health.get("reachable"):
-        return {"reachable": False, "profile_written": False}
-    profile = await _remote_write_profile(host_id, _peer_base(owner), [])
-    return {"reachable": True, "profile_written": profile.get("ok")}

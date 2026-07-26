@@ -12,10 +12,9 @@ while" — armed/cleared via the ``/admin/api/fleet-maintenance`` router,
 replacing the old workaround of hand-editing
 ``LOCAL_LLM_HUB_FLEET_RECONCILE_INTERVAL_S``/``..._BOOT_DELAY_S`` in ``.env``.
 
-Mirrors ``src/fleet_placement.py``'s conventions: tolerant load (a broken or
+Mirrors ``src/startup_profile.py``'s conventions: tolerant load (a broken or
 absent file never raises), atomic save, a path-keyed cache. Local to the
-tower exactly like fleet placement — ``config/fleet_maintenance.json`` lives
-next to ``config/fleet_placement.json``, gitignored, no committed example
+tower — ``config/fleet_maintenance.json`` is gitignored, no committed example
 (absent file = nothing under maintenance).
 """
 
@@ -40,7 +39,7 @@ DEFAULT_MAINTENANCE_S = 900.0
 MAX_MAINTENANCE_S = 3600.0
 
 # Parsed cache keyed by the resolved path — same shape as
-# fleet_placement._PLACEMENT_CACHE so swapping DEFAULT_MAINTENANCE_PATH in
+# startup_profile._PROFILE_CACHE so swapping DEFAULT_MAINTENANCE_PATH in
 # tests transparently busts the cache instead of returning a stale hit.
 _MAINTENANCE_CACHE: Dict[str, Dict[str, Dict[str, Any]]] = {}
 

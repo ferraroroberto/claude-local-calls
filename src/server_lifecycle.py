@@ -136,10 +136,10 @@ async def wire_observatory_loop() -> None:
     # profile's non-model service flags.
     _BACKGROUND_TASKS.append(loop.create_task(_autostart_services()))
     # Fleet always-on control plane (issue #353): converge every host to its
-    # desired placement on boot + every few minutes. Since #374 this is also
-    # the *sole* peer wake/sync mechanism — the old per-service mac_mini_sync
-    # boot toggle folded into reconcile-on-boot (a peer with placed models is
-    # woken + synced + started here; one with no placement is left asleep).
+    # registry-derived desired state on boot + every few minutes (#430 — the
+    # placement comes from models.yaml's hosts chains + startup policy). Since
+    # #374 this is also the *sole* peer wake/sync mechanism (a peer with
+    # desired models is woken + started here; one with none is left asleep).
     _BACKGROUND_TASKS.append(loop.create_task(_fleet_reconcile_loop()))
     # Dynamic model fallback (issue #342): probe the hosts of every
     # multi-host ``hosts:`` chain and move ownership down/up the chain with
@@ -163,10 +163,14 @@ async def wire_observatory_loop() -> None:
 
 
 async def _autostart_configured_backends() -> None:
+    # The registry-derived desired set (#430): eager rows preferred-owned by
+    # (or unowned and launchable on) this host. This is how an offline
+    # satellite applies its models when it powers up — its own synced
+    # models.yaml, no tower involvement needed.
     from . import backend_process as bp
-    from .model_registry import autostart_model_ids
+    from .model_registry import desired_model_ids
 
-    model_ids = autostart_model_ids()
+    model_ids = desired_model_ids()
     if not model_ids:
         return
     logger.info("autostart: configured backend set: %s", model_ids)
@@ -211,7 +215,8 @@ async def _autostart_services() -> None:
     finishing its own startup. Peer wake/sync used to live here too (the legacy
     ``mac_mini_sync`` branch); since #374 it is owned entirely by the fleet
     reconcile loop (``_fleet_reconcile_loop`` → ``fleet_reconcile.reconcile_once``),
-    driven by ``config/fleet_placement.json`` as the sole cross-host source of
+    driven since #430 by the registry-derived desired state (``models.yaml``'s
+    ``hosts:`` chains + ``startup:`` policy) as the sole cross-host source of
     truth.
     """
     from . import services as svc

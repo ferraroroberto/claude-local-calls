@@ -2,9 +2,9 @@
 
 A ``models.yaml`` row may declare ``startup: on_demand`` (default ``eager``,
 today's always-on behavior). Such a row is never started eagerly — not by
-hub autostart (``model_registry.autostart_model_ids`` filters it), not by
-the fleet reconcile loop, not by the failover engine (both guard on
-``Model.startup``). Instead:
+hub autostart (``model_registry.desired_model_ids`` excludes it), not by
+the fleet reconcile loop (same derived set, #430), not by the failover
+engine (guards on ``Model.startup``). Instead:
 
 * **Load on first request** — the dispatch paths that reach a local backend
   (chat completions, the Anthropic-shape ``/v1/messages`` translation, and

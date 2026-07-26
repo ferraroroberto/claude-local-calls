@@ -108,17 +108,25 @@ def _warn_on_vram_overcommit(model: Model) -> Optional[int]:
     """
     from . import backend_process as bp
     from .host_profile import resolve as resolve_host
+    from .model_registry import cpu_resident_map
 
     try:
-        ceiling = resolve_host().vram_mb
+        host = resolve_host()
+        ceiling = host.vram_mb
     except Exception:  # noqa: BLE001 — hostless tooling contexts
         ceiling = None
     if not ceiling:
         return None
+    # CPU-resident rows on this host (piper, -ng whisper rows, a chain's
+    # degraded cpu tier) hold no GPU VRAM — excluding them keeps the headroom
+    # math honest (#431), same exclusion as the fleet summary's capacity sum.
+    cpu = cpu_resident_map().get(host.id, set())
     running = bp.running_backends()
     projected = sum(
-        m.est_vram_mb or 0 for mid, m in running.items() if mid != model.id
-    ) + (model.est_vram_mb or 0)
+        m.est_vram_mb or 0
+        for mid, m in running.items()
+        if mid != model.id and mid not in cpu
+    ) + (0 if model.id in cpu else model.est_vram_mb or 0)
     if projected <= ceiling:
         return None
     logger.warning(

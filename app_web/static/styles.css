@@ -805,9 +805,10 @@ h2 { display: flex; align-items: center; gap: 8px; }
 }
 .pe-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
-/* Config-version chip (#424) in the Models card header. */
+/* Config-version chip (#424) in the Models card header. Same typography as
+ * the build sha in the page footer (#buildReadout: plain .muted.small) —
+ * the monospace face clashed with the header type (#431). */
 .models-config-sha {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: nowrap;
 }
 
@@ -1076,10 +1077,10 @@ h2 { display: flex; align-items: center; gap: 8px; }
 /* Section labels reuse .opt-group-title (playground's existing group-label
  * pattern) rather than a new one-off class. */
 
-/* ---------- Fleet placement card — per-machine desired state (#354) ----------
- * The fleet-wide sibling of the Startup card: model rows reuse .startup-row /
- * .startup-list and the vendored switch verbatim; only the per-host grouping
- * (header + status chip + offline note) is new here. */
+/* ---------- Fleet summary card — per-machine read-only summary (#354/#431) ----------
+ * The fleet-wide sibling of the Service startup card: summary lines reuse
+ * .startup-row / .startup-list and the roles card's .roles-row-value; only
+ * the per-host grouping (header + status chip + offline note) is new here. */
 .fleet-placement {
   display: flex;
   flex-direction: column;

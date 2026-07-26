@@ -158,6 +158,44 @@ def is_inherited(model_id: str) -> bool:
     return state.proc is None and _inherited_alive(state)
 
 
+def inherited_foreign(model_id: str) -> bool:
+    """True iff this model is alive via an inherited PID whose process has
+    **no tie to this repo** — an external sibling's server on a mutex-shared
+    port, adopted for control but never spawned by the hub (#431). The
+    canonical case: voice-transcriber's own ``whisper-server`` holding :8090
+    on the tower — the hub can route to it, but the fleet summary must not
+    claim the hub runs it.
+
+    Checks exe + command line + cwd for the repo path, not exe alone: a
+    hub-spawned python shim (``tts_server``) resolves its exe to the *base*
+    interpreter outside the repo (the venv redirector — one hub, two PIDs),
+    but its command line names ``<repo>\\.venv\\Scripts\\python(w).exe -m
+    src.tts_server``, so any repo-path mention marks it ours. Best-effort:
+    an unreadable process (access denied, racing exit) reads as not-foreign
+    rather than guessing.
+    """
+    state = _state_for(model_id)
+    if not (state.proc is None and _inherited_alive(state)):
+        return False
+    try:
+        import psutil
+
+        proc = psutil.Process(state.inherited_pid)
+        probes = [proc.exe() or ""]
+        for getter in (proc.cmdline, proc.cwd):
+            try:
+                value = getter()
+                probes.extend(value if isinstance(value, list) else [value or ""])
+            except Exception:  # noqa: BLE001 — per-probe best-effort
+                pass
+        root = str(PROJECT_ROOT).lower().replace("/", "\\")
+        return not any(
+            root in str(p).lower().replace("/", "\\") for p in probes
+        )
+    except Exception:  # noqa: BLE001 — display-only hint, never block
+        return False
+
+
 def pid(model_id: str) -> Optional[int]:
     state = _state_for(model_id)
     p = state.proc

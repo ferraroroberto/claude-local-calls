@@ -149,8 +149,7 @@
            expanded — mirrors app-launcher's System Map lazy-load discipline
            (a folded, homepage-visible, low-noise card), adapted for small
            live JSON instead of a static image. Links to the Models tab's
-           Fleet placement grid rather than duplicating its per-model
-           toggles. -->
+           Fleet summary card rather than duplicating it. -->
       <details class="card card--collapsible" id="rolesCard">
         <summary class="collapse-summary">
           <span class="collapse-main">
@@ -167,7 +166,7 @@
           <h4 class="opt-group-title">Placement</h4>
           <ul id="rolesPlacementList" class="startup-list" aria-label="Per-host placement summary"></ul>
           <div class="card-actions">
-            <button id="rolesViewPlacementBtn" type="button" class="ghost-btn"><svg class="icon" aria-hidden="true"><use href="#i-external-link"></use></svg>View fleet placement</button>
+            <button id="rolesViewPlacementBtn" type="button" class="ghost-btn"><svg class="icon" aria-hidden="true"><use href="#i-external-link"></use></svg>View fleet summary</button>
           </div>
         </div>
       </details>
@@ -263,6 +262,27 @@
     </section>
 
     <section id="paneModels" class="pane" hidden role="tabpanel">
+      <!-- Service startup (#265; services-only since #430, renamed #431).
+           Folded by default — a one-time setup surface, not something you
+           check every visit (#266). First in the tab: boot-time switches
+           above the live inventory. -->
+      <details class="card card--collapsible" id="startupCard">
+        <summary class="collapse-summary">
+          <span class="collapse-main">
+            <svg class="icon" aria-hidden="true"><use href="#i-rocket"></use></svg>
+            <h3 class="collapse-title">Service startup</h3>
+          </span>
+          <span class="collapse-chevron" aria-hidden="true">›</span>
+        </summary>
+        <div class="collapse-body">
+          <p class="muted small">Services that come up automatically every time the hub launches — toggle
+            any item on or off; the setting persists to <code>config/startup_profile.json</code>.
+            Model autostart is governed per model (<code>startup: eager|on_demand</code>) in the
+            placement cards below.</p>
+          <ul id="startupList" class="startup-list"></ul>
+        </div>
+      </details>
+
       <!-- Vendored disclosure card (_vendored/disclosure), open by default —
            the inventory is what you came to this tab to see (#266). -->
       <details class="card card--collapsible" id="modelsCard" open>
@@ -288,46 +308,25 @@
         </div>
       </details>
 
-      <!-- Folded by default — a one-time setup surface, not something you
-           check every visit (#266). -->
-      <details class="card card--collapsible" id="startupCard">
-        <summary class="collapse-summary">
-          <span class="collapse-main">
-            <svg class="icon" aria-hidden="true"><use href="#i-rocket"></use></svg>
-            <h3 class="collapse-title">Startup</h3>
-          </span>
-          <span class="collapse-chevron" aria-hidden="true">›</span>
-        </summary>
-        <div class="collapse-body">
-          <p class="muted small">Services that come up automatically every time the hub launches — toggle
-            any item on or off; the setting persists to <code>config/startup_profile.json</code>.
-            Model autostart is derived from <code>config/models.yaml</code> (see Fleet placement below).</p>
-          <ul id="startupList" class="startup-list"></ul>
-        </div>
-      </details>
-
-      <!-- Fleet-wide desired placement (#354): which models should run on which
-           machine. Folded by default — a control surface, checked when you're
-           steering the fleet, not every visit. -->
+      <!-- Read-only fleet summary (#354, reworked #431): what each machine is
+           running and could load, with honest capacity numbers. Zero controls
+           beyond the collapse — placement is edited in the model cards above
+           or config/models.yaml. Folded by default. -->
       <details class="card card--collapsible" id="fleetPlacementCard">
         <summary class="collapse-summary">
           <span class="collapse-main">
             <svg class="icon" aria-hidden="true"><use href="#i-layers"></use></svg>
-            <h3 class="collapse-title">Fleet placement</h3>
+            <h3 class="collapse-title">Fleet summary</h3>
           </span>
-          <span class="collapse-actions">
-            <button id="fleetPlacementRefreshBtn" type="button" class="icon-header-btn" aria-label="Refresh fleet placement" title="Refresh"><svg class="icon" aria-hidden="true"><use href="#i-refresh-cw"></use></svg></button>
-            <span class="collapse-chevron" aria-hidden="true">›</span>
-          </span>
+          <span class="collapse-chevron" aria-hidden="true">›</span>
         </summary>
         <div class="collapse-body">
-          <p class="muted small">Which models should run on each machine across the fleet — derived
-            read-only from <code>config/models.yaml</code> (<code>hosts:</code> chains +
-            <code>startup: eager|on_demand</code>). The reconcile loop keeps the fleet converged,
-            waking wake-capable satellites; an offline machine applies its set on power-up. To change
-            placement, edit <code>models.yaml</code>.</p>
+          <p class="muted small">Per machine: models running now (live state), models placeable but
+            not running (chain members, including on-demand rows), and estimated capacity — a
+            read-only summary derived from <code>config/models.yaml</code> plus live probes. To
+            change placement, edit a model's placement card above or <code>models.yaml</code>.</p>
           <div id="fleetPlacementBody" class="fleet-placement">
-            <div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-server"></use></svg><p class="empty-state-message">Reading fleet placement…</p></div>
+            <div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-server"></use></svg><p class="empty-state-message">Reading fleet summary…</p></div>
           </div>
           <p id="fleetPlacementStaleNote" class="muted small" role="status" aria-live="polite" hidden></p>
         </div>

@@ -10,7 +10,7 @@ import { wireTabs, onTabChange } from './tabs.js';
 import { wireHub, fetchHubStatus, fetchCounters, startHubStreams, stopHubStreams, fetchInstallStatus, fetchServicesStatus } from './hub.js';
 import { wireModels, fetchModels } from './models.js';
 import { wireStartupProfile, fetchStartupProfile } from './startup.js';
-import { wireFleetPlacement, fetchFleetPlacement } from './fleet_placement.js';
+import { fetchFleetPlacement } from './fleet_placement.js';
 import { wireRolesCard } from './roles_card.js';
 import { wirePlayground, fetchPlaygroundModels, fetchTtsModels, fetchImageModels } from './playground.js';
 import { wireTelemetry, startTelemetryPolls, stopTelemetryPolls, fetchTelemetryHealth } from './telemetry.js';
@@ -62,7 +62,6 @@ async function boot() {
   wireHub();
   wireModels();
   wireStartupProfile();
-  wireFleetPlacement();
   wireRolesCard();
   wirePlayground();
   wireTelemetry();

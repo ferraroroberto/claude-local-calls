@@ -19,6 +19,7 @@ from src.model_failover import effective_owner
 from src.model_registry import (
     Model,
     all_models,
+    cpu_resident_map,
     enabled_models,
     resolve as resolve_model,
 )
@@ -112,13 +113,18 @@ def _host_budgets(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     static ``est_vram_mb`` estimates of the models *currently reachable* on
     that host (the grid's "running" leg; estimates come from the local
     registry, keyed by id, so a peer's payload version can't skew the sum).
-    Only hosts that own at least one row in this payload appear.
+    Rows resident on CPU on that host (``model_registry.cpu_resident_map``)
+    are excluded — they hold no GPU VRAM, so counting them faked overcommit
+    (#431). Only hosts that own at least one row in this payload appear.
     """
     est = {m.id: m.est_vram_mb or 0 for m in all_models()}
+    cpu = cpu_resident_map()
     resident: Dict[str, int] = {}
     for r in rows:
         host = r.get("host")
         if not host or not r.get("reachable"):
+            continue
+        if r.get("id") in cpu.get(host, ()):
             continue
         resident[host] = resident.get(host, 0) + est.get(r.get("id"), 0)
     ceilings = {h.id: h.vram_mb for h in all_hosts()}

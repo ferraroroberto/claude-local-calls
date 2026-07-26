@@ -37,8 +37,9 @@ def _clean_state():
 # ensure_ready
 # --------------------------------------------------------------------------- #
 class _Profile:
-    def __init__(self, vram_mb):
+    def __init__(self, vram_mb, host_id="tower"):
         self.vram_mb = vram_mb
+        self.id = host_id
 
 
 def _forbid(monkeypatch, module, name):
@@ -140,6 +141,25 @@ def test_vram_check_skips_ceilingless_hosts(monkeypatch):
     monkeypatch.setattr(host_profile, "resolve", lambda: _Profile(None))
     _forbid(monkeypatch, bp, "running_backends")
     assert on_demand._warn_on_vram_overcommit(_model()) is None
+
+
+def test_vram_check_excludes_cpu_resident_rows(monkeypatch, caplog):
+    """A running row that is CPU-resident on this host (piper — and whisper,
+    whose chain flags tower as a degraded ``cpu: true`` tier) holds no GPU
+    VRAM and must not eat headroom (#431). Here the GPU-resident set is
+    2100 + 13400 = 15500 ≤ 16384 — counting the CPU rows' 5000 would have
+    raised a false overcommit warning."""
+    monkeypatch.setattr(host_profile, "resolve", lambda: _Profile(16384))
+    running = {
+        "qwen35_4b": _model(id="qwen35_4b", startup="eager", est_vram_mb=2100),
+        "piper": _model(id="piper", startup="eager", est_vram_mb=2500),
+        "whisper": _model(id="whisper", startup="eager", est_vram_mb=2500),
+    }
+    monkeypatch.setattr(bp, "running_backends", lambda: running)
+
+    with caplog.at_level(logging.WARNING, logger="src.on_demand"):
+        assert on_demand._warn_on_vram_overcommit(_model(est_vram_mb=13400)) is None
+    assert not caplog.records
 
 
 # --------------------------------------------------------------------------- #

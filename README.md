@@ -581,25 +581,36 @@ a live port and a forwarded `/start` returns a benign `409` — so the periodic
 pass is safe to repeat forever and is strictly **additive**: it never stops a
 model you started by hand.
 
-The **Fleet placement** card in the Models tab (#354) renders the derived
-state read-only: a per-machine list over **every** configured fleet host,
-each desired model a row with a live badge (*running / pending / deferred*).
-Liveness is the same hub-independent TCP probe the Machines tab uses (*is the
-box on?*), so a **managed-only satellite that runs no hub** (`openclaw` —
-driven directly over SSH, no models registered) reads *online* honestly with
-a note instead of an empty grid. (The card's fuller rework is tracked in
-#431.)
+The **Fleet summary** card in the Models tab (#354, reworked #431) renders a
+read-only per-machine summary over **every** configured fleet host: the
+models **running** there right now (live state), the models **loadable** but
+not running (that host's chain members, including `on_demand` rows), and its
+estimated capacity (GPU-VRAM estimate vs ceiling, total RAM where known). It
+carries **zero controls** beyond the collapse — placement is edited per model
+in the Models card (#424) or `config/models.yaml`. Liveness is the same
+hub-independent TCP probe the Machines tab uses (*is the box on?*), so a
+**managed-only satellite that runs no hub** (`openclaw` — driven directly
+over SSH, no models registered) reads *online* honestly with a note instead
+of an empty list. A live backend the hub merely *adopted* on a mutex-shared
+port (voice-transcriber's own whisper-server on `:8090`) is labelled
+`· external` rather than claimed as hub-run.
 
 **Capacity awareness (#375):** each host row may declare a `vram_mb` GPU-VRAM
-ceiling and each GPU model a rough `est_vram_mb` footprint (both in
-`config/models.yaml`). The card sums a host's desired models' `est_vram_mb` and
-shows an **advisory** *"Over VRAM capacity"* warning on that host's row when the
-total exceeds its ceiling — a heads-up that a placement change overcommits the
-box (e.g. `gaming`'s 8 GB GTX 1070), replacing the by-hand `nvidia-smi` glance.
-Hosts with no `vram_mb` (Apple-silicon unified memory, managed-only boxes)
-never warn. Each per-host status object in the `GET` response below therefore
-also carries `vram_mb` (ceiling or `null`), `est_vram_mb` (the summed
-desired/running footprint), and `capacity_warning` (bool). Estimates are
+ceiling (and, display-only, a `ram_mb` total) and each GPU model a rough
+`est_vram_mb` footprint (all in `config/models.yaml`). The card sums a host's
+desired + running models' `est_vram_mb` and shows an **advisory** *"Over VRAM
+capacity"* warning on that host's row when the total exceeds its ceiling — a
+heads-up that a placement change overcommits the box (e.g. `gaming`'s 8 GB
+GTX 1070), replacing the by-hand `nvidia-smi` glance. Rows resident on
+**CPU on that host** — piper's CPU-only engine, `-ng` whisper rows, a chain's
+degraded `cpu: true` tier — hold no GPU VRAM and are **excluded from the sum**
+(`model_registry.cpu_resident_map()`, #431); the same exclusion applies to the
+per-row host budget bars and the on-demand loader's headroom check, so every
+consumer inherits it. Hosts with no `vram_mb` (Apple-silicon unified memory,
+managed-only boxes) never warn. Each per-host status object in the `GET`
+response below therefore also carries `vram_mb` (ceiling or `null`),
+`est_vram_mb` (the summed, CPU-excluded desired/running footprint),
+`capacity_warning` (bool), and `ram_mb` (total or `null`). Estimates are
 static engineering approximations, not live telemetry.
 
 Or drive the same API directly:
@@ -1198,7 +1209,7 @@ Starts a resident system-tray icon (silent — no terminal window) that:
     services-only since #430): Docker + Langfuse if `docker` / `langfuse` are
     `true` (via the same `launch_stack()` the Services card's manual launch
     button uses), and AgentsView if `agentsview` is `true`. Toggle any service
-    off from the admin SPA's Models tab **Startup** card, or hand-edit the
+    off from the admin SPA's Models tab **Service startup** card, or hand-edit the
     JSON. Peer wake/sync is *not* a startup-profile toggle (the
     `mac_mini_sync` flag was retired in #374) — it is owned by the fleet
     reconcile loop, driven by the registry-derived desired state.
@@ -1602,7 +1613,7 @@ subprocesses, no wrapper around any binary, no impact on the running CLIs:
   AgentsView knows about are deliberately not surfaced (curated map in
   `agentsview_usage.py`). Polled over HTTP, never from raw files; the hub
   runs fully without it. AgentsView appears in the Hub tab's **Services**
-  card and the Models tab's **Startup** toggles — the hub launches it at
+  card and the Models tab's **Service startup** toggles — the hub launches it at
   startup when toggled on (exe from `.venv-agentsview/`, `AGENTSVIEW_EXE`,
   or PATH). Setup and behaviour:
   [docs/code-usage-agentsview.md](docs/code-usage-agentsview.md).

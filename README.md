@@ -1592,6 +1592,20 @@ localhost hub, but flip `OTEL_HASH_PROMPTS=true` (in `.env`) any time
 the hub binds beyond loopback. `OTEL_SDK_DISABLED=true` turns
 telemetry off entirely.
 
+## Self-hosted SearXNG (home-automation#321, #438)
+
+A self-hosted [SearXNG](https://docs.searxng.org/) meta-search instance,
+started by `start_searxng.bat` / stopped by `stop_searxng.bat`
+(`docker compose -f docker/searxng/docker-compose.yml`), serving on
+`:8085`. It backs a `rest`-type function on the Home Assistant voice
+assistant's Tier-3 freeform LLM brain, giving it real web-search access —
+see home-automation#321 for the decision record. No API key, no
+per-query cost, and — like the hub's own `:8000` — bound to `0.0.0.0`
+for LAN reachability but never meant to be port-forwarded to the public
+internet. Not otherwise integrated with this repo's Python/webapp code.
+`docker/searxng/config/` (the container-generated `settings.yml`,
+including a fresh random secret key) is gitignored.
+
 ## Coding agent usage (issues #20, #71, #231, #280)
 
 The **Code** tab is a passive, multi-vendor view of host-side coding-agent

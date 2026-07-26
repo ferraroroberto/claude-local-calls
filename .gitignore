@@ -48,6 +48,11 @@ models/
 # Langfuse local stack secrets (issue #4) — schema in .env.example.
 docker/langfuse/.env
 
+# SearXNG's generated settings.yml (home-automation#321) — the container
+# writes a fresh random secret_key into this on first run; instance-specific,
+# never committed.
+docker/searxng/config/
+
 # Host-specific machine specs (real values; example file is committed)
 config/machine_specs.yaml
 

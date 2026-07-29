@@ -211,6 +211,14 @@ def _parse_picker(rendered: str) -> Tuple[List[str], int]:
     Returns ``(labels, current_index)`` for the most recent render of
     the "Switch Model" block. The current model is the row tagged
     ``(current)``.
+
+    Rows are a contiguous run of non-blank lines directly under the
+    "Switch Model" header — bounded structurally by the header above and
+    the first blank line below, not by row content. (Older `agy` baked
+    the effort tier into each label, e.g. "Gemini 3.1 Pro (High)"; newer
+    `agy` shows a bare model name here and exposes effort as a separate
+    Low/Medium/High slider control below the list, so a row is no longer
+    guaranteed to contain "(...)" — issue #440.)
     """
     start = rendered.rfind("Switch Model")
     if start < 0:
@@ -220,20 +228,24 @@ def _parse_picker(rendered: str) -> Tuple[List[str], int]:
     if end > 0:
         block = block[:end]
 
+    lines = block.splitlines()[1:]
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+
     labels: List[str] = []
     current = 0
-    for line in block.splitlines()[1:]:
+    for line in lines[i:]:
         row = line.strip()
         if not row:
-            continue
+            break  # blank line ends the row list (Effort slider/description follow)
         if row.startswith(">"):
             row = row[1:].strip()
         is_current = row.endswith("(current)")
         if is_current:
             row = row[: -len("(current)")].strip()
         label = re.sub(r"\s+", " ", row).strip()
-        # Picker rows always carry a parenthesised effort, e.g. "(High)".
-        if not label or "(" not in label:
+        if not label:
             continue
         if is_current:
             current = len(labels)
@@ -340,7 +352,7 @@ def call_gemini(
     """Invoke `agy` and return an envelope matching the Claude shape.
 
     ``model`` is the exact Antigravity CLI picker label (e.g.
-    ``"Gemini 3.1 Pro (High)"``). When it differs from the model last
+    ``"Gemini 3.1 Pro"``). When it differs from the model last
     selected, the globally-persisted model is switched first. ``system``
     is folded into the prompt as a leading instruction block — `agy`
     print mode has no separate system-prompt argument. Attachments

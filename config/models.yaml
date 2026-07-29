@@ -290,8 +290,13 @@ models:
   # Same contract as the Claude rows: a stable short alias per row. The
   # aliases never change, so downstream callers keep working when the
   # display_name underneath is repointed to a newer picker entry.
+  #
+  # `agy` >=1.1.8 dropped the effort suffix from each row's label (effort
+  # is now a separate Low/Medium/High slider, not part of the row text) —
+  # confirmed live 2026-07-29 (issue #440). `display_name` below is the
+  # bare picker label; do not append an effort suffix, it won't match.
   gemini_pro:
-    display_name: "Gemini 3.1 Pro (High)"
+    display_name: "Gemini 3.1 Pro"
     backend: gemini
     aliases: ["gemini_pro"]
 

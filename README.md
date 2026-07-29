@@ -23,7 +23,7 @@ Subscription-backed cloud routes (no GPU, no API keys, no Cloud project):
   unchanged.
 - **`gemini-*`** — forwarded to the **Antigravity CLI** (`agy`), using
   your Google sign-in (no API key required). Three rows: `Gemini 3.1
-  Pro (High)` (alias `gemini_pro`), `Gemini 3.5 Flash (High)` (alias
+  Pro` (alias `gemini_pro`), `Gemini 3.5 Flash (High)` (alias
   `gemini_flash`), `Gemini 3.5 Flash (Medium)` (alias `gemini_lite`).
   `agy` replaces the standalone `gemini` CLI, which Google deprecates
   for AI Pro / Ultra subscribers on 2026-06-18. `agy` has no per-call
@@ -1419,7 +1419,7 @@ msg = client.messages.create(
 
 # Gemini 3.1 Pro via your Google AI Pro subscription (Antigravity CLI)
 msg = client.messages.create(
-    model="gemini_pro",   # alias for "Gemini 3.1 Pro (High)"
+    model="gemini_pro",   # alias for "Gemini 3.1 Pro"
     max_tokens=128,
     messages=[{"role": "user", "content": "Hello"}],
 )

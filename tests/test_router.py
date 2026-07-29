@@ -113,7 +113,7 @@ def test_list_models_includes_enabled():
     assert "claude_sonnet" in ids
     assert "claude_opus" in ids
     # Gemini subscription path is always enabled, like Claude.
-    assert "Gemini 3.1 Pro (High)" in ids
+    assert "Gemini 3.1 Pro" in ids
     assert "gemini_pro" in ids
     assert "gemini_flash" in ids
     assert "gemini_lite" in ids
@@ -140,7 +140,7 @@ def test_messages_routes_gemini_backend(monkeypatch):
     r = client.post(
         "/v1/messages",
         json={
-            "model": "Gemini 3.1 Pro (High)",
+            "model": "Gemini 3.1 Pro",
             "max_tokens": 64,
             "system": "Answer briefly.",
             "messages": [{"role": "user", "content": "ping"}],
@@ -149,13 +149,13 @@ def test_messages_routes_gemini_backend(monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["content"] == [{"type": "text", "text": "g-pong"}]
-    assert body["model"] == "Gemini 3.1 Pro (High)"
-    assert captured["model"] == "Gemini 3.1 Pro (High)"
+    assert body["model"] == "Gemini 3.1 Pro"
+    assert captured["model"] == "Gemini 3.1 Pro"
     assert captured["system"] == "Answer briefly."
 
 
 def test_messages_routes_gemini_alias(monkeypatch):
-    """`gemini_pro` alias resolves to display_name `Gemini 3.1 Pro (High)`."""
+    """`gemini_pro` alias resolves to display_name `Gemini 3.1 Pro`."""
     captured = {}
 
     def fake_call(prompt, *, model=None, system=None, attachments=None, timeout=600.0):
@@ -178,7 +178,7 @@ def test_messages_routes_gemini_alias(monkeypatch):
     )
     assert r.status_code == 200
     # Alias → underlying display_name handed to the CLI.
-    assert captured["model"] == "Gemini 3.1 Pro (High)"
+    assert captured["model"] == "Gemini 3.1 Pro"
 
 
 def test_messages_routes_claude_alias(monkeypatch):

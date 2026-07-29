@@ -41,14 +41,14 @@ def test_call_gemini_switches_model_and_returns_envelope(monkeypatch):
     captured = {}
     _stub_calls(monkeypatch, captured)
 
-    env = gemini_cli.call_gemini("ping", model="Gemini 3.1 Pro (High)")
+    env = gemini_cli.call_gemini("ping", model="Gemini 3.1 Pro")
 
     assert env["result"] == "hi there"
     assert env["is_error"] is False
     assert env["stop_reason"] == "end_turn"
     assert env["usage"] == {"input_tokens": 0, "output_tokens": 0}
     # First call to a model triggers exactly one switch to that label.
-    assert captured["switches"] == ["Gemini 3.1 Pro (High)"]
+    assert captured["switches"] == ["Gemini 3.1 Pro"]
     assert captured["exe"] == "/fake/agy"
     assert "ping" in captured["prompt"]
 
@@ -82,7 +82,7 @@ def test_call_gemini_image_refs_use_at_syntax(monkeypatch, tmp_path):
 
     img = tmp_path / "pic.png"
     img.write_bytes(b"fake-png-bytes")
-    gemini_cli.call_gemini("what is this?", model="Gemini 3.1 Pro (High)",
+    gemini_cli.call_gemini("what is this?", model="Gemini 3.1 Pro",
                            attachments=[img])
 
     # Attachments are referenced by basename; cwd is set to their parent dir;
@@ -162,7 +162,7 @@ def test_parse_picker_reads_labels_and_current():
         "Switch Model\n"
         "  Gemini 3.5 Flash (High)\n"
         "  Gemini 3.5 Flash (Medium)\n"
-        "> Gemini 3.1 Pro (High)      (current)\n"
+        "> Gemini 3.1 Pro      (current)\n"
         "  Claude Opus 4.6 (Thinking)\n"
         "\n"
         "Keyboard: arrows Navigate  enter Select\n"
@@ -171,8 +171,44 @@ def test_parse_picker_reads_labels_and_current():
     assert labels == [
         "Gemini 3.5 Flash (High)",
         "Gemini 3.5 Flash (Medium)",
-        "Gemini 3.1 Pro (High)",
+        "Gemini 3.1 Pro",
         "Claude Opus 4.6 (Thinking)",
+    ]
+    assert current == 2
+
+
+def test_parse_picker_reads_unparenthesized_rows_with_effort_slider():
+    """Live `agy` (>=1.1.8) decouples effort into a slider below the list —
+    rows are bare model names with no parenthesised suffix at all. Regression
+    for issue #440: the old "must contain a paren" heuristic silently dropped
+    every Gemini row, so the hub reported them as "not offered" even though
+    they were selectable. Fixture is a trimmed capture of the real picker
+    screen.
+    """
+    rendered = (
+        "Switch Model\n"
+        "\n"
+        "> Gemini 3.6 Flash            \n"
+        "  Gemini 3.5 Flash\n"
+        "  Gemini 3.1 Pro (current)\n"
+        "  Claude Sonnet 4.6 (Thinking)\n"
+        "  Claude Opus 4.6 (Thinking)\n"
+        "  GPT-OSS 120B (Medium)\n"
+        "\n"
+        "  Effort  <>--o------o------o--<>\n"
+        "       low          medium          high      \n"
+        " Faster responses, lighter reasoning\n"
+        "\n"
+        "Keyboard: up/down Navigate  left/right Effort  enter Select  esc Go Back\n"
+    )
+    labels, current = gemini_cli._parse_picker(rendered)
+    assert labels == [
+        "Gemini 3.6 Flash",
+        "Gemini 3.5 Flash",
+        "Gemini 3.1 Pro",
+        "Claude Sonnet 4.6 (Thinking)",
+        "Claude Opus 4.6 (Thinking)",
+        "GPT-OSS 120B (Medium)",
     ]
     assert current == 2
 

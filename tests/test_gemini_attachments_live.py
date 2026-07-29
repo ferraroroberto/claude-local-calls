@@ -54,7 +54,7 @@ live_only = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 
 # Model label as `agy` displays it in the picker.
-_MODEL = "Gemini 3.1 Pro (High)"
+_MODEL = "Gemini 3.1 Pro"
 # Number of repetitions per media type.
 _N = 5
 # Font for rendering the random token.

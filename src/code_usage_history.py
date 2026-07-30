@@ -16,7 +16,7 @@ Semantics:
   than the oldest live record of the same vendor (or for vendors with no
   live records at all), so a day is sourced from exactly one place — live
   files while they exist, the snapshot after they're pruned.
-- Aggregated entries carry a ``requests`` weight; ``_UsageRecord.requests``
+- Aggregated entries carry a ``requests`` weight; ``UsageRecord.requests``
   feeds the summary's request counting so one synthetic row counts as the
   N calls it rolls up.
 
@@ -34,10 +34,9 @@ import threading
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import Dict, List, Optional
 
-if TYPE_CHECKING:  # import cycle: code_usage imports this module lazily
-    from src.code_usage import _UsageRecord
+from src.usage_common import UsageRecord
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +118,7 @@ def _save_locked() -> None:
         logger.warning("⚠️ code_usage_history: save failed: %s", exc)
 
 
-def update_from_records(records: List["_UsageRecord"]) -> None:
+def update_from_records(records: List[UsageRecord]) -> None:
     """Fold live records into the snapshot (max-merge per day/vendor/model/
     project) and persist opportunistically.  Never raises."""
     global _dirty
@@ -165,16 +164,14 @@ def update_from_records(records: List["_UsageRecord"]) -> None:
 
 
 def synthetic_records(
-    live_records: List["_UsageRecord"], vendor: str
-) -> List["_UsageRecord"]:
+    live_records: List[UsageRecord], vendor: str
+) -> List[UsageRecord]:
     """Records for days the live parsers no longer see.
 
     Per vendor, only days strictly older than the oldest live record are
     synthesized (a vendor with no live records contributes all its history),
     so no day is ever counted from both sources.
     """
-    from src.code_usage import _UsageRecord
-
     live_min: Dict[str, date] = {}
     for r in live_records:
         d = r.ts.astimezone(timezone.utc).date()
@@ -182,7 +179,7 @@ def synthetic_records(
         if v not in live_min or d < live_min[v]:
             live_min[v] = d
 
-    out: List[_UsageRecord] = []
+    out: List[UsageRecord] = []
     with _lock:
         entries = list(_load_locked().values())
     for e in entries:
@@ -195,7 +192,7 @@ def synthetic_records(
             if cutoff is not None and d >= cutoff:
                 continue
             out.append(
-                _UsageRecord(
+                UsageRecord(
                     session_id=f"history:{e['date']}",
                     project_key=e.get("project_key") or "history",
                     project_name=e.get("project_name") or "(history)",

@@ -1,6 +1,6 @@
 """OTLP metrics receiver — ``POST /v1/metrics`` (issue #68).
 
-Split out like ``server_images.py``/``server_audio.py`` so ``server.py``'s
+Split out like ``server_images.py``/``server_audio_asr.py`` so ``server.py``'s
 routing core stays readable. Mounted directly on the main hub app (not the
 ``/admin`` sub-app), unauthenticated — same posture as the existing
 ``/v1/messages``/``/v1/chat/completions`` routes: this is a personal-

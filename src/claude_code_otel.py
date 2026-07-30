@@ -56,7 +56,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.code_usage import _model_display, _period_since
+from src.code_usage import _period_since
+from src.usage_common import model_display
 
 _log = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ def get_usage_summary(period: str = "today") -> Dict[str, Any]:
 
     rows: Dict[Tuple[str, str, str, Optional[str]], Dict[str, float]] = {}
     for p in points:
-        key = (p.ts.date().isoformat(), _model_display(p.model), p.query_source, p.project)
+        key = (p.ts.date().isoformat(), model_display(p.model), p.query_source, p.project)
         row = rows.setdefault(
             key,
             {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_creation": 0.0, "cost_usd": 0.0},

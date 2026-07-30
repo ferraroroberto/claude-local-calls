@@ -93,7 +93,8 @@ from .server_common import (
     stash_trace_id_on_ctx as _stash_trace_id_on_ctx,
 )
 from . import on_demand as _on_demand
-from .server_audio import router as _audio_router
+from .server_audio_asr import router as _audio_router
+from . import server_audio_tts as _server_audio_tts  # noqa: F401 — registers /v1/audio/speech onto _audio_router
 from .server_images import router as _images_router
 from .server_otel_receiver import router as _otel_receiver_router
 from .openai_upstream import (
@@ -763,10 +764,12 @@ def _flatten_openai_prompt(messages: List[Dict[str, Any]]) -> str:
 
 
 # ---- Image + audio routes (split into sibling modules) ----
-# The /v1/images/* handlers live in server_images.py and the /v1/audio/*
-# proxy in server_audio.py; both are plain APIRouters mounted here so the
-# admin sub-app's auth boundary and the observability middleware still cover
-# them. See those modules for the handler bodies.
+# The /v1/images/* handlers live in server_images.py; the /v1/audio/* proxy
+# is split across server_audio_asr.py (transcriptions/translations/health —
+# owns the router object) and server_audio_tts.py (speech, registered onto
+# that same router via the import above — #451). All are plain APIRouters
+# mounted here so the admin sub-app's auth boundary and the observability
+# middleware still cover them. See those modules for the handler bodies.
 app.include_router(_images_router)
 app.include_router(_audio_router)
 app.include_router(_otel_receiver_router)

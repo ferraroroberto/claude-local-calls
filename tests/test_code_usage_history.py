@@ -10,12 +10,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from src import code_usage, code_usage_history as hist
-from src.code_usage import _UsageRecord
+from src.usage_common import UsageRecord
 
 
 def _rec(day: str, vendor: str = "claude", model: str = "claude-sonnet-5",
-         out: int = 100, sid: str = "s1") -> _UsageRecord:
-    return _UsageRecord(
+         out: int = 100, sid: str = "s1") -> UsageRecord:
+    return UsageRecord(
         session_id=sid,
         project_key="E--automation-demo",
         project_name="demo",

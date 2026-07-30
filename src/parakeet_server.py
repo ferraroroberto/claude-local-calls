@@ -9,7 +9,7 @@ parakeet-server`` row as ``python -m src.parakeet_server --model-id
 <id>`` — the same in-repo-shim pattern as ``tts_server``/
 ``whisper_translate_proxy``. The hub proxies ``/v1/audio/transcriptions``
 to this port so requests land in the observability ring
-(``src/server_audio.py``).
+(``src/server_audio_asr.py``).
 
 darwin-only: keeps one long-lived ``mac/parakeet-worker`` Swift subprocess
 warm (the CoreML model loads once) and serializes requests through its

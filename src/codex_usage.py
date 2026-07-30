@@ -2,7 +2,7 @@
 
 Reads the rollout JSONL session logs Codex writes under
 ``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`` and emits usage records in
-the shared ``_UsageRecord`` shape (tagged ``vendor="codex"``), so they flow
+the shared ``UsageRecord`` shape (tagged ``vendor="codex"``), so they flow
 through the same Code-tab summary builder as Claude data (issue #71).
 
 Design constraints mirror ``code_usage.py``:
@@ -12,7 +12,7 @@ Design constraints mirror ``code_usage.py``:
   30 s interval.
 - **Mtime cache** — each file is only re-parsed when its mtime changes.
 
-Token mapping — one ``_UsageRecord`` per ``token_count`` event, using the
+Token mapping — one ``UsageRecord`` per ``token_count`` event, using the
 per-turn delta ``last_token_usage`` (**never** the cumulative
 ``total_token_usage``, which would massively double-count when summed)::
 
@@ -41,13 +41,13 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from src.code_usage import (
-    _FileStats,
-    _UsageRecord,
-    _encode_project_key,
-    _load_cached,
-    _parse_iso_ts,
-    _project_pretty,
+from src.usage_common import (
+    FileStats,
+    UsageRecord,
+    encode_project_key,
+    load_cached,
+    parse_iso_ts,
+    project_pretty,
 )
 
 _log = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ _log = logging.getLogger(__name__)
 _CODEX_SESSIONS_DIR: Path = Path.home() / ".codex" / "sessions"
 
 # File-level mtime cache (module-level singleton), independent of the Claude one.
-_file_cache: Dict[str, _FileStats] = {}
+_file_cache: Dict[str, FileStats] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +67,9 @@ _file_cache: Dict[str, _FileStats] = {}
 # ---------------------------------------------------------------------------
 
 
-def _parse_rollout_file(path: Path) -> List[_UsageRecord]:
+def _parse_rollout_file(path: Path) -> List[UsageRecord]:
     """Parse one rollout JSONL file and return usage records."""
-    records: List[_UsageRecord] = []
+    records: List[UsageRecord] = []
     cur_model = "unknown"
     cur_cwd: Optional[str] = None
     cur_session_id = path.stem  # rollout-<ts>-<uuid>; overridden by session_meta.id
@@ -111,16 +111,16 @@ def _parse_rollout_file(path: Path) -> List[_UsageRecord]:
                     # noise, not real coding turns.
                     if cur_model == "unknown":
                         continue
-                    key = _encode_project_key(cur_cwd) if cur_cwd else "codex"
+                    key = encode_project_key(cur_cwd) if cur_cwd else "codex"
                     records.append(
-                        _UsageRecord(
+                        UsageRecord(
                             session_id=cur_session_id,
                             project_key=key,
                             project_name=(
-                                _project_pretty(key) if cur_cwd else "(unknown)"
+                                project_pretty(key) if cur_cwd else "(unknown)"
                             ),
                             model=cur_model,
-                            ts=_parse_iso_ts(obj.get("timestamp")),
+                            ts=parse_iso_ts(obj.get("timestamp")),
                             input_tokens=int(usage.get("input_tokens") or 0),
                             output_tokens=int(usage.get("output_tokens") or 0),
                             cache_creation_tokens=0,
@@ -138,14 +138,14 @@ def _parse_rollout_file(path: Path) -> List[_UsageRecord]:
     return records
 
 
-def _load_file(path: Path) -> List[_UsageRecord]:
+def _load_file(path: Path) -> List[UsageRecord]:
     """Return cached records, re-parsing only when the file has changed."""
-    return _load_cached(path, _file_cache, _parse_rollout_file)
+    return load_cached(path, _file_cache, _parse_rollout_file)
 
 
-def all_records() -> List[_UsageRecord]:
+def all_records() -> List[UsageRecord]:
     """Scan all Codex rollout files and return every usage record."""
-    records: List[_UsageRecord] = []
+    records: List[UsageRecord] = []
 
     if not _CODEX_SESSIONS_DIR.exists():
         return records

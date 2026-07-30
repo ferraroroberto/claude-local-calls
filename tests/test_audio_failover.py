@@ -21,7 +21,7 @@ import pytest
 import yaml
 from fastapi import HTTPException
 
-from src import host_profile, model_registry, server_audio, transcription_glossary
+from src import host_profile, model_registry, server_audio_asr, transcription_glossary
 from src.hub_observability import ObservabilityCtx
 
 
@@ -89,7 +89,7 @@ class _FakeReq:
 
 
 def _proxy(req):
-    return asyncio.run(server_audio._proxy_audio(
+    return asyncio.run(server_audio_asr._proxy_audio(
         req, default_role="audio_transcribe", ctx_path="/v1/audio/transcriptions"))
 
 
@@ -121,13 +121,13 @@ def test_role_chain_absent_role_is_empty(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_chain_role_default_resolves_config(tmp_path, monkeypatch):
     _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
-    chain = server_audio._whisper_chain_for_request("", default_role="audio_transcribe")
+    chain = server_audio_asr._whisper_chain_for_request("", default_role="audio_transcribe")
     assert [m.id for m in chain] == ["wa", "wb"]
 
 
 def test_chain_explicit_concrete_model_is_single(tmp_path, monkeypatch):
     _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
-    chain = server_audio._whisper_chain_for_request("wb", default_role="audio_transcribe")
+    chain = server_audio_asr._whisper_chain_for_request("wb", default_role="audio_transcribe")
     assert [m.id for m in chain] == ["wb"]  # explicit id → no failover chain
 
 
@@ -144,7 +144,7 @@ def test_failover_on_connection_error(tmp_path, monkeypatch):
             raise httpx.ConnectError("connection refused")
         return _FakeResp(200, b'{"text":"served by wb"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     resp = _proxy(_FakeReq())
     assert resp.status_code == 200
     assert b"served by wb" in resp.body
@@ -157,7 +157,7 @@ def test_failover_on_503(tmp_path, monkeypatch):
     def handler(url, kwargs):
         return _FakeResp(503) if ":9001" in url else _FakeResp(200, b'{"text":"wb"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     resp = _proxy(_FakeReq())
     assert resp.status_code == 200 and b"wb" in resp.body
 
@@ -170,7 +170,7 @@ def test_happy_path_no_second_call(tmp_path, monkeypatch):
         calls.append(url)
         return _FakeResp(200, b'{"text":"wa"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     resp = _proxy(_FakeReq())
     assert resp.status_code == 200 and b"wa" in resp.body
     assert len(calls) == 1 and ":9001" in calls[0]  # primary served, no failover call
@@ -182,7 +182,7 @@ def test_all_down_raises_last_error(tmp_path, monkeypatch):
     def handler(url, kwargs):
         raise httpx.ConnectError("down")
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     with pytest.raises(HTTPException) as ei:
         _proxy(_FakeReq())
     assert ei.value.status_code == 503
@@ -196,7 +196,7 @@ def test_client_error_not_failed_over(tmp_path, monkeypatch):
         calls.append(url)
         return _FakeResp(400, b'{"error":"bad audio"}')  # real client error on wa
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     resp = _proxy(_FakeReq())
     assert resp.status_code == 400  # returned as-is
     assert len(calls) == 1  # wb never tried — 4xx is not an availability failure
@@ -214,7 +214,7 @@ def test_explicit_model_down_does_not_fail_over(tmp_path, monkeypatch):
         calls.append(url)
         raise httpx.ConnectError("down")
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     req = _FakeReq(body=b'Content-Disposition: form-data; name="model"\r\n\r\nwb\r\n')
     with pytest.raises(HTTPException):
         _proxy(req)
@@ -259,7 +259,7 @@ def test_explicit_unavailable_model_is_503_never_another_model(tmp_path, monkeyp
         calls.append(url)
         return _FakeResp(200, b'{"text":"served by wa"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     with pytest.raises(HTTPException) as ei:
         _proxy(_FakeReq(body=_model_body("wdown")))
     assert ei.value.status_code == 503
@@ -270,7 +270,7 @@ def test_explicit_unavailable_model_is_503_never_another_model(tmp_path, monkeyp
 def test_explicit_non_audio_model_is_400(tmp_path, monkeypatch):
     _strict_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        server_audio, "get_async_client",
+        server_audio_asr, "get_async_client",
         lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
     with pytest.raises(HTTPException) as ei:
         _proxy(_FakeReq(body=_model_body("chatty")))
@@ -282,7 +282,7 @@ def test_unknown_model_name_still_addresses_the_role(tmp_path, monkeypatch):
     ids, so it is a role request, not a strict model request."""
     _strict_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        server_audio, "get_async_client",
+        server_audio_asr, "get_async_client",
         lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
     resp = _proxy(_FakeReq(body=_model_body("whisper-1")))
     assert resp.status_code == 200 and b"wa" in resp.body
@@ -305,7 +305,7 @@ def test_record_carries_requested_role_and_served_model(tmp_path, monkeypatch):
             raise httpx.ConnectError("down")
         return _FakeResp(200, b'{"text":"wb"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     req = _req_with_ctx()
     resp = _proxy(req)
     assert resp.status_code == 200
@@ -321,7 +321,7 @@ def test_response_headers_name_requested_and_served(tmp_path, monkeypatch):
             raise httpx.ConnectError("down")
         return _FakeResp(200, b'{"text":"wb"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     resp = _proxy(_FakeReq())
     assert resp.headers["x-hub-requested-model"] == "audio_transcribe"
     assert resp.headers["x-hub-served-model"] == "wb"
@@ -331,7 +331,7 @@ def test_explicit_served_model_matches_requested(tmp_path, monkeypatch):
     """No substitution -> both names agree, so the UI shows a single model."""
     _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa", "fallback": ["wb"]})
     monkeypatch.setattr(
-        server_audio, "get_async_client",
+        server_audio_asr, "get_async_client",
         lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wb"}')))
     req = _req_with_ctx(body=_model_body("wb"))
     _proxy(req)
@@ -350,7 +350,7 @@ def test_explicit_served_model_matches_requested(tmp_path, monkeypatch):
 def test_strict_reject_is_recorded_not_blank(tmp_path, monkeypatch):
     _strict_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        server_audio, "get_async_client",
+        server_audio_asr, "get_async_client",
         lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
     req = _req_with_ctx(body=_model_body("wdown"))
     with pytest.raises(HTTPException) as ei:
@@ -398,7 +398,7 @@ def test_whole_chain_down_does_not_claim_a_served_model(tmp_path, monkeypatch):
     def handler(url, kwargs):
         raise httpx.ConnectError("down")
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     req = _req_with_ctx()
     with pytest.raises(HTTPException):
         _proxy(req)
@@ -421,7 +421,7 @@ def test_capitalized_owned_id_is_still_that_model(tmp_path, monkeypatch):
         calls.append(url)
         return _FakeResp(200, b'{"text":"wa"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     req = _req_with_ctx(body=_model_body("Whisper-A"))   # display_name, capitalized
     resp = _proxy(req)
     assert resp.status_code == 200
@@ -440,7 +440,7 @@ def test_capitalized_unserveable_id_is_rejected_not_substituted(tmp_path, monkey
         calls.append(url)
         return _FakeResp(200, b'{"text":"wa"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     with pytest.raises(HTTPException) as ei:
         _proxy(_FakeReq(body=_model_body("WDOWN")))
     assert ei.value.status_code == 503
@@ -450,7 +450,7 @@ def test_capitalized_unserveable_id_is_rejected_not_substituted(tmp_path, monkey
 def test_role_alias_is_case_insensitive_too(tmp_path, monkeypatch):
     _strict_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        server_audio, "get_async_client",
+        server_audio_asr, "get_async_client",
         lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
     resp = _proxy(_FakeReq(body=_model_body("Audio_Transcribe")))
     assert resp.status_code == 200
@@ -475,7 +475,7 @@ def test_not_enabled_here_does_not_claim_an_outage(tmp_path, monkeypatch):
     happening."""
     _strict_config(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        server_audio, "get_async_client",
+        server_audio_asr, "get_async_client",
         lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
     with pytest.raises(HTTPException) as ei:
         _proxy(_FakeReq(body=_model_body("wdown")))
@@ -493,7 +493,7 @@ def test_backend_really_down_says_so(tmp_path, monkeypatch):
     def handler(url, kwargs):
         raise httpx.ConnectError("refused")
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     with pytest.raises(HTTPException) as ei:
         _proxy(_FakeReq(body=_model_body("wa")))
     assert ei.value.status_code == 503
@@ -513,7 +513,7 @@ def test_upstream_404_survives_the_error_funnel_unchanged(tmp_path, monkeypatch)
         calls.append(url)
         return _FakeResp(404, b'{"error":"no such route"}')
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     resp = _proxy(_FakeReq())
     assert resp.status_code == 404  # not 503, not re-worded
     assert b"no such route" in resp.body
@@ -528,7 +528,7 @@ def test_control_bytes_are_stripped_from_the_echoed_header(tmp_path, monkeypatch
     verbatim made h11 raise *after* the transcription had already run."""
     _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa"})
     monkeypatch.setattr(
-        server_audio, "get_async_client",
+        server_audio_asr, "get_async_client",
         lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
     resp = _proxy(_FakeReq(body=_model_body("wh\x00is\x7fper-1")))
     echoed = resp.headers["x-hub-requested-model"]
@@ -560,14 +560,14 @@ def _remote_peer_config(tmp_path, monkeypatch, *, transcribe: dict):
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
     monkeypatch.setattr(transcription_glossary, "load_rules", lambda: [])
     monkeypatch.setattr(
-        server_audio, "remote_base_url",
+        server_audio_asr, "remote_base_url",
         lambda m: "http://10.0.0.9:8000" if m.id == "wremote" else None)
 
 
 def test_served_host_is_the_active_host_when_served_locally(tmp_path, monkeypatch):
     _two_whisper_config(tmp_path, monkeypatch, transcribe={"model_id": "wa"})
     monkeypatch.setattr(
-        server_audio, "get_async_client",
+        server_audio_asr, "get_async_client",
         lambda: _FakeClient(lambda url, kwargs: _FakeResp(200, b'{"text":"wa"}')))
     req = _req_with_ctx()
     resp = _proxy(req)
@@ -585,7 +585,7 @@ def test_served_host_is_the_owner_on_a_remote_hop(tmp_path, monkeypatch):
         urls.append(url)
         return _FakeResp(200, b'{"text":"remote"}')   # older peer: no X-Hub-* headers
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     req = _req_with_ctx()
     resp = _proxy(req)
     assert urls and urls[0].startswith("http://10.0.0.9:8000")
@@ -607,7 +607,7 @@ def test_peer_served_headers_win_over_local_guess(tmp_path, monkeypatch):
             "X-Hub-Served-Host": "gaming",
         })
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     req = _req_with_ctx()
     resp = _proxy(req)
     assert req.state.obs_ctx.served_model == "parakeet"   # not "wremote"
@@ -631,7 +631,7 @@ def test_local_backend_headers_are_not_trusted_as_peer_answers(tmp_path, monkeyp
             "X-Hub-Served-Host": "impostor-host",
         })
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient(handler))
+    monkeypatch.setattr(server_audio_asr, "get_async_client", lambda: _FakeClient(handler))
     req = _req_with_ctx()
     resp = _proxy(req)
     assert req.state.obs_ctx.served_model == "wa"

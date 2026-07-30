@@ -3,7 +3,7 @@
 All HTTP is faked with ``httpx.MockTransport`` via the ``_build_client`` test
 seam — no network, no real AgentsView.  Tests drive ``_refresh()``
 synchronously (no daemon thread) and assert the snapshot/mapping behaviour:
-records in the shared ``_UsageRecord`` shape, native vendors never fetched,
+records in the shared ``UsageRecord`` shape, native vendors never fetched,
 graceful degradation when the service is absent or foreign.
 """
 
@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from src import agentsview_usage as av
-from src import code_usage
+from src import code_usage, usage_pricing
 
 
 @pytest.fixture(autouse=True)
@@ -274,12 +274,12 @@ def test_gather_and_summary_dynamic_vendor(monkeypatch):
     # AGY records price per tile against the Gemini list-price table (#280) —
     # AgentsView's own cost_usd is ignored (it can't price display-name ids).
     rec = av.all_records()[0]  # gemini-3-pro: 1000 in / 500 out / 250 cache
-    input_cost, output_cost, cache_cost = code_usage._record_costs(rec)
+    input_cost, output_cost, cache_cost = usage_pricing.record_costs(rec)
     assert input_cost == pytest.approx(1000 * 2.0 / 1e6)
     assert output_cost == pytest.approx(500 * 12.0 / 1e6)
     assert cache_cost == pytest.approx(250 * 0.20 / 1e6)
     # Display-name ids collapse to the same family as raw ids.
-    assert code_usage._gemini_family("Gemini 3.1 Pro (High)") == "pro"
-    assert code_usage._gemini_family("gemini-3.1-flash-lite-preview") == "flash-lite"
-    assert code_usage._gemini_family("Gemini 3.5 Flash (High)") == "flash"
-    assert code_usage._gemini_family("unknown") == ""
+    assert usage_pricing.gemini_family("Gemini 3.1 Pro (High)") == "pro"
+    assert usage_pricing.gemini_family("gemini-3.1-flash-lite-preview") == "flash-lite"
+    assert usage_pricing.gemini_family("Gemini 3.5 Flash (High)") == "flash"
+    assert usage_pricing.gemini_family("unknown") == ""

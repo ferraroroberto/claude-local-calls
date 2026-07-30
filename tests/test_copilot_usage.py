@@ -11,7 +11,7 @@ Key guarantees:
   ``resolvedModel`` / token counts without needing a general JSON-patch
   engine, and only ``.jsonl`` files (never the empty ``.json`` skeletons)
   are read.
-- ``_record_costs()`` returns a Copilot record's ``credits_usd`` directly,
+- ``record_costs()`` returns a Copilot record's ``credits_usd`` directly,
   never falling through to the Claude family pricing table.
 """
 
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from src import code_usage, copilot_usage
+from src import code_usage, copilot_usage, usage_common, usage_pricing
 
 
 def _write_yaml(path: Path, cwd: str) -> None:
@@ -89,7 +89,7 @@ def test_cli_nano_aiu_to_credits_conversion(copilot_dirs):
     r = records[0]
     assert r.vendor == "copilot"
     assert r.model == "claude-haiku-4.5"
-    assert r.project_key == code_usage._encode_project_key("E:\\automation\\demo")
+    assert r.project_key == usage_common.encode_project_key("E:\\automation\\demo")
     assert r.input_tokens == 17846
     assert r.output_tokens == 103
     assert r.cache_creation_tokens == 17836
@@ -165,7 +165,7 @@ def test_vscode_replay_extracts_credits_and_model(copilot_dirs, tmp_path):
     assert r.input_tokens == 30970
     assert r.output_tokens == 1308
     assert r.credits_usd == pytest.approx(0.0077665)
-    assert r.project_key == code_usage._encode_project_key("E:\\automation\\oracle-to-gcp")
+    assert r.project_key == usage_common.encode_project_key("E:\\automation\\oracle-to-gcp")
 
 
 def test_vscode_skips_empty_skeleton_json(copilot_dirs):
@@ -210,17 +210,16 @@ def test_vscode_request_without_credits_is_skipped(copilot_dirs):
 def test_record_costs_copilot_returns_credits_directly():
     """A copilot record must not fall through to the Claude pricing table —
     even when the resolved model name matches a Claude family substring."""
-    from src.code_usage import _UsageRecord, _record_costs
     from datetime import datetime
 
-    r = _UsageRecord(
+    r = usage_common.UsageRecord(
         session_id="s", project_key="k", project_name="k", model="claude-sonnet-4.5",
         ts=datetime(2026, 7, 11, tzinfo=timezone.utc),
         input_tokens=1_000_000, output_tokens=100_000,
         cache_creation_tokens=0, cache_read_tokens=0,
         vendor="copilot", credits_usd=0.05,
     )
-    input_cost, output_cost, cache_cost = _record_costs(r)
+    input_cost, output_cost, cache_cost = usage_pricing.record_costs(r)
     assert input_cost == pytest.approx(0.05)
     assert output_cost == 0.0
     assert cache_cost == 0.0

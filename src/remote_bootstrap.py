@@ -53,21 +53,37 @@ def _ssh_key_path() -> Optional[str]:
     return os.environ.get(_SSH_KEY_ENV)
 
 
-def _run_remote_command(host_id: str, verb: str) -> Dict[str, Any]:
-    key_path = _ssh_key_path()
-    if not key_path:
-        return {"ok": False, "error": f"{_SSH_KEY_ENV} is not set in .env"}
+def _resolve_dialable(host_id: str) -> tuple[Optional[Any], Optional[str], Optional[Dict[str, Any]]]:
+    """Look up ``host_id`` and dial its address. Returns ``(owner, address,
+    None)`` on success, or ``(None, None, <error dict>)`` when the host is
+    unconfigured/unreachable-by-config — shared by the forced-command and
+    general-SSH callers below, which otherwise duplicate this exact check."""
     owner = get_host(host_id)
     address = remote_stats.dial_address(owner, wait=True) if owner is not None else None
     if owner is None or not address or not owner.ssh_user:
-        return {"ok": False, "error": f"host {host_id!r} has no address/ssh_user configured"}
-    cmd = [
-        "ssh", "-i", key_path,
+        return None, None, {"ok": False, "error": f"host {host_id!r} has no address/ssh_user configured"}
+    return owner, address, None
+
+
+def _run_ssh(owner: Any, address: str, payload: str, *, use_key: bool) -> Dict[str, Any]:
+    """Run one ``ssh <user>@<address> <payload>`` and normalize the result.
+
+    ``use_key`` selects the forced-command channel (``-i`` key, restricted
+    remote command) vs. the hub user's own general passwordless channel —
+    the only two differences between ``bootstrap``/``sync`` and the
+    reboot/shutdown power actions."""
+    cmd = ["ssh"]
+    if use_key:
+        key_path = _ssh_key_path()
+        if not key_path:
+            return {"ok": False, "error": f"{_SSH_KEY_ENV} is not set in .env"}
+        cmd += ["-i", key_path]
+    cmd += [
         "-o", "BatchMode=yes",
         "-o", f"ConnectTimeout={_SSH_CONNECT_TIMEOUT_S}",
         "-o", "StrictHostKeyChecking=accept-new",
         f"{owner.ssh_user}@{address}",
-        verb,
+        payload,
     ]
     try:
         result = subprocess.run(
@@ -79,6 +95,16 @@ def _run_remote_command(host_id: str, verb: str) -> Dict[str, Any]:
     if result.returncode != 0:
         return {"ok": False, "error": f"ssh exit {result.returncode}: {(result.stderr or '').strip()}"}
     return {"ok": True}
+
+
+def _run_remote_command(host_id: str, verb: str) -> Dict[str, Any]:
+    key_path = _ssh_key_path()
+    if not key_path:
+        return {"ok": False, "error": f"{_SSH_KEY_ENV} is not set in .env"}
+    owner, address, err = _resolve_dialable(host_id)
+    if err is not None:
+        return err
+    return _run_ssh(owner, address, verb, use_key=True)
 
 
 async def _poll_health(host_id: str) -> Dict[str, Any]:
@@ -141,29 +167,11 @@ def _run_power_command(host_id: str, flag: str) -> Dict[str, Any]:
     detach a short-delayed ``shutdown`` with ``nohup`` (survives the closing
     SSH channel) and let the remote command return cleanly; the box powers
     down/reboots ~2 s later."""
-    owner = get_host(host_id)
-    address = remote_stats.dial_address(owner, wait=True) if owner is not None else None
-    if owner is None or not address or not owner.ssh_user:
-        return {"ok": False, "error": f"host {host_id!r} has no address/ssh_user configured"}
+    owner, address, err = _resolve_dialable(host_id)
+    if err is not None:
+        return err
     remote = f"nohup sh -c 'sleep 2; sudo -n /sbin/shutdown {flag} now' >/dev/null 2>&1 &"
-    cmd = [
-        "ssh",
-        "-o", "BatchMode=yes",
-        "-o", f"ConnectTimeout={_SSH_CONNECT_TIMEOUT_S}",
-        "-o", "StrictHostKeyChecking=accept-new",
-        f"{owner.ssh_user}@{address}",
-        remote,
-    ]
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=_SSH_CONNECT_TIMEOUT_S + 10,
-            creationflags=NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    if result.returncode != 0:
-        return {"ok": False, "error": f"ssh exit {result.returncode}: {(result.stderr or '').strip()}"}
-    return {"ok": True}
+    return _run_ssh(owner, address, remote, use_key=False)
 
 
 async def _trigger_power(host_id: str, flag: str, verb: str, emoji: str) -> Dict[str, Any]:

@@ -4,7 +4,12 @@
     python -m src.run_backend qwen   # run llama-server with the qwen entry
     python -m src.run_backend glm    # run llama-server with the glm entry
 
-Each .bat / .sh launcher is a one-liner that calls this module.
+``launchers/run_model.bat`` / ``run_model.sh`` are the sole entry point for
+every per-model launcher (#448 dedup — 22 near-identical hand-rolled scripts
+used to each hardcode their own title/port/banner, with nothing to catch a
+copy-paste port typo). ``--banner <id>`` below is what the ``.bat`` pulls its
+window title + console banner from, live off ``config/models.yaml``, so
+there is exactly one place a model's port/name can come from.
 """
 
 from __future__ import annotations
@@ -87,6 +92,40 @@ def _run_backend(model_id: str) -> int:
     return subprocess.call(cmd, env=env, cwd=str(PROJECT_ROOT))
 
 
+# backend -> (window/box label, endpoint hint printed under the URL line).
+# ``None`` hint means the URL line already says everything (llama-server's
+# OpenAI-shape base already ends in ``/v1``).
+_BANNER_KIND = {"openai": "llama-server", "whisper": "whisper-server", "tts": "tts_server"}
+_BANNER_HINT = {
+    "openai": None,
+    "whisper": "POST WAV to /v1/audio/transcriptions",
+    "tts": "POST text to /v1/audio/speech",
+}
+
+
+def _banner_lines(model_id: str) -> list[str]:
+    """Window title (line 1) + console-banner body lines (rest), derived
+    live from the registry entry so a launcher never hand-retypes a port."""
+    model = resolve_model_by_id(model_id)
+    if model is None:
+        return [f"Local LLM Hub - {model_id}", f"{model_id}: not enabled on this host"]
+    kind = _BANNER_KIND.get(model.backend, model.backend)
+    if model.port is None:
+        url = "(no port configured)"
+    elif model.backend == "openai":
+        url = model.url or f"http://127.0.0.1:{model.port}/v1"
+    else:
+        # whisper/tts banners show the bare base — the endpoint hint below
+        # spells out the actual POST path (matches the old per-model .bat text).
+        url = (model.url or f"http://127.0.0.1:{model.port}").removesuffix("/v1").rstrip("/")
+    lines = [f"Local LLM Hub - {model.display_name}", f"{kind}: {model.display_name} on {url}"]
+    hint = _BANNER_HINT.get(model.backend)
+    if hint:
+        lines.append(hint)
+    lines.append("Ctrl+C to stop")
+    return lines
+
+
 def _launchable_targets() -> list[str]:
     """The hub plus every model this host can spawn locally — the exact set
     the bulk launchers (run_all.bat / run_all.sh) enumerate so they mirror
@@ -101,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = argv if argv is not None else sys.argv[1:]
     if not args:
-        log.error("usage: python -m src.run_backend (hub|<model_id>|--list-launchable)")
+        log.error(
+            "usage: python -m src.run_backend (hub|<model_id>|--list-launchable|--banner <model_id>)"
+        )
         return 2
     target = args[0]
     if target == "--list-launchable":
@@ -110,6 +151,15 @@ def main(argv: list[str] | None = None) -> int:
         # (batch) and the `while read` loop (bash).
         for name in _launchable_targets():
             print(name)
+        return 0
+    if target == "--banner":
+        if len(args) < 2:
+            log.error("usage: python -m src.run_backend --banner <model_id>")
+            return 2
+        # Stdout-only, one line per banner line — run_model.bat's `for /f`
+        # reads these to set its window title + console box.
+        for line in _banner_lines(args[1]):
+            print(line)
         return 0
     if target == "hub":
         return _run_hub()

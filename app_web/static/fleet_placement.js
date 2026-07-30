@@ -18,7 +18,7 @@
  */
 
 import { els, state } from './state.js';
-import { jsonApi, escapeHtml } from './api.js';
+import { jsonApi, escapeHtml, fmtGb, fmtGbValue } from './api.js';
 import { icon } from './_vendored/icons/icons.js';
 import { emptyStateEl } from './_vendored/empty-state/empty-state.js';
 
@@ -58,20 +58,9 @@ function hostGlyph(host) {
   return host.icon || (host.local ? 'monitor' : 'server');
 }
 
-// MB → a compact "X.X GB" label for VRAM figures.
-function fmtGb(mb) {
-  return (Number(mb || 0) / 1024).toFixed(1) + ' GB';
-}
-
 // MB → a whole-GB label for RAM totals (128 GB, not 128.0 GB).
 function fmtGbWhole(mb) {
   return Math.round(Number(mb || 0) / 1024) + ' GB';
-}
-
-// GB number → 1-decimal string — the Machines tab's fmtGbValue format, so a
-// live figure reads identically on both tabs (#436).
-function fmtGbValue(n) {
-  return Number.isFinite(n) ? n.toFixed(1) : '—';
 }
 
 /* An advisory VRAM-overcommit warning (issue #375). Shown only when the host

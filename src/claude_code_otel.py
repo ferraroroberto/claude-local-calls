@@ -52,11 +52,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.code_usage import _model_display
+from src.code_usage import _model_display, _period_since
 
 _log = logging.getLogger(__name__)
 
@@ -233,22 +233,6 @@ def _load_points() -> List[UsagePoint]:
 
     _file_cache = _FileCache(mtime=mtime, points=points)
     return points
-
-
-def _period_since(period: str) -> Optional[date]:
-    """Earliest UTC date included in ``period``; ``None`` for "all" (no filter).
-
-    Rolling windows, not calendar boundaries — same semantics as
-    ``code_usage._period_since`` (today only / last 7 days / last 30 days).
-    """
-    today = datetime.now(timezone.utc).date()
-    if period == "today":
-        return today
-    if period == "week":
-        return today - timedelta(days=6)
-    if period == "month":
-        return today - timedelta(days=29)
-    return None
 
 
 def get_usage_summary(period: str = "today") -> Dict[str, Any]:

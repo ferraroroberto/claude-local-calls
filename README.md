@@ -131,7 +131,7 @@ Local entries in active use as of the May 2026 frontier reading:
   by the same [src/tts_server.py](src/tts_server.py) OpenAI-compatible
   `/v1/audio/speech` shim. It uses `kokoro-onnx` with the int8 ONNX model and
   packed voice styles in `models/kokoro/`. Start it from the Models tab or
-  `launchers/run_tts_kokoro.bat`, then call the hub with `model="kokoro-tts"`.
+  `launchers/run_model.bat kokoro`, then call the hub with `model="kokoro-tts"`.
   Default voice is `am_michael`, chosen as the closest built-in starting point
   for a Jarvis-like assistant voice. Spanish is available explicitly as
   `ef_dora` (female) or `em_alex` (male); those profiles select Spanish
@@ -143,7 +143,7 @@ Local entries in active use as of the May 2026 frontier reading:
   (not autostarted). Resemble AI's Chatterbox (~0.5 B, torch) with an
   emotion/"tone" dial (`exaggeration` + `cfg_weight`) and optional zero-shot
   voice cloning. Start it from the Models tab or
-  `launchers/run_tts_chatterbox.bat`. See
+  `launchers/run_model.bat chatterbox`. See
   [docs/add-tts.md](docs/add-tts.md) for the engine choice, request shape,
   and the Orpheus GGUF caveat.
 
@@ -221,8 +221,8 @@ full trade-off writeup.
 ## Demoted candidates (kept defined, not in active rotation)
 
 `glm-4.5-air` is **defined in `config/models.yaml`** but not in any
-host's `enabled:` list anymore. Its launcher still exists
-(`launchers/run_glm.bat`) for ad-hoc bring-up. Demoted on 2026-05-10 per
+host's `enabled:` list anymore. Bring it up ad-hoc via
+`launchers/run_model.bat glm`. Demoted on 2026-05-10 per
 the May 2026 frontier reading — see
 [docs/frontier-workflow.md](docs/frontier-workflow.md)
 for the reasoning.
@@ -241,7 +241,7 @@ and even its smallest quant needs ~245 GB RAM+VRAM vs. this box's
 `gemma4-e4b-it` is the previous `agentic_light` role-holder, replaced
 by `qwen3.5-4b` on 2026-05-10 via `/swap-model`. It is **kept in
 `enabled:`** on the reference host for ad-hoc bring-up via
-`launchers/run_gemma4_e4b.bat`, but no longer autostarted.
+`launchers/run_model.bat gemma4_e4b`, but no longer autostarted.
 
 ## Roles & bi-weekly refresh
 
@@ -390,9 +390,9 @@ audio clients  ──►  tts shim       127.0.0.1:8092   (chatterbox, text→sp
                            POST via the hub proxy for observability, or direct to the port to skip it)
 
 Demoted (defined in config/models.yaml, not in any host's enabled list):
-  glm-4.5-air — bring up via launchers/run_glm.bat
+  glm-4.5-air — bring up via launchers/run_model.bat glm
 Replaced as agentic_light on 2026-05-10 (still enabled on tower for fallback):
-  gemma4-e4b-it — bring up via launchers/run_gemma4_e4b.bat
+  gemma4-e4b-it — bring up via launchers/run_model.bat gemma4_e4b
 Mac Mini (mac-mini-m4), proxied through this hub's own base_url — see below:
   qwen3.5-9b  → this hub 127.0.0.1:8000  → mac hub 192.168.0.14:8000 → llama-server :8081
   parakeet    → this hub 127.0.0.1:8000  → mac hub 192.168.0.14:8000 → parakeet-server :8098
@@ -948,17 +948,11 @@ local-llm-hub/
 ├── tray.bat                  # Windows-only system-tray launcher (silent)
 ├── run_hub.bat / .sh         # start the FastAPI hub on :8000
 ├── launchers/                # per-model backends (.bat + .sh)
-│   ├── run_qwen.*               # demoted candidate; ad-hoc only
-│   ├── run_glm.*                # demoted candidate; ad-hoc only
-│   ├── run_qwen35_4b.*          # agentic_light role on :8088
-│   ├── run_gemma4_e4b.*         # ex-agentic_light fallback on :8086 (still enabled, not autostarted)
-│   ├── run_gemma4_26b.*         # agentic_heavy role on :8087
-│   ├── run_whisper.*            # audio_transcribe role on :8090
-│   ├── run_whisper_translate.*  # audio_translate role on :8091 (eager CPU)
-│   ├── run_tts.*                # audio_speech role — piper on :8096
-│   ├── run_tts_orpheus.*        # orpheus TTS on :8093 (on demand)
-│   ├── run_tts_kokoro.*         # kokoro TTS on :8095 (on demand)
-│   ├── run_tts_chatterbox.*     # chatterbox TTS on :8092 (on demand)
+│   ├── run_model.* <id>          # parameterized launcher (#448) — title/port/banner
+│   │                              #   pulled live from config/models.yaml; covers every
+│   │                              #   id below (qwen, glm, qwen35_4b, gemma4_e4b,
+│   │                              #   gemma4_26b, whisper, whisper_translate, piper,
+│   │                              #   orpheus, kokoro, chatterbox)
 │   └── run_all.*                # start everything enabled on this host
 ├── config/
 │   ├── models.yaml                   # hosts + models + roles — placement truth (hosts chains + startup policy, #430)
@@ -1174,7 +1168,7 @@ registry but **not** in any host's `enabled:` list, so the installer
 ignores them. To bring one up ad-hoc, add it to `enabled:` and re-run
 `--fix`, or just download manually with
 `python scripts/download_models.py --only qwen` and launch via
-`launchers/run_qwen.bat`.
+`launchers/run_model.bat qwen`.
 
 On a host with a TTS role enabled, `--fix` also pip-installs
 [requirements-tts.txt](requirements-tts.txt) (`chatterbox-tts`, `snac`,
@@ -1244,23 +1238,23 @@ itself runs fine without it.
 run_hub.bat                      :: FastAPI hub on :8000 (the admin
                                  :: webapp lives inside it at /admin)
 
-:: Active rotation
-launchers\run_qwen35_4b.bat      :: agentic_light  on :8088
-launchers\run_gemma4_26b.bat     :: agentic_heavy  on :8087
-launchers\run_whisper.bat        :: audio_transcribe on :8090
-launchers\run_whisper_translate.bat :: audio_translate on :8091 (eager CPU)
-launchers\run_tts.bat            :: audio_speech (piper) on :8096
-launchers\run_tts_orpheus.bat    :: orpheus TTS on :8093 (on demand)
-launchers\run_tts_kokoro.bat     :: kokoro TTS on :8095 (on demand)
-launchers\run_tts_chatterbox.bat :: chatterbox TTS on :8092 (on demand)
-launchers\run_all.bat            :: start every backend in `enabled:` for this host
+:: Active rotation — one parameterized launcher, id from config/models.yaml (#448)
+launchers\run_model.bat qwen35_4b          :: agentic_light  on :8088
+launchers\run_model.bat gemma4_26b         :: agentic_heavy  on :8087
+launchers\run_model.bat whisper            :: audio_transcribe on :8090
+launchers\run_model.bat whisper_translate  :: audio_translate on :8091 (eager CPU)
+launchers\run_model.bat piper              :: audio_speech (piper) on :8096
+launchers\run_model.bat orpheus            :: orpheus TTS on :8093 (on demand)
+launchers\run_model.bat kokoro             :: kokoro TTS on :8095 (on demand)
+launchers\run_model.bat chatterbox         :: chatterbox TTS on :8092 (on demand)
+launchers\run_all.bat                      :: start every backend in `enabled:` for this host
 
 :: Fallback / ad-hoc (still in `enabled:` on tower, not autostarted)
-launchers\run_gemma4_e4b.bat     :: previous agentic_light on :8086
+launchers\run_model.bat gemma4_e4b         :: previous agentic_light on :8086
 
 :: Demoted candidates — present but not in `enabled:` by default
-launchers\run_qwen.bat           :: llama-server for Qwen on :8081
-launchers\run_glm.bat            :: llama-server for GLM on :8082
+launchers\run_model.bat qwen               :: llama-server for Qwen on :8081
+launchers\run_model.bat glm                :: llama-server for GLM on :8082
 ```
 
 (macOS / Linux: `./run_hub.sh`, `./launchers/run_all.sh`, etc. For
@@ -1363,7 +1357,7 @@ gate anything.
 
 The hub on :8000 (and each per-model port :808x) is single-owner — TCP
 allows only one process to bind a port. To make `tray.bat`,
-`run_hub.bat`, the per-model `launchers/run_*.bat` scripts, and the
+`run_hub.bat`, the parameterized `launchers/run_model.bat <id>`, and the
 admin SPA's Hub/Models tabs coexist, every launcher follows the same
 **adopt-or-spawn** rule:
 
@@ -1413,8 +1407,8 @@ use it.
 
 1. **Start the hub** (either `run_hub.bat` / `.sh` at the repo root,
    or `tray.bat` on Windows — the tray autostarts the hub). Start any
-   local backends you need from `launchers/run_*.bat` or the admin
-   webapp's **🧠 Models** tab.
+   local backends you need from `launchers/run_model.bat <id>` or the
+   admin webapp's **🧠 Models** tab.
 2. **Find your LAN IP.** The admin webapp's **🛰 Hub** tab shows it
    as a clickable **LAN** link. From a terminal:
 

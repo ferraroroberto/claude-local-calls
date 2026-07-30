@@ -79,8 +79,8 @@ hosts:
     ram_mb: 131072
     # glm is kept defined below as a candidate for ad-hoc bring-up, but is
     # out of the active rotation. To bring it up: add its id back to this
-    # list and run `python -m src.install --fix`, or just launch
-    # `launchers/run_qwen.bat`-style directly.
+    # list and run `python -m src.install --fix`, or just launch it directly
+    # via `launchers/run_model.bat <id>`.
     #
     # `qwen` (host: mac-mini-m4) is cross-enabled here, not owned — #178
     # lets tower *resolve* it and proxy to the Mac's own hub instead of
@@ -792,7 +792,7 @@ models:
   # GGUF in models/, so no hf_repo/model_path here. `--device auto` picks
   # CUDA when the GPU has room, else CPU. Needs requirements-tts.txt
   # (chatterbox-tts, snac, soundfile) — installed only on TTS-enabled hosts.
-  # Start it from the Models tab / launchers/run_tts_chatterbox.bat.
+  # Start it from the Models tab / launchers/run_model.bat chatterbox.
   chatterbox:
     display_name: chatterbox-tts
     backend: tts

@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import sys
 import threading
@@ -24,6 +23,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 import httpx
 
 from ..model_registry import Model
+from ..process_supervisor import ProcessSupervisor
 from .common import (
     PROJECT_ROOT,
     SpeechRequest,
@@ -490,19 +490,9 @@ class OrpheusEngine(TTSEngine):
         proc = self.proc
         self.proc = None
         if proc is not None and proc.poll() is None:
-            try:
-                if sys.platform == "win32":
-                    try:
-                        proc.send_signal(signal.CTRL_BREAK_EVENT)
-                    except Exception:  # noqa: BLE001
-                        pass
-                proc.terminate()
-                try:
-                    proc.wait(timeout=8.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            except Exception as exc:  # noqa: BLE001
-                log.warning("error stopping Orpheus llama-server: %s", exc)
+            ok, msg = ProcessSupervisor.stop_popen(proc, terminate_timeout=8.0, kill_timeout=3.0)
+            if not ok:
+                log.warning("error stopping Orpheus llama-server: %s", msg)
         job = self._job
         self._job = None
         if job is not None and sys.platform == "win32":

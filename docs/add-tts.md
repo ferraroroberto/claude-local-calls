@@ -109,7 +109,7 @@ the fast option.
 | `scripts/install_tts.py` | pip install + warm Chatterbox/SNAC/Piper/Kokoro + fetch Piper assets, Orpheus GGUF, and Kokoro ONNX assets |
 | `scripts/smoke_test.py` | synth probe when a TTS port is reachable |
 | `app_web/...` | Models-tab 🔊 tile + a synthesis-based ping |
-| `launchers/run_tts*.{bat,sh}` | per-engine launchers; `run_all.*` includes all enabled TTS rows |
+| `launchers/run_model.{bat,sh} <id>` | parameterized per-model launcher (#448); `run_all.*` includes all enabled TTS rows |
 | `requirements-tts.txt` | `chatterbox-tts`, `snac`, `kokoro-onnx`, `soundfile` (torch transitively); Piper is a downloaded binary |
 
 ## Dependencies — kept off the base install
@@ -308,11 +308,11 @@ route, addressed by `model`:
   `Arming the perimeter.` (warm, connection reused; #163). The pre-resident
   path re-loaded the voice every call (~0.79 s / ~1.10 s).
 - `model="orpheus-tts"` → Orpheus on :8093 (start it first from the Models tab
-  or `launchers/run_tts_orpheus.bat`).
+  or `launchers/run_model.bat orpheus`).
 - `model="chatterbox-tts"` → Chatterbox on :8092 (start it first from the
-  Models tab or `launchers/run_tts_chatterbox.bat`).
+  Models tab or `launchers/run_model.bat chatterbox`).
 - `model="kokoro-tts"` → Kokoro on :8095 (start it first from the Models tab
-  or `launchers/run_tts_kokoro.bat`). Default voice is `am_michael`.
+  or `launchers/run_model.bat kokoro`). Default voice is `am_michael`.
   Spanish profiles are `ef_dora` (female) and `em_alex` (male).
 
 The admin Playground discovers this same registry metadata and exposes only

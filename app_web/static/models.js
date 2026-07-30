@@ -8,7 +8,7 @@
  */
 
 import { els, state, MODELS_ACTIVE_ONLY_KEY } from './state.js';
-import { jsonApi, postJson, putJson, toast, escapeHtml } from './api.js';
+import { jsonApi, postJson, putJson, toast, escapeHtml, fmtGb } from './api.js';
 import { mountGlossaryEditor } from './glossary.js';
 import { icon } from './_vendored/icons/icons.js';
 
@@ -290,11 +290,6 @@ function startupBadge(m, p) {
     el.title = 'Always-on: autostarted and kept resident';
   }
   return el;
-}
-
-// MB → compact "X.X GB" (same formatting as the fleet grid's capacity note).
-function fmtGb(mb) {
-  return (Number(mb || 0) / 1024).toFixed(1) + ' GB';
 }
 
 /* ---------- placement editor (#424) ----------

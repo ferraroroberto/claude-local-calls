@@ -8,9 +8,9 @@ processes for Qwen3.5-4B (primary), Gemma 4 26B-A4B, Gemma 4 E4B
 (fallback), Qwen3.5-9B and GLM-4.5-Air (demoted, ad-hoc bring-up only) +
 whisper.cpp ASR for both transcribe (turbo, GPU) and translate
 (medium, CPU) + text-to-speech backends (Piper + Orpheus + Kokoro + Chatterbox) at
-`/v1/audio/speech`); a **module
-diagram** showing the Python package layout and imports; and a
-**request lifecycle** sequence. Use this file as context when asking
+`/v1/audio/speech`); a pointer to the repo's **filesystem layout**
+(README.md, not restated here); and a **request lifecycle** sequence.
+Use this file as context when asking
 an LLM to modify the project — it shows which file owns what, and what
 talks to what. For per-model specs, quantisation, and docs links see
 [model-comparison.md](model-comparison.md).
@@ -28,8 +28,8 @@ flowchart LR
 
     subgraph UI["Admin SPA (app_web/) — sub-app mounted at /admin"]
         WSRV["app_web/server.py<br/>create_app() sub-app<br/>versioned static + bearer auth"]
-        WROUT["app_web/routers/<br/>hub · models · playground · services<br/>telemetry · code_usage<br/>auth · webauthn · version · misc"]
-        WSTATIC["app_web/static/<br/>index.html SPA + per-tab JS<br/>tabs: Hub · Models · Play · OTel · Code"]
+        WROUT["app_web/routers/<br/>hub · models · playground · services<br/>telemetry · code_usage · glossary<br/>startup_profile · fleet_placement · fleet_maintenance<br/>roles · hosts · machines · diagnostics<br/>auth · webauthn · version · misc"]
+        WSTATIC["app_web/static/<br/>index.html SPA + per-tab JS<br/>tabs: Hub · Models · Play · OTel · Code · Machines"]
     end
 
     subgraph Hub["FastAPI hub (src/)"]
@@ -140,85 +140,10 @@ flowchart LR
 
 ## Module diagram (filesystem)
 
-```mermaid
-flowchart TB
-    ROOT["local-llm-hub/"]
-    ROOT --> README["README.md"]
-    ROOT --> REQ["requirements.txt"]
-    ROOT --> LIC["LICENSE"]
-    ROOT --> ROOTBAT["run_hub / tray / start_langfuse<br/>.bat (Windows) + .sh (macOS)<br/>(repo-root launchers)"]
-    ROOT --> LAUNCHERS["launchers/<br/>run_qwen / run_glm / run_qwen35_4b / run_gemma4_e4b / run_gemma4_26b<br/>run_whisper / run_whisper_translate / run_tts / run_tts_orpheus / run_tts_kokoro / run_tts_chatterbox / run_all<br/>.bat (Windows) + .sh (macOS)"]
-
-    ROOT --> CFGDIR["config/"]
-    CFGDIR --> C1["models.yaml<br/>hosts + models registry"]
-
-    ROOT --> SRC["src/"]
-    SRC --> S1["server.py<br/>FastAPI hub + router (local backends + Claude + Gemini)"]
-    SRC --> S1a["chat_translation.py<br/>request/response schemas · content-block extraction ·<br/>prompt flattening · per-backend dispatch (issue #245)"]
-    SRC --> S1b["server_common.py<br/>model-resolution + OTel span helpers<br/>shared by server.py / server_audio.py / server_images.py"]
-    SRC --> S1c["server_audio.py<br/>/v1/audio/* proxy handlers<br/>(transcriptions · translations · speech)"]
-    SRC --> S1d["server_images.py<br/>/v1/images/* handlers<br/>(generations · edits)"]
-    SRC --> S2["claude_cli.py<br/>claude -p wrapper"]
-    SRC --> S10["gemini_cli.py<br/>agy (Antigravity) CLI wrapper<br/>via ConPTY (pywinpty)"]
-    SRC --> S3["openai_upstream.py<br/>llama-server client +<br/>Anthropic ↔ OpenAI shapes"]
-    SRC --> S4["model_registry.py<br/>YAML loader + Model class"]
-    SRC --> S5["host_profile.py<br/>pick active host row"]
-    SRC --> S5b["remote_proxy.py<br/>owning-host base URL for non-local rows<br/>(Mac Mini multi-host proxying)"]
-    SRC --> S6["install.py<br/>checks + fix dispatch"]
-    SRC --> S7["run_backend.py<br/>hub|qwen|glm|qwen35_4b|gemma4*|whisper|tts dispatcher"]
-    SRC --> S8a["process_supervisor.py<br/>shared subprocess lifecycle workflow"]
-    SRC --> S8["server_process.py<br/>hub Popen + kill-port"]
-    SRC --> S9["backend_process.py<br/>per-model Popen (llama-server + whisper-server + tts shim)"]
-    SRC --> S11["whisper_translate_proxy.py<br/>FastAPI shim for optional lazy-load mode<br/>(dormant; whisper_translate runs eager)"]
-    SRC --> S12["tts_server.py + tts_engines/<br/>FastAPI shim for /v1/audio/speech<br/>(common.py interface + process.py helpers +<br/>piper/kokoro/orpheus/chatterbox.py engines)"]
-
-    ROOT --> APPDIR["app_web/<br/>admin SPA sub-app (mounted at /admin)"]
-    APPDIR --> A1["server.py<br/>create_app() + versioned static"]
-    APPDIR --> A2["middleware.py / icons.py"]
-    APPDIR --> A3["routers/"]
-    A3 --> V1["hub.py / models.py / playground.py"]
-    A3 --> V2["services.py / telemetry.py / code_usage.py"]
-    A3 --> V3["auth.py / webauthn.py / version.py / misc.py"]
-    APPDIR --> A4["static/"]
-    A4 --> ST1["index.html<br/>SPA shell (Hub/Models/Play/OTel/Code)"]
-    A4 --> ST2["main.js + per-tab JS<br/>(hub · models · playground · telemetry · code_usage)"]
-    A4 --> ST3["styles.css + manifest + icons"]
-
-    ROOT --> SCDIR["scripts/"]
-    SCDIR --> SC1["smoke_test.py"]
-    SCDIR --> SC2["download_models.py<br/>huggingface_hub"]
-    SCDIR --> SC3["install_llama_cpp.py<br/>CUDA-win / Metal-mac"]
-    SCDIR --> SC4["install_whisper_cpp.py / install_tts.py"]
-
-    ROOT --> TDIR["tests/"]
-    TDIR --> T1["test_server.py"]
-    TDIR --> T2["test_router.py"]
-    TDIR --> T3["test_model_registry.py"]
-    TDIR --> T4["test_install.py"]
-
-    ROOT --> VENDOR["vendor/<br/>(gitignored)"]
-    VENDOR --> VLL["llama.cpp/<br/>llama-server binary"]
-
-    ROOT --> MDLS["models/<br/>(gitignored)"]
-    MDLS --> M1["Qwen3.5-9B-Q4_K_M.gguf"]
-    MDLS --> M2["GLM-4.5-Air-Q4_K_M/<br/>multi-part GGUF"]
-    MDLS --> M3["Qwen3.5-4B-Q4_K_M.gguf (agentic_light)"]
-    MDLS --> M4["gemma-4-E4B-it-Q4_K_M.gguf (fallback)"]
-    MDLS --> M5["gemma-4-26B-A4B-it-UD-IQ4_XS.gguf (MoE; agentic_heavy)"]
-    MDLS --> M6["ggml-large-v3-turbo.bin (whisper turbo, transcribe)"]
-    MDLS --> M7["ggml-medium.bin (whisper medium, translate)"]
-
-    ROOT --> DOCS["docs/"]
-    DOCS --> D1["project-structure.md<br/>(this file)"]
-    DOCS --> D2["model-comparison.md<br/>per-model specs + docs links"]
-    DOCS --> D4["whisper-asr.md<br/>ASR backend reference"]
-    DOCS --> D4b["add-tts.md<br/>TTS backend (/v1/audio/speech)"]
-    DOCS --> D5["glm-performance-assessment.md<br/>benchmark"]
-    DOCS --> D6["whisper-turbo-vs-large-v3.md<br/>decision rationale"]
-    DOCS --> D7["frontier-workflow.md<br/>bi-weekly refresh + swap workflow"]
-    DOCS --> D8["gemini-agy-backend.md<br/>agy backend reference"]
-    DOCS --> D9["playbook-cli-backend-migration.md<br/>playbook"]
-```
+Superseded as a standalone listing — README.md's ["Layout"](../README.md#layout)
+section is the repo's one hand-maintained filesystem tree; keeping a second
+one here let the two drift out of sync with each other and with the code
+(`#452`). See it there rather than restating it in this file.
 
 ## Request lifecycle
 
@@ -371,16 +296,19 @@ the envelope into OpenAI shape; for the local llama-server backends
   model. Today `qwen3.5-9b` and Parakeet ASR are owned by `mac-mini-m4`
   and proxied through this hub's `base_url`; see the README's "Multi-host:
   the Mac Mini" section for the full walkthrough.
-- **Only three places shell out.**
-  [`src/claude_cli.py`](../src/claude_cli.py) owns
-  `subprocess.run(["claude", "-p", ...])`.
-  [`src/gemini_cli.py`](../src/gemini_cli.py) spawns the `agy`
-  Antigravity CLI under a Windows ConPTY (via `pywinpty`) for the
-  `gemini-*` rows.
-  [`src/backend_process.py`](../src/backend_process.py) owns the
-  `subprocess.Popen(["llama-server", ...])` / `subprocess.Popen(["whisper-server", ...])`
-  for each local model.
-  Everything else is pure Python / FastAPI / httpx.
+- **The three backend-invocation entry points** are
+  [`src/claude_cli.py`](../src/claude_cli.py) (owns
+  `subprocess.run(["claude", "-p", ...])`),
+  [`src/gemini_cli.py`](../src/gemini_cli.py) (spawns the `agy`
+  Antigravity CLI under a Windows ConPTY via `pywinpty` for the
+  `gemini-*` rows), and
+  [`src/backend_process.py`](../src/backend_process.py) (owns
+  `subprocess.Popen(["llama-server", ...])` /
+  `subprocess.Popen(["whisper-server", ...])` for each local model). Many
+  other modules also shell out for their own narrower purpose (installers,
+  config writes, remote SSH, diagnostics sampling, the tray, per-script
+  tooling) — this list is only the three that speak for an inbound LLM
+  request.
 - **Admin SPA runs inside the hub.** The `app_web/` sub-app is mounted
   at `/admin` in the same process as the public `/v1` surface, so its
   routers call the process managers in-process: `app_web/routers/hub.py`
@@ -403,4 +331,5 @@ the envelope into OpenAI shape; for the local llama-server backends
   qwen/glm are text-only for now). Image and document content blocks
   (PDF plus text/data files) land on the `claude-*` / `gemini-*` paths;
   extended-thinking blocks are still dropped at the shape boundary. See
-  the README backlog for the ordered list.
+  [issue #453](https://github.com/ferraroroberto/local-llm-hub/issues/453)
+  for the ordered backlog.

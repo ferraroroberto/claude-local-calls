@@ -222,7 +222,7 @@ def test_chat_completions_routes_gemini(monkeypatch):
     r = client.post(
         "/v1/chat/completions",
         json={
-            "model": "Gemini 3.5 Flash (High)",
+            "model": "Gemini 3.6 Flash",
             "messages": [{"role": "user", "content": "hello"}],
         },
     )

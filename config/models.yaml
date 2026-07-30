@@ -295,18 +295,30 @@ models:
   # is now a separate Low/Medium/High slider, not part of the row text) —
   # confirmed live 2026-07-29 (issue #440). `display_name` below is the
   # bare picker label; do not append an effort suffix, it won't match.
+  #
+  # Flash/Lite hit the same 502 (issue #442): the picker also gained a
+  # second Flash generation ("Gemini 3.6 Flash" alongside "Gemini 3.5
+  # Flash"), with no separate High/Medium row per model anymore. Live
+  # picker confirmed 2026-07-30 offers exactly those two Flash rows plus
+  # Gemini 3.1 Pro, Claude Sonnet/Opus 4.6 (Thinking), GPT-OSS 120B
+  # (Medium) — no bare "Flash" row was dropped from the offering. To keep
+  # the two-tier distinction downstream callers rely on (Lite = cheaper/
+  # simpler than Flash) instead of collapsing both aliases onto one row,
+  # gemini_flash takes the newest generation and gemini_flash_lite keeps
+  # the now-previous-gen row — latest-vs-previous-gen instead of
+  # effort-vs-effort.
   gemini_pro:
     display_name: "Gemini 3.1 Pro"
     backend: gemini
     aliases: ["gemini_pro"]
 
   gemini_flash:
-    display_name: "Gemini 3.5 Flash (High)"
+    display_name: "Gemini 3.6 Flash"
     backend: gemini
     aliases: ["gemini_flash"]
 
   gemini_flash_lite:
-    display_name: "Gemini 3.5 Flash (Medium)"
+    display_name: "Gemini 3.5 Flash"
     backend: gemini
     aliases: ["gemini_lite"]
 

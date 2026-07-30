@@ -61,9 +61,11 @@ _current_model: Optional[str] = None
 
 # Image generation has no picker model in `agy` — the only image backend is
 # Google's Imagen, exposed as an agentic tool reachable from any Gemini text
-# session. We host it inside the cheapest/fastest text model (Flash High);
-# the choice does not affect the image model used. Verified: issue #114 spike.
-_IMAGE_HOST_MODEL = "Gemini 3.5 Flash (High)"
+# session. We host it inside the cheapest/fastest text model (the current
+# gemini_flash row); the choice does not affect the image model used.
+# Verified: issue #114 spike. Kept in sync with gemini_flash's display_name
+# in config/models.yaml (#442 remapped the picker row itself).
+_IMAGE_HOST_MODEL = "Gemini 3.6 Flash"
 
 # Magic-byte signatures → media type. `agy` saves the artifact under whatever
 # name we ask, but the bytes may be a different format than the extension

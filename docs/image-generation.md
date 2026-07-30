@@ -11,9 +11,12 @@ Issue #114 set out to wire **Nano Banana / Nano Banana Pro** (Gemini image
 models) into the hub via the Antigravity CLI (`agy`). The feasibility spike
 found that premise is **not reachable**:
 
-- `agy`'s `/model` picker offers **only text models** — Gemini 3.5 Flash
-  (Low/Medium/High), Gemini 3.1 Pro (Low/High), Claude Sonnet/Opus 4.6,
-  GPT-OSS 120B. **There is no Nano Banana / image entry.**
+- `agy`'s `/model` picker offers **only text models** — as of `agy`
+  1.1.8 that's Gemini 3.6 Flash, Gemini 3.5 Flash, Gemini 3.1 Pro,
+  Claude Sonnet 4.6 (Thinking), Claude Opus 4.6 (Thinking), GPT-OSS 120B
+  (Medium), with effort now a separate Low/Medium/High slider shared
+  across whichever model is selected rather than baked into each row
+  label (#440, #442). **There is no Nano Banana / image entry.**
 - `agy` *can* generate images, but through its **agentic tool harness**: its
   only image backend is Google **Imagen**, reachable from inside any ordinary
   Gemini text session. Asked directly for "Nano Banana Pro", `agy` replied
@@ -27,9 +30,10 @@ found that premise is **not reachable**:
 ## How the hub drives it
 
 `src/gemini_cli.py::call_gemini_image` hosts the Imagen tool inside the
-cheapest/fastest text session (`_IMAGE_HOST_MODEL = "Gemini 3.5 Flash
-(High)"`), under the same global `_LOCK` + persisted-model-switch contract as
-text calls. It runs an `agy -p` print-mode prompt that asks the model to
+cheapest/fastest text session (`_IMAGE_HOST_MODEL = "Gemini 3.6 Flash"`,
+kept in sync with `gemini_flash`'s `display_name`), under the same global
+`_LOCK` + persisted-model-switch contract as text calls. It runs an
+`agy -p` print-mode prompt that asks the model to
 generate the image and **save it into a throwaway working dir**, then captures
 whatever artifact lands there.
 

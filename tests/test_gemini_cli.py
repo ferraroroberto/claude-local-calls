@@ -57,18 +57,18 @@ def test_call_gemini_skips_switch_when_model_unchanged(monkeypatch):
     captured = {}
     _stub_calls(monkeypatch, captured)
 
-    gemini_cli.call_gemini("one", model="Gemini 3.5 Flash (High)")
-    gemini_cli.call_gemini("two", model="Gemini 3.5 Flash (High)")
+    gemini_cli.call_gemini("one", model="Gemini 3.5 Flash")
+    gemini_cli.call_gemini("two", model="Gemini 3.5 Flash")
 
     # The model is global persisted state — switch only on a change.
-    assert captured["switches"] == ["Gemini 3.5 Flash (High)"]
+    assert captured["switches"] == ["Gemini 3.5 Flash"]
 
 
 def test_call_gemini_folds_system_into_prompt(monkeypatch):
     captured = {}
     _stub_calls(monkeypatch, captured)
 
-    gemini_cli.call_gemini("the question", model="Gemini 3.5 Flash (High)",
+    gemini_cli.call_gemini("the question", model="Gemini 3.5 Flash",
                            system="Answer briefly.")
     # `agy -p` has no separate system flag — system is folded in.
     assert "[System]" in captured["prompt"]

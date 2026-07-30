@@ -38,11 +38,14 @@ def test_is_reachable_whisper_probes_correct_port(monkeypatch):
     class _Resp:
         status_code = 200
 
-    def _fake_get(url, timeout=None):
-        captured["url"] = url
-        return _Resp()
+    class _FakeClient:
+        def get(self, url, timeout=None):
+            captured["url"] = url
+            return _Resp()
 
-    monkeypatch.setattr(bp.httpx, "get", _fake_get)
+    # is_reachable routes through the shared pooled client (issue #450), not
+    # a bare httpx.get — patch the client getter, not httpx itself.
+    monkeypatch.setattr(bp, "get_sync_client", lambda: _FakeClient())
 
     m = Model(
         id="whisper_translate",

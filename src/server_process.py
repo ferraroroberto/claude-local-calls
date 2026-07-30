@@ -39,8 +39,8 @@ from collections import deque
 from pathlib import Path
 from typing import Deque, Optional
 
-import httpx
-
+from .http_client import get_sync_client
+from .no_window import NO_WINDOW
 from .process_supervisor import ProcessSupervisor, SpawnSpec
 
 logger = logging.getLogger(__name__)
@@ -63,8 +63,7 @@ OWNERSHIP_NONE = "none"
 # console so silent parents (pythonw, e.g. the tray) don't spawn a
 # stray cmd window.
 WIN_NEW_GROUP = (
-    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-    if sys.platform == "win32" else 0
+    subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW if sys.platform == "win32" else 0
 )
 
 
@@ -109,7 +108,7 @@ def is_running() -> bool:
 
 def is_reachable(timeout: float = 1.5) -> bool:
     try:
-        r = httpx.get(f"{BASE_URL}/health", timeout=timeout)
+        r = get_sync_client().get(f"{BASE_URL}/health", timeout=timeout)
         return r.status_code == 200
     except Exception:
         return False

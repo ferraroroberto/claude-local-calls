@@ -10,10 +10,10 @@ import hashlib
 import json
 import logging
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from .no_window import NO_WINDOW
 from .server_common import safe_span, start_span
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ def call_claude(
             # for every request when the hub itself is running under pythonw
             # (e.g. launched from the tray with CREATE_NO_WINDOW — children
             # don't inherit the parent's no-window state).
-            creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            creationflags = NO_WINDOW
             proc = subprocess.run(
                 args,
                 input=prompt,

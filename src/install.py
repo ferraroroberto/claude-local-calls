@@ -33,16 +33,11 @@ log = logging.getLogger(__name__)
 from .backend_process import llama_server_binary, whisper_server_binary
 from .host_profile import hub_port, resolve as resolve_host
 from .model_registry import Model, local_models
+from .no_window import NO_WINDOW
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 STATUS_ORDER = {"ok": 0, "warn": 1, "missing": 2, "error": 3}
-
-
-def _no_window_flags() -> int:
-    """CREATE_NO_WINDOW on Windows so these checks (run from the windowless
-    hub on every admin SPA load) don't flash a console — see issue #174."""
-    return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 @dataclass
@@ -147,7 +142,7 @@ def _probe_cli_version(
     try:
         r = subprocess.run([str(exe), *version_args],
                            capture_output=True, text=True, timeout=10,
-                           creationflags=_no_window_flags())
+                           creationflags=NO_WINDOW)
         if r.returncode in ok_codes:
             first = ((r.stdout or r.stderr).strip().splitlines() or ["ok"])[0]
             return Check(check_id, label, "ok", first)
@@ -192,7 +187,7 @@ def _nvidia_smi_gpu_check() -> Check:
         r = subprocess.run(
             [nv, "--query-gpu=name,memory.total", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=10,
-            creationflags=_no_window_flags(),
+            creationflags=NO_WINDOW,
         )
         if r.returncode == 0 and r.stdout.strip():
             return Check("gpu", "GPU / accelerator detected", "ok", r.stdout.strip().splitlines()[0])
@@ -510,7 +505,7 @@ def _fix_deps() -> None:
     subprocess.run(
         [sys.executable, "-m", "pip", "install", "-r", str(PROJECT_ROOT / "requirements.txt")],
         check=True,
-        creationflags=_no_window_flags(),
+        creationflags=NO_WINDOW,
     )
 
 

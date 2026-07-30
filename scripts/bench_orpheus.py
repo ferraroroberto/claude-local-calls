@@ -45,6 +45,7 @@ log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # UTF-8 stdout so the table renders under captured/redirected runs on Windows
 # (cp1252 fallback otherwise throws on the box-drawing chars).
@@ -54,6 +55,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
+from _lib import no_window_flags  # noqa: E402
 from src.backend_process import VENDOR_LLAMA, llama_server_binary  # noqa: E402
 from src.model_registry import resolve as resolve_model  # noqa: E402
 
@@ -131,6 +133,7 @@ def _spawn(port: int, extra_flags: List[str]) -> subprocess.Popen:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         env=env,
+        creationflags=no_window_flags(),
     )
 
 

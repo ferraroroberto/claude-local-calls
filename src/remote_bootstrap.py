@@ -39,6 +39,7 @@ import httpx
 
 from . import remote_stats
 from .host_profile import get_host, hub_port
+from .no_window import NO_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ def _run_remote_command(host_id: str, verb: str) -> Dict[str, Any]:
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=_SSH_CONNECT_TIMEOUT_S + 10,
+            creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -155,6 +157,7 @@ def _run_power_command(host_id: str, flag: str) -> Dict[str, Any]:
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=_SSH_CONNECT_TIMEOUT_S + 10,
+            creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

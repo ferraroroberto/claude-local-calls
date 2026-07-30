@@ -33,7 +33,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.hub_log import HUB_LOG
 from src.hub_observability import OBS
-from src.server_process import lan_ip
+from src.server_process import WIN_NEW_GROUP, lan_ip
 
 from ._helpers import maybe_json, sse_stream
 
@@ -191,10 +191,10 @@ def _spawn_respawn_watchdog() -> None:
     log_path = _restart_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("🔄 respawn watchdog: relaunch log → %s", log_path)
-    creationflags = 0
-    if sys.platform == "win32":
-        DETACHED = 0x00000008
-        creationflags = DETACHED | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    # Same flags src.server_process.start() uses for the hub itself —
+    # DETACHED_PROCESS is deliberately omitted, it's mutually exclusive
+    # with CREATE_NO_WINDOW per the Win32 CreateProcess docs (#282/#283).
+    creationflags = WIN_NEW_GROUP
     # Capture the watchdog's own stdout/stderr to the same log so a
     # failure *before* it opens its own handle (e.g. a bad argv) is still
     # visible rather than swallowed by DEVNULL.

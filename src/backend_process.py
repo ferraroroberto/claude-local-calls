@@ -33,6 +33,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from .host_profile import resolve as resolve_host
+from .http_client import get_sync_client
 from .model_registry import Model, enabled_models, local_models, resolve as resolve_model
 from .process_supervisor import ProcessSupervisor, SpawnSpec
 from .server_process import (
@@ -241,19 +242,19 @@ def is_reachable(model: Model, timeout: float = 1.5) -> bool:
         # whisper-*shaped* backend on a different engine (e.g. Parakeet's
         # `engine: parakeet-server`, #138) has its own real /health route.
         try:
-            r = httpx.get(f"{base}/", timeout=timeout)
+            r = get_sync_client().get(f"{base}/", timeout=timeout)
             return r.status_code == 200
         except Exception:
             return False
     try:
-        r = httpx.get(f"{base}/health", timeout=timeout)
+        r = get_sync_client().get(f"{base}/health", timeout=timeout)
         if r.status_code == 200:
             return True
     except Exception:
         pass
     # llama-server /v1/models is always available once loaded
     try:
-        r = httpx.get(f"{model.url}/models", timeout=timeout)
+        r = get_sync_client().get(f"{model.url}/models", timeout=timeout)
         return r.status_code == 200
     except Exception:
         return False

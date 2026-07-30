@@ -21,8 +21,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..model_registry import Model
+from ..no_window import NO_WINDOW
 from .common import PROJECT_ROOT, SpeechRequest, TTSEngine, TTS_LANGUAGE_LABELS, TTS_SAMPLE_TEXT, voice_option
-from .process import _assign_to_job, _no_window_flags, _win_kill_on_close_job
+from .process import _assign_to_job, _win_kill_on_close_job
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class _PiperProc:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             cwd=str(PROJECT_ROOT),
-            creationflags=_no_window_flags(),
+            creationflags=NO_WINDOW,
         )
         _assign_to_job(job, self._proc)
         threading.Thread(target=self._reader, args=(self._proc,), daemon=True).start()
@@ -359,7 +360,7 @@ class PiperEngine(TTSEngine):
                 cwd=str(PROJECT_ROOT),
                 timeout=60,
                 check=False,
-                creationflags=_no_window_flags(),
+                creationflags=NO_WINDOW,
             )
             if proc.returncode != 0:
                 err = proc.stderr.decode("utf-8", errors="replace").strip()

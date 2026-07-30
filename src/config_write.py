@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
-import sys
 import threading
 import time
 from io import StringIO
@@ -51,6 +50,7 @@ from .model_registry import (
     _parse_startup,
     all_models,
 )
+from .no_window import NO_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,6 @@ COMMIT_MESSAGE_TEMPLATE = "config: {model} placement via admin UI"
 # (an invented bot email would be blocked at commit time).
 _BOT_NAME = "local-llm-hub config-bot"
 _GIT_TIMEOUT_S = 60
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # The one branch config writes may land on — the fleet's canonical branch.
 WRITE_BRANCH = "main"
@@ -108,7 +107,7 @@ def _git(*args: str, repo: Path = PROJECT_ROOT) -> subprocess.CompletedProcess:
         text=True,
         timeout=_GIT_TIMEOUT_S,
         stdin=subprocess.DEVNULL,
-        creationflags=_NO_WINDOW,
+        creationflags=NO_WINDOW,
         check=False,
     )
 

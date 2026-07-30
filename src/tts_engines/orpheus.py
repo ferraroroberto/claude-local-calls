@@ -210,7 +210,9 @@ class OrpheusEngine(TTSEngine):
             if self.proc is not None and self.proc.poll() is not None:
                 raise RuntimeError("Orpheus llama-server child exited during startup")
             try:
-                r = httpx.get(url, timeout=2.0)
+                # self._client is a persistent client set in load() — see its
+                # comment for why this can't be a per-call httpx.get (#450).
+                r = self._client.get(url, timeout=2.0)  # type: ignore[union-attr]
                 if r.status_code == 200:
                     return
             except Exception:  # noqa: BLE001

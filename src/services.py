@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 from src.host_profile import HostProfile, hub_port
 from src.http_client import get_async_client
+from src.no_window import NO_WINDOW
 from src.observability import langfuse_host
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,7 @@ def _docker_info_sync(timeout_s: float) -> Dict[str, Any]:
             # CREATE_NO_WINDOW on Windows so this poll (fired every few
             # seconds while the Hub tab is open) doesn't flash a console
             # window — matching system_stats.gpu_stats / claude_cli.
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            creationflags=NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
         return {"running": False, "error": f"`docker info` timed out after {timeout_s:.1f}s"}
@@ -323,10 +324,7 @@ def _spawn_docker_desktop(exe: Path) -> None:
     """
     creationflags = 0
     if sys.platform == "win32":
-        creationflags = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.CREATE_NO_WINDOW
-        )
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW
     subprocess.Popen(
         [str(exe)],
         stdin=subprocess.DEVNULL,
@@ -403,7 +401,8 @@ def _run_langfuse_start_script_sync() -> Dict[str, Any]:
         cmd = ["/bin/sh", str(script)]
     try:
         proc = subprocess.run(
-            cmd, cwd=str(PROJECT_ROOT), capture_output=True, timeout=120.0
+            cmd, cwd=str(PROJECT_ROOT), capture_output=True, timeout=120.0,
+            creationflags=NO_WINDOW,
         )
         return {
             "ok": proc.returncode == 0,
@@ -580,7 +579,7 @@ def _stop_docker_desktop_sync(timeout_s: float) -> Dict[str, Any]:
             ["docker", "desktop", "stop"],
             capture_output=True,
             timeout=timeout_s,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            creationflags=NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "detail": f"`docker desktop stop` timed out after {timeout_s:.0f}s"}
@@ -625,7 +624,8 @@ def _run_langfuse_stop_script_sync() -> Dict[str, Any]:
         cmd = ["/bin/sh", str(script)]
     try:
         proc = subprocess.run(
-            cmd, cwd=str(PROJECT_ROOT), capture_output=True, timeout=LANGFUSE_STOP_TIMEOUT_S
+            cmd, cwd=str(PROJECT_ROOT), capture_output=True, timeout=LANGFUSE_STOP_TIMEOUT_S,
+            creationflags=NO_WINDOW,
         )
         return {
             "ok": proc.returncode == 0,
@@ -767,10 +767,7 @@ def _spawn_agentsview(exe: str) -> None:
     """
     creationflags = 0
     if sys.platform == "win32":
-        creationflags = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.CREATE_NO_WINDOW
-        )
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW
     env = dict(os.environ)
     env.setdefault("AGENTSVIEW_TELEMETRY_ENABLED", "0")
     env.setdefault("AGENTSVIEW_DISABLE_UPDATE_CHECK", "1")

@@ -983,8 +983,10 @@ local-llm-hub/
 │   ├── chat_translation.py   # request/response schemas, content-block extraction,
 │   │                         #   prompt flattening, per-backend dispatch (issue #245)
 │   ├── server_common.py      # model-resolution + OTel span helpers shared by
-│   │                         #   server.py / server_audio.py / server_images.py
-│   ├── server_audio.py       # /v1/audio/* proxy handlers (transcriptions, translations, speech)
+│   │                         #   server.py / server_audio_asr.py / server_audio_tts.py / server_images.py
+│   ├── server_audio_asr.py   # /v1/audio/{transcriptions,translations,health} — whisper proxy + failover (#451)
+│   ├── server_audio_tts.py   # /v1/audio/speech — TTS proxy, routes onto server_audio_asr's router (#451)
+│   ├── server_audio_common.py  # header-safety + upstream-error helpers shared by the two above (#451)
 │   ├── audio_proxy.py        # shared multipart bridging for the whisper translate-proxy paths
 │   ├── server_images.py      # /v1/images/* handlers (generations, edits)
 │   ├── claude_cli.py         # subprocess wrapper around `claude -p`
@@ -1013,7 +1015,10 @@ local-llm-hub/
 │   ├── event_loop.py         # Windows proactor-loop shim so uvicorn survives client aborts (#222)
 │   ├── build_info.py         # single source of truth for "what commit is this process running"
 │   ├── services.py           # host-side service helpers: Docker engine + Langfuse stack (#27)
-│   ├── code_usage.py         # host-side Claude Code usage parser (~/.claude/projects/*.jsonl)
+│   ├── code_usage.py         # host-side Claude Code usage parser + get_summary aggregation API
+│   ├── usage_common.py       # shared vendor substrate: UsageRecord/FileStats + parsing helpers (#451)
+│   ├── usage_pricing.py      # per-vendor $/Mtok pricing tables + record_costs (#451)
+│   ├── usage_charts.py       # time-series bucketing + period-over-period comparison (#451)
 │   ├── code_usage_history.py # durable daily rollups of Code-tab usage (outlives transcript pruning)
 │   ├── claude_code_otel.py   # Claude Code OTel token/cost metrics receiver — data layer (#68)
 │   ├── codex_usage.py        # host-side Codex (OpenAI) usage parser (~/.codex/sessions/*.jsonl)
@@ -1069,7 +1074,8 @@ local-llm-hub/
 │       └── _vendored/        #   project-scaffolding components: button / card /
 │                             #   disclosure / empty-state / icons (Lucide sprite) /
 │                             #   modal / nav / switch / xterm — SPA UI glyphs +
-│                             #   primitives per design.md
+│                             #   primitives per design.md; chartjs (Chart.js
+│                             #   4.4.7 UMD, byte-for-byte, #451) — trend charts
 ├── tray/                     # Windows system-tray launcher (silent pythonw)
 │   ├── tray.py               #   single-file pystray + hub lifecycle owner
 │   ├── icon.py               #   Lucide hub glyph (share-2), rendered via resvg,

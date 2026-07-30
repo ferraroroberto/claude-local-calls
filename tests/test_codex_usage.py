@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from src import code_usage, codex_usage
+from src import code_usage, codex_usage, usage_charts, usage_common, usage_pricing
 
 
 def _write_rollout(path: Path, lines: list) -> None:
@@ -91,7 +91,7 @@ def test_model_and_project_attribution(codex_dir):
     rec = codex_usage.all_records()[0]
     assert rec.model == "gpt-5.5"
     assert rec.session_id == "sess-2"
-    assert rec.project_key == code_usage._encode_project_key("E:\\automation\\local-llm-hub")
+    assert rec.project_key == usage_common.encode_project_key("E:\\automation\\local-llm-hub")
     assert rec.ts.tzinfo is timezone.utc
 
 
@@ -102,17 +102,15 @@ def test_empty_when_dir_absent(codex_dir):
 
 def test_codex_cost_prices_cached_subset(codex_dir):
     """Codex cost prices the non-cached input remainder + cached portion separately."""
-    from src.code_usage import _UsageRecord, _record_costs
-
     # 1M input of which 200k cached, 100k output, gpt-5.5 → $5 / $0.50 / $30 per M.
-    r = _UsageRecord(
+    r = usage_common.UsageRecord(
         session_id="s", project_key="k", project_name="k", model="gpt-5.5",
-        ts=codex_usage._parse_iso_ts("2026-06-05T20:00:00Z"),
+        ts=codex_usage.parse_iso_ts("2026-06-05T20:00:00Z"),
         input_tokens=1_000_000, output_tokens=100_000,
         cache_creation_tokens=0, cache_read_tokens=200_000,
         reasoning_output_tokens=0, vendor="codex",
     )
-    input_cost, output_cost, cache_cost = _record_costs(r)
+    input_cost, output_cost, cache_cost = usage_pricing.record_costs(r)
     # non-cached input 800k * $5/M = $4.00 ; cached 200k * $0.50/M = $0.10 ; output 100k * $30/M = $3.00
     assert input_cost == pytest.approx(4.0)
     assert cache_cost == pytest.approx(0.10)
@@ -121,17 +119,15 @@ def test_codex_cost_prices_cached_subset(codex_dir):
 
 def test_claude_fable_cost_uses_fable_family_rates():
     """claude-fable-5 records price at the Fable family rate, not $0 (falling
-    through _model_display unmatched would silently zero the cost)."""
-    from src.code_usage import _UsageRecord, _record_costs
-
+    through model_display unmatched would silently zero the cost)."""
     # 1M input, 200k of it cache reads, 100k output. Fable: $10 / $1 / $50 per M.
-    r = _UsageRecord(
+    r = usage_common.UsageRecord(
         session_id="s", project_key="k", project_name="k", model="claude-fable-5",
-        ts=codex_usage._parse_iso_ts("2026-07-09T20:00:00Z"),
+        ts=codex_usage.parse_iso_ts("2026-07-09T20:00:00Z"),
         input_tokens=1_000_000, output_tokens=100_000,
         cache_creation_tokens=0, cache_read_tokens=200_000,
     )
-    input_cost, output_cost, cache_cost = _record_costs(r)
+    input_cost, output_cost, cache_cost = usage_pricing.record_costs(r)
     assert input_cost == pytest.approx(10.0)
     assert cache_cost == pytest.approx(0.20)
     assert output_cost == pytest.approx(5.0)
@@ -143,20 +139,18 @@ def test_prev_totals_zero_filled_not_none():
     instead of hiding the comparison (issue #71)."""
     from datetime import date, datetime, timezone
 
-    from src.code_usage import _UsageRecord, _build_prev_totals
-
     today = date(2026, 6, 6)
     # Record inside the CURRENT week → the previous-week window is empty.
-    r = _UsageRecord(
+    r = usage_common.UsageRecord(
         session_id="s", project_key="k", project_name="k", model="gpt-5.5",
         ts=datetime(2026, 6, 5, 12, tzinfo=timezone.utc),
         input_tokens=10, output_tokens=1, cache_creation_tokens=0,
         cache_read_tokens=0, reasoning_output_tokens=0, vendor="codex",
     )
-    prev = _build_prev_totals([r], "week", today)
+    prev = usage_charts.build_prev_totals([r], "week", today)
     assert prev is not None and prev["requests"] == 0
     # All-time still omits the comparison.
-    assert _build_prev_totals([r], "all", today) is None
+    assert usage_charts.build_prev_totals([r], "all", today) is None
 
 
 def test_summary_by_vendor_merges(codex_dir, monkeypatch):

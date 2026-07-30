@@ -41,7 +41,7 @@ flowchart TB
     CLAUDECLI["claude_cli.py\nsubprocess.run claude -p"]
     GEMINICLI["gemini_cli.py\nConPTY (pywinpty) -> agy"]
     OAIUP["openai_upstream.py\nhttpx -> llama-server /v1"]
-    AUDIOR["server_audio.py\n/v1/audio/* proxy"]
+    AUDIOR["server_audio_asr.py + server_audio_tts.py\n/v1/audio/* proxy (#451 split)"]
     IMAGESR["server_images.py\n/v1/images/* proxy"]
   end
   CHATT -->|backend=claude| CLAUDECLI

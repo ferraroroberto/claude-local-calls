@@ -6,7 +6,7 @@ process (``agentsview serve``, default ``http://127.0.0.1:8080``), never
 started or managed by the hub (issue #280).  It indexes 40+ coding-agent
 session formats (including Gemini/``agy``, whose protobuf storage #279
 declined to reverse-engineer) and exposes a REST API; this module polls that
-API and emits records in the shared ``_UsageRecord`` shape so they flow
+API and emits records in the shared ``UsageRecord`` shape so they flow
 through the same Code-tab summary builder as native data.
 
 Scope guard: only the agents in the curated ``_AGENT_VENDOR_MAP`` are fetched
@@ -47,11 +47,11 @@ from typing import Dict, List, Optional
 
 import httpx
 
-from src.code_usage import (
-    _UsageRecord,
-    _encode_project_key,
-    _parse_iso_ts,
-    _project_pretty,
+from src.usage_common import (
+    UsageRecord,
+    encode_project_key,
+    parse_iso_ts,
+    project_pretty,
 )
 
 _log = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ def _base_url() -> str:
 
 @dataclass
 class _Snapshot:
-    records: List[_UsageRecord] = field(default_factory=list)
+    records: List[UsageRecord] = field(default_factory=list)
     vendors: List[str] = field(default_factory=list)  # sorted, non-native only
     reachable: bool = False
     error: str = ""
@@ -115,7 +115,7 @@ _refresh_in_flight = False
 _was_reachable: Optional[bool] = None  # transition-only logging
 # session_id -> records; completed sessions are immutable so this only grows
 # (bounded by _MAX_SESSIONS_PER_AGENT per agent).
-_session_cache: Dict[str, List[_UsageRecord]] = {}
+_session_cache: Dict[str, List[UsageRecord]] = {}
 
 
 def _reset_for_tests() -> None:
@@ -133,7 +133,7 @@ def _reset_for_tests() -> None:
 # ---------------------------------------------------------------------------
 
 
-def all_records() -> List[_UsageRecord]:
+def all_records() -> List[UsageRecord]:
     """Return the current snapshot's records; kick a background refresh if
     stale.  Never blocks, never raises."""
     _kick_refresh_if_stale()
@@ -258,7 +258,7 @@ def _refresh() -> None:
         _set_unreachable(str(exc))
         return
 
-    records: List[_UsageRecord] = []
+    records: List[UsageRecord] = []
     for recs in _session_cache.values():
         records.extend(recs)
 
@@ -346,7 +346,7 @@ def _fetch_agent_sessions(client: httpx.Client, agent: str) -> None:
             if not sid:
                 continue
             seen += 1
-            ts = _parse_iso_ts(
+            ts = parse_iso_ts(
                 sess.get("startedAt") or sess.get("started_at") or sess.get("date")
             )
             if sid in _session_cache and ts < active_since:
@@ -378,8 +378,8 @@ def _project_fields(raw_project: Optional[str], agent: str) -> tuple:
         return agent, "(unknown)"
     looks_like_path = (":\\" in raw) or ("/" in raw) or ("\\" in raw)
     if looks_like_path:
-        key = _encode_project_key(raw)
-        return key, _project_pretty(key)
+        key = encode_project_key(raw)
+        return key, project_pretty(key)
     return raw, raw
 
 
@@ -392,8 +392,8 @@ def _int(value: object) -> int:
 
 def _records_for_session(
     agent: str, session_id: str, sess: dict, usage: dict
-) -> List[_UsageRecord]:
-    """Synthesize ``_UsageRecord`` rows for one session.
+) -> List[UsageRecord]:
+    """Synthesize ``UsageRecord`` rows for one session.
 
     Preferred: one record per breakdown row (per-call granularity).  Fallback
     when breakdown rows are absent or carry no model: a single session-level
@@ -403,7 +403,7 @@ def _records_for_session(
     the first record only, so totals are exact and never double-counted.
     """
     vendor = _AGENT_VENDOR_MAP.get(agent, agent)
-    ts = _parse_iso_ts(
+    ts = parse_iso_ts(
         sess.get("startedAt") or sess.get("started_at") or sess.get("date")
     )
     project_key, project_name = _project_fields(sess.get("project"), agent)
@@ -412,7 +412,7 @@ def _records_for_session(
     fallback_model = str(models[0]) if models else "unknown"
 
     rows = usage.get("breakdown") or []
-    records: List[_UsageRecord] = []
+    records: List[UsageRecord] = []
     row_costs_present = any(r.get("cost_usd") for r in rows if isinstance(r, dict))
     for row in rows:
         if not isinstance(row, dict):
@@ -423,14 +423,14 @@ def _records_for_session(
         if not model:
             continue
         records.append(
-            _UsageRecord(
+            UsageRecord(
                 session_id=session_id,
                 project_key=project_key,
                 project_name=project_name,
                 model=model,
                 # Rows carry a real per-call timestamp (verified v0.37.5);
                 # fall back to the session start when absent.
-                ts=_parse_iso_ts(row["timestamp"]) if row.get("timestamp") else ts,
+                ts=parse_iso_ts(row["timestamp"]) if row.get("timestamp") else ts,
                 input_tokens=_int(row.get("input_tokens")),
                 output_tokens=_int(row.get("output_tokens")),
                 cache_creation_tokens=_int(row.get("cache_creation_input_tokens")),
@@ -447,7 +447,7 @@ def _records_for_session(
     # Session-level fallback (no usable breakdown). Zero-token, cost-only
     # records are valid — no fabricated numbers.
     return [
-        _UsageRecord(
+        UsageRecord(
             session_id=session_id,
             project_key=project_key,
             project_name=project_name,

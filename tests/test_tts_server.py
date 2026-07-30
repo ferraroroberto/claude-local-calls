@@ -15,7 +15,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from src import host_profile, model_registry, server as server_mod, server_audio, tts_server
+from src import host_profile, model_registry, server as server_mod, server_audio_tts, tts_server
 from src.tts_engines import KokoroEngine, OrpheusEngine, PiperEngine, SpeechRequest
 
 
@@ -380,7 +380,7 @@ def test_hub_forwards_exact_spanish_speech_payload(monkeypatch):
             captured.update(kwargs)
             return _SpeechUpstreamResponse()
 
-    monkeypatch.setattr(server_audio, "get_async_client", lambda: _FakeClient())
+    monkeypatch.setattr(server_audio_tts, "get_async_client", lambda: _FakeClient())
     payload = {
         "model": "kokoro-tts",
         "input": "Hola, esta es una prueba.",

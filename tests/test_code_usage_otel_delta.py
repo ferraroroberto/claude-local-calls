@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from src import claude_code_otel, code_usage
-from src.code_usage import _UsageRecord
+from src.usage_common import UsageRecord
 
 
 def _otel_rows(monkeypatch, rows):
@@ -23,7 +23,7 @@ def _otel_rows(monkeypatch, rows):
 
 
 def _jsonl_rec(day: str, model: str = "claude-fable-5", inp: int = 0, out: int = 0):
-    return _UsageRecord(
+    return UsageRecord(
         session_id="s1",
         project_key="E--automation-demo",
         project_name="demo",

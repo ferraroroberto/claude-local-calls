@@ -1,6 +1,6 @@
 """Host-side GitHub Copilot usage parser (issue #231).
 
-Two independent local sources feed the shared ``_UsageRecord`` shape (tagged
+Two independent local sources feed the shared ``UsageRecord`` shape (tagged
 ``vendor="copilot"``), so both flow through the same Code-tab summary builder
 as Claude and Codex data:
 
@@ -48,13 +48,13 @@ from urllib.parse import unquote, urlparse
 
 import yaml
 
-from src.code_usage import (
-    _FileStats,
-    _UsageRecord,
-    _encode_project_key,
-    _load_cached,
-    _parse_iso_ts,
-    _project_pretty,
+from src.usage_common import (
+    FileStats,
+    UsageRecord,
+    encode_project_key,
+    load_cached,
+    parse_iso_ts,
+    project_pretty,
 )
 
 _log = logging.getLogger(__name__)
@@ -88,8 +88,8 @@ else:
 _VSCODE_REPLAY_FIELDS = {"result", "copilotCredits", "promptTokens", "completionTokens"}
 
 # File-level mtime caches (module-level singletons), independent of Claude/Codex.
-_cli_file_cache: Dict[str, _FileStats] = {}
-_vscode_file_cache: Dict[str, _FileStats] = {}
+_cli_file_cache: Dict[str, FileStats] = {}
+_vscode_file_cache: Dict[str, FileStats] = {}
 _vscode_workspace_cache: Dict[str, Optional[str]] = {}
 
 
@@ -110,16 +110,16 @@ def _read_workspace_cwd(session_dir: Path) -> Optional[str]:
     return None
 
 
-def _parse_cli_events_file(path: Path, cwd: Optional[str]) -> List[_UsageRecord]:
+def _parse_cli_events_file(path: Path, cwd: Optional[str]) -> List[UsageRecord]:
     """Parse one ``events.jsonl`` and return one record per model used.
 
     Session-granular, not per-turn: the CLI only exposes cumulative
     per-model totals at ``session.shutdown``, not a per-request breakdown.
     """
-    key = _encode_project_key(cwd) if cwd else "copilot"
-    project_name = _project_pretty(key) if cwd else "(unknown)"
+    key = encode_project_key(cwd) if cwd else "copilot"
+    project_name = project_pretty(key) if cwd else "(unknown)"
 
-    records: List[_UsageRecord] = []
+    records: List[UsageRecord] = []
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -135,7 +135,7 @@ def _parse_cli_events_file(path: Path, cwd: Optional[str]) -> List[_UsageRecord]
 
                 data = obj.get("data") or {}
                 session_id = data.get("sessionId") or path.parent.name
-                ts = _parse_iso_ts(obj.get("timestamp"))
+                ts = parse_iso_ts(obj.get("timestamp"))
                 model_metrics = data.get("modelMetrics") or {}
                 for model, metrics in model_metrics.items():
                     if not isinstance(metrics, dict):
@@ -143,7 +143,7 @@ def _parse_cli_events_file(path: Path, cwd: Optional[str]) -> List[_UsageRecord]
                     usage = metrics.get("usage") or {}
                     nano_aiu = metrics.get("totalNanoAiu") or 0
                     records.append(
-                        _UsageRecord(
+                        UsageRecord(
                             session_id=session_id,
                             project_key=key,
                             project_name=project_name,
@@ -163,13 +163,13 @@ def _parse_cli_events_file(path: Path, cwd: Optional[str]) -> List[_UsageRecord]
     return records
 
 
-def _load_cli_events(path: Path, cwd: Optional[str]) -> List[_UsageRecord]:
-    return _load_cached(path, _cli_file_cache, lambda p: _parse_cli_events_file(p, cwd))
+def _load_cli_events(path: Path, cwd: Optional[str]) -> List[UsageRecord]:
+    return load_cached(path, _cli_file_cache, lambda p: _parse_cli_events_file(p, cwd))
 
 
-def _cli_records() -> List[_UsageRecord]:
+def _cli_records() -> List[UsageRecord]:
     """Scan all Copilot CLI session-state dirs and return every usage record."""
-    records: List[_UsageRecord] = []
+    records: List[UsageRecord] = []
 
     if not _CLI_SESSION_STATE_DIR.exists():
         return records
@@ -236,7 +236,7 @@ def _read_workspace_project_key(hash_dir: Path) -> Optional[str]:
         if isinstance(uri, str):
             path = _decode_vscode_project_path(uri)
             if path:
-                project_key = _encode_project_key(path)
+                project_key = encode_project_key(path)
 
     _vscode_workspace_cache[cache_key] = project_key
     return project_key
@@ -284,9 +284,9 @@ def _resolved_model_from_request(req: dict) -> str:
     return "unknown"
 
 
-def _parse_vscode_chat_file(path: Path, project_key: Optional[str]) -> List[_UsageRecord]:
+def _parse_vscode_chat_file(path: Path, project_key: Optional[str]) -> List[UsageRecord]:
     key = project_key or "vscode"
-    project_name = _project_pretty(key) if project_key else "(unknown)"
+    project_name = project_pretty(key) if project_key else "(unknown)"
 
     lines: List[dict] = []
     try:
@@ -303,7 +303,7 @@ def _parse_vscode_chat_file(path: Path, project_key: Optional[str]) -> List[_Usa
         _log.warning("⚠️ copilot_usage: cannot read %s: %s", path, exc)
         return []
 
-    records: List[_UsageRecord] = []
+    records: List[UsageRecord] = []
     for req in _replay_vscode_requests(lines):
         credits = req.get("copilotCredits")
         if credits is None:
@@ -315,7 +315,7 @@ def _parse_vscode_chat_file(path: Path, project_key: Optional[str]) -> List[_Usa
             ts = datetime.now(tz=timezone.utc)
 
         records.append(
-            _UsageRecord(
+            UsageRecord(
                 session_id=req.get("requestId") or path.stem,
                 project_key=key,
                 project_name=project_name,
@@ -332,15 +332,15 @@ def _parse_vscode_chat_file(path: Path, project_key: Optional[str]) -> List[_Usa
     return records
 
 
-def _load_vscode_chat_file(path: Path, project_key: Optional[str]) -> List[_UsageRecord]:
-    return _load_cached(
+def _load_vscode_chat_file(path: Path, project_key: Optional[str]) -> List[UsageRecord]:
+    return load_cached(
         path, _vscode_file_cache, lambda p: _parse_vscode_chat_file(p, project_key)
     )
 
 
-def _vscode_records() -> List[_UsageRecord]:
+def _vscode_records() -> List[UsageRecord]:
     """Scan all VS Code Copilot Chat session logs and return usage records."""
-    records: List[_UsageRecord] = []
+    records: List[UsageRecord] = []
 
     if not _VSCODE_WORKSPACE_STORAGE_DIR.exists():
         return records
@@ -373,6 +373,6 @@ def _vscode_records() -> List[_UsageRecord]:
 # ---------------------------------------------------------------------------
 
 
-def all_records() -> List[_UsageRecord]:
+def all_records() -> List[UsageRecord]:
     """Return every Copilot usage record from both the CLI and VS Code."""
     return _cli_records() + _vscode_records()

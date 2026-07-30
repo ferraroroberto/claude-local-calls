@@ -968,7 +968,13 @@ local-llm-hub/
 │   ├── startup_profile.example.json  # template + fresh-clone default for service autostart (#265, services-only since #430)
 │   ├── startup_profile.json          # live service-autostart profile, rewritten by the admin UI (gitignored, #304)
 │   ├── fleet_maintenance.json        # live {host: {until, reason}} reconcile drain markers (gitignored, #411)
-│   └── webapp_config.json            # admin auth: bearer token, optional password, webauthn rp (gitignored)
+│   ├── webapp_config.json            # admin auth: bearer token, optional password, webauthn rp (gitignored)
+│   ├── machine_specs_example.yaml    # template for scripts/detect_machine_specs.py's real output
+│   ├── claude_pricing.json / gemini_pricing.json / openai_pricing.json  # per-model $/token
+│   │                                  #   tables for the Code-tab usage/cost parsers
+│   ├── dictionary_miner.json         # glossary-miner state (issue #94)
+│   └── transcription_glossary.json / transcription_glossary.local.sample.json  # whisper
+│                                      #   replacement-rules dictionary (issue #90)
 ├── webapp/                   # runtime data dir written by the /admin webapp
 │   ├── cloudflared.sample.yml  # sample named-tunnel config (copy to cloudflared.yml)
 │   ├── cloudflared.yml         # your own tunnel config — gitignored
@@ -978,23 +984,50 @@ local-llm-hub/
 │   └── diagnostics.db           # SQLite capture store (#315)
 ├── src/
 │   ├── server.py             # FastAPI hub (both shapes) + /admin sub-app mount
+│   ├── server_lifecycle.py   # startup/shutdown wiring + background resource sampler (#198)
+│   ├── server_otel_receiver.py  # POST /v1/metrics OTLP receiver (#68)
 │   ├── chat_translation.py   # request/response schemas, content-block extraction,
 │   │                         #   prompt flattening, per-backend dispatch (issue #245)
 │   ├── server_common.py      # model-resolution + OTel span helpers shared by
 │   │                         #   server.py / server_audio.py / server_images.py
 │   ├── server_audio.py       # /v1/audio/* proxy handlers (transcriptions, translations, speech)
+│   ├── audio_proxy.py        # shared multipart bridging for the whisper translate-proxy paths
 │   ├── server_images.py      # /v1/images/* handlers (generations, edits)
 │   ├── claude_cli.py         # subprocess wrapper around `claude -p`
 │   ├── gemini_cli.py         # Antigravity CLI (`agy`) wrapper via ConPTY (Google AI Pro)
 │   ├── openai_upstream.py    # httpx client + SSE think-strip pipeline
+│   ├── http_client.py        # shared pooled httpx Client/AsyncClient (skip a fresh SSL ctx per call)
 │   ├── model_registry.py     # YAML loader (resolves display_name + aliases)
+│   ├── model_failover.py     # dynamic fallback across an ordered host chain (#342)
 │   ├── config_write.py       # git-backed models.yaml placement writes: validate → ruamel
 │   │                         #   edit → config-bot commit → push + drift sync (#424)
 │   ├── startup_profile.py    # config/startup_profile.json load/save — service flags (#265, #430)
 │   ├── fleet_reconcile.py    # additive reconcile loop: wake + start registry-desired models (#353, #430)
 │   ├── fleet_maintenance.py  # config/fleet_maintenance.json load/save — reconcile drain markers (#411)
+│   ├── on_demand.py          # spawn-on-first-request / unload-when-idle model lifecycle (#422)
 │   ├── host_profile.py       # pick active host row
+│   ├── remote_proxy.py       # resolve a non-local model row's owning host + forward verbatim
+│   ├── remote_bootstrap.py   # SSH-triggered remote hub bootstrap/sync (#181) + machine power (#309/#311)
+│   ├── remote_stats.py       # remote machine liveness + stats for the Machines console (#309)
+│   ├── machine_console.py    # Machines-tab data layer: per-machine CPU/RAM/GPU/disk/uptime (#309)
+│   ├── ssh_terminal.py       # in-browser SSH terminal, reusing app-launcher's session-host PTY (#309)
+│   ├── wake_on_lan.py        # Wake-on-LAN magic-packet builder/sender (#356)
 │   ├── system_stats.py       # live RAM/CPU/GPU readings (consumed by Hub tab sparklines)
+│   ├── observability.py      # OpenTelemetry bootstrap: tracing + metrics → local Langfuse (issue #4)
+│   ├── async_fanout.py       # shared thread-safe asyncio pub/sub fan-out for SSE subscribers
+│   ├── trace_id_middleware.py  # X-Trace-Id contract: accept caller IDs in, always emit one out
+│   ├── event_loop.py         # Windows proactor-loop shim so uvicorn survives client aborts (#222)
+│   ├── build_info.py         # single source of truth for "what commit is this process running"
+│   ├── services.py           # host-side service helpers: Docker engine + Langfuse stack (#27)
+│   ├── code_usage.py         # host-side Claude Code usage parser (~/.claude/projects/*.jsonl)
+│   ├── code_usage_history.py # durable daily rollups of Code-tab usage (outlives transcript pruning)
+│   ├── claude_code_otel.py   # Claude Code OTel token/cost metrics receiver — data layer (#68)
+│   ├── codex_usage.py        # host-side Codex (OpenAI) usage parser (~/.codex/sessions/*.jsonl)
+│   ├── copilot_usage.py      # host-side GitHub Copilot usage parser (#231)
+│   ├── copilot_billing.py    # GitHub Copilot billing-API daily credits poller (#231)
+│   ├── agentsview_usage.py   # usage records from the optional external AgentsView service
+│   ├── dictionary_miner.py   # mine recent dictation transcripts for glossary suggestions (#94)
+│   ├── transcription_glossary.py  # post-process whisper transcripts through a committed glossary
 │   ├── diagnostics/          # on-demand machine diagnostics (#315) — no resident process
 │   │   ├── sampler.py            #   in-hub asyncio capture loop + opt-in scheduled snapshot
 │   │   ├── store.py              #   SQLite store (data/diagnostics.db), migrations, retention
@@ -1006,9 +1039,11 @@ local-llm-hub/
 │   │   └── settings.py           #   retention + scheduled-snapshot settings
 │   ├── install.py            # first-run checks + --fix
 │   ├── run_backend.py        # hub|qwen35_4b|gemma4_26b|whisper|… dispatcher
+│   ├── process_supervisor.py # shared subprocess start/stop lifecycle workflow (hub + model backends)
 │   ├── server_process.py     # hub Popen + ownership / adopt-or-spawn (used by the tray)
 │   ├── backend_process.py    # per-model Popen (llama-server + whisper-server);
 │   │                         #   stdout/stderr → data/logs/backend-<id>.log (child-owned)
+│   ├── parakeet_server.py    # OpenAI-shape ASR server wrapping the FluidAudio Parakeet CoreML worker
 │   ├── whisper_translate_proxy.py  # FastAPI shim for optional lazy-load mode
 │   ├── tts_server.py            # FastAPI shim for /v1/audio/speech (engine: tts-server)
 │   ├── tts_engines/             # TTS engines: piper + chatterbox + orpheus + kokoro
@@ -1020,21 +1055,27 @@ local-llm-hub/
 │   ├── webauthn_gate.py      # passkey gate (optional — needs `webauthn` package)
 │   ├── static_versioning.py  # ?v=<hash> stamping for /admin/static assets
 │   ├── hub_log.py            # in-memory log ring buffer (admin Hub tab streams it)
-│   └── hub_observability.py  # live request ring, per-backend counters, SSE fan-out
+│   ├── hub_observability.py  # live request ring, per-backend counters, SSE fan-out
+│   └── _respawn_watchdog.py  # detached watchdog for the hub's admin-triggered restart (#198)
 ├── app_web/                  # FastAPI sub-app at /admin (HTML/JS SPA — no bundler)
 │   ├── server.py             #   create_app() — middleware, routers, static mount
 │   ├── middleware.py         #   bearer-token gate (loopback bypasses)
+│   ├── admin_forward.py      #   forward a request into the /admin sub-app in-process
 │   ├── routers/              #   misc / version / auth / webauthn / hub / models /
-│   │                         #   startup_profile / fleet_placement / roles / playground /
-│   │                         #   services / telemetry / code_usage / glossary /
-│   │                         #   hosts / machines / diagnostics
+│   │                         #   startup_profile / fleet_placement / fleet_maintenance /
+│   │                         #   roles / playground / services / telemetry / code_usage /
+│   │                         #   glossary / hosts / machines / diagnostics
 │   └── static/               #   index.html + main.js + state.js + tabs.js + api.js +
 │                             #   hub.js + models.js + startup.js + fleet_placement.js +
-│                             #   playground.js + styles.css +
+│                             #   playground.js + code_usage.js/.css + diagnostics.js +
+│                             #   glossary.js + machines.js/.css + machines_terminal.js +
+│                             #   roles_card.js + telemetry.js/.css + styles.css +
 │                             #   manifest.webmanifest + icon-*.png/favicon.ico (generated
 │                             #   by scripts/gen_icons.py, committed)
-│       └── _vendored/icons/  #   Lucide icon sprite + icons.js helper (vendored from
-│                             #   project-scaffolding; the SPA's UI glyphs per design.md)
+│       └── _vendored/        #   project-scaffolding components: button / card /
+│                             #   disclosure / empty-state / icons (Lucide sprite) /
+│                             #   modal / nav / switch / xterm — SPA UI glyphs +
+│                             #   primitives per design.md
 ├── tray/                     # Windows system-tray launcher (silent pythonw)
 │   ├── tray.py               #   single-file pystray + hub lifecycle owner
 │   ├── icon.py               #   Lucide hub glyph (share-2), rendered via resvg,
@@ -1042,6 +1083,8 @@ local-llm-hub/
 │   ├── single_instance.py    #   .tray.pid lock validated with psutil
 │   └── __main__.py           #   `python -m tray` entry, writes one-shot crash log
 ├── scripts/
+│   ├── _lib.py                # shared download/extract/flatten helpers for the two
+│   │                         #   vendor-binary install scripts (#195)
 │   ├── smoke_test.py
 │   ├── gen_icons.py          # thin caller onto project-scaffolding's shared brand_gen.py (hub master)
 │   ├── bench_orpheus.py      # measure Orpheus llama-server throughput (tok/s, e2e)
@@ -1055,9 +1098,11 @@ local-llm-hub/
 │   └── verify-before-ship.ps1    # byte-compile + pytest + Playwright on Chromium
 ├── assets/                   # generated by scripts/gen_icons.py, committed
 │   └── stream-deck/local-llm-hub-144.png  # Elgato Stream Deck button
-├── tests/                    # test_server / test_router / test_model_registry /
-│   │                         # test_install / test_streaming
-│   └── e2e/                  # Playwright smoke tests (Chromium)
+├── tests/                    # ~70 pytest unit/integration modules — one `test_*.py`
+│   │                         #   per router/service (test_server, test_router,
+│   │                         #   test_model_registry, test_install, test_streaming, …)
+│   └── e2e/                  # Playwright smoke tests (Chromium): tab-level coverage
+│                             #   for Code Usage, Fleet Placement, Machines, Roles, Telemetry
 ├── .github/workflows/
 │   └── e2e.yml               # CI: unit tests + e2e gate on windows-latest
 ├── vendor/
@@ -1071,14 +1116,31 @@ local-llm-hub/
 │                             #   plus any demoted candidates if brought up ad-hoc
 └── docs/
     ├── project-structure.md
-    ├── model-comparison.md
+    ├── architecture.mmd          # hand-authored internal-structure diagram (CLAUDE.md-bound, same-PR upkeep)
+    ├── model-comparison.md       # per-model specs, quantisation, docs links
     ├── diagnostics.md            # on-demand machine diagnostics (#315)
     ├── machines.md               # fleet machine inventory + Tailscale identities (#309/#323)
     ├── whisper-asr.md            # whisper STT backend: glossary, boosting, tuning
+    ├── whisper-turbo-vs-large-v3.md  # whisper model-size decision rationale
+    ├── voice-benchmark.md        # cross-host STT+TTS placement benchmark (#343)
+    ├── parakeet-asr-evaluation.md    # Parakeet CoreML ASR spikes (#123/#138)
     ├── add-tts.md                # how the TTS backend (/v1/audio/speech) slotted in
     ├── image-generation.md       # Imagen via agy → /v1/images/generations
+    ├── gemini-agy-backend.md     # agy (Antigravity CLI) backend reference
+    ├── glm-performance-assessment.md / glm-5.2-evaluation.md  # local-model benchmarks
+    ├── orpheus-throughput.md     # Orpheus llama-server throughput bench
+    ├── code-usage-agentsview.md  # Code-tab usage parsing + the optional AgentsView source
+    ├── clients-telemetry-contract.md  # X-Trace-Id / OTel contract clients must follow
+    ├── telemetry-langfuse.md     # Langfuse OTel stack setup
+    ├── fleet-maintenance.md      # reconcile drain markers (#411)
+    ├── ci-e2e-decision.md        # why CI runs pytest + Playwright on windows-latest
+    ├── frontier-workflow.md      # bi-weekly refresh + /swap-model workflow
+    ├── webapp-architecture-notes.md / webapp-design-language.md  # admin SPA structure + design notes
     ├── playbook-cli-backend-migration.md  # reusable method when a vendor CLI changes
+    ├── system-specs/             # detect_machine_specs.py output template (gitignored real output)
+    │   └── system-specs.example.md
     └── frontier/                 # bi-weekly efficient-frontier research (brief lives in the skill)
+        ├── local-findings.md     #   durable cross-run findings that survive a run's own report
         └── runs/
             ├── LATEST            #   flat file containing the latest run date
             └── <YYYY-MM-DD>/     #   one dir per run
@@ -1362,21 +1424,33 @@ use it.
 
 3. **First run on Windows:** the firewall will prompt to allow Python
    through. Accept on **Private** networks only — never Public.
-4. **Point the remote client at the LAN URL:**
+4. **Point the remote client at the LAN URL**, with the bearer token
+   from `config/webapp_config.json` (loopback callers skip this; every
+   non-loopback caller — including a LAN client — must present it):
 
    ```python
    from anthropic import Anthropic
    client = Anthropic(
        api_key="local-dummy",
        base_url="http://192.168.1.42:8000",   # your LAN IP here
+       default_headers={"Authorization": "Bearer <token from config/webapp_config.json>"},
    )
    ```
 
-**Security caveats.** There is no authentication — anyone who can reach
-the port can spend your Claude quota and burn your GPU. Only run this
-on trusted networks (home LAN, office LAN you own). Do **not**
-port-forward it to the public internet, and do not accept the firewall
-prompt on Public networks (cafés, airports, hotel Wi-Fi).
+**Security caveats.** The hub is **not** unauthenticated: loopback
+callers bypass auth, but `ParentBearerTokenMiddleware`
+(`app_web/middleware.py`) gates every non-loopback caller — including
+`/v1/messages` and `/v1/chat/completions`, not just `/admin` — behind
+the bearer token generated on first tray boot and persisted to
+`config/webapp_config.json` (see "Cloudflare tunnel" above), unless the
+caller's IP matches `extra_allowlist` in that same config (e.g. a
+Tailscale peer). Anyone on the LAN who doesn't have the token still
+can't reach it. That said, still only run this on trusted networks (home
+LAN, office LAN you own): the token lives in a plaintext local file, and
+a compromised LAN peer that reads it can spend your Claude quota and
+burn your GPU. Do **not** port-forward the hub to the public internet,
+and do not accept the firewall prompt on Public networks (cafés,
+airports, hotel Wi-Fi).
 
 ## Use it from Python
 
@@ -1781,73 +1855,11 @@ whose port isn't reachable, and reports per-model pass/fail.
 
 ## Backlog for improvement
 
-Ordered roughly by payoff for API parity / developer experience.
-
-**High value — closes real compatibility gaps**
-
-- **Streaming (SSE) on `/v1/messages`.** OpenAI-shape streaming on
-  `/v1/chat/completions` already lands.
-  Still missing: map `claude -p --output-format stream-json` and
-  llama-server's native SSE onto the Anthropic event shape
-  (`message_start`, `content_block_delta`, `message_delta`,
-  `message_stop`) so `client.messages.stream(...)` works unchanged.
-- **Tool-use round-trips for qwen/glm on the Anthropic shape.** Accept
-  `tools` + emit `tool_use`/`tool_result` content blocks, translating
-  against llama-server's OpenAI-function-calling output.
-- **Anthropic-shaped error responses.** Match
-  `{"type":"error","error":{"type":"invalid_request_error","message":"..."}}`
-  with the right status codes, so the SDK's retry / typed-exception
-  logic behaves as it would against the real API.
-- **Auth + version headers.** Accept and echo `x-api-key`,
-  `anthropic-version`, `anthropic-beta` so clients that inspect them
-  aren't surprised.
-- **`POST /v1/messages/count_tokens`.** Useful for cost estimation;
-  could shell out to a dry-run or use a tokenizer locally.
-- **Request IDs.** Add `request-id` / `x-request-id` and thread them
-  into logs for traceability.
-- **CORS.** Enable it so browser-based clients and local webapps can
-  call the hub directly.
-- **OpenAI-shape document input.** Anthropic-shape `document` blocks (PDF
-  and text/data files) already land on the `claude-*` / `gemini-*` paths —
-  see Limitations above. Still missing: document input on the OpenAI-shape
-  `/v1/chat/completions` route, which would reuse the same
-  decode-and-`--add-dir` plumbing.
-- **Multimodal local backends.** Image blocks work on the cloud routes
-  (`claude-*`, `gemini-*`); local routing is text-only until a
-  multimodal llama-server build (qwen-VL, gemma-vision) is wired in.
-
-**Medium value — fidelity and ergonomics**
-
-- **Faithful multi-turn via `claude -p --input-format stream-json`.**
-  Preserves prior assistant turns as real assistant messages rather
-  than flattening. Better cache reuse.
-- **`stop_sequences`, `temperature`, `top_p`, `top_k` passthrough** to
-  every backend. Some the CLI supports, others must be documented as
-  no-ops.
-- **Stop-reason mapping.** Normalize CLI + llama-server stop reasons
-  onto the Anthropic enum.
-- **Persistent sessions via `--resume`.** Optional `session_id` in
-  request metadata → reuse a CLI session for stateful chat with
-  proper prompt-cache hits.
-- **Metadata passthrough.** Log `metadata.user_id` and tie to request
-  IDs for per-user observability.
-- **Concurrency / process pooling for Claude.** Each request spawns a
-  subprocess (~1–2 s overhead). A small warm pool or `--resume` reuse
-  cuts p50 latency significantly.
-- **Extended thinking blocks** (`thinking: {type:"enabled", budget_tokens}`)
-  on the Claude path.
-- **MLX backend for the Mac mini.** llama.cpp-Metal works; MLX is
-  30–50 % faster for dense 9 B. Add as a new `backend: "mlx"` entry in
-  the registry with a sibling to `openai_upstream.py`.
-
-**Low value — nice-to-have**
-
-- **`/v1/messages/batches`** (batch API).
-- **Prompt-cache-control honoring** on system/message blocks.
-- **Rate-limit response headers** (`anthropic-ratelimit-*`).
-- **Auto-start enabled backends with the hub.** Deliberately not done
-  today so a 60 GB RAM model doesn't load when someone only wants
-  Claude.
+Remaining API-parity and developer-experience gaps are tracked as a
+GitHub issue, not restated here —
+[`#453`](https://github.com/ferraroroberto/local-llm-hub/issues/453)
+("Backlog: API-parity and DX improvements") carries the full, ordered
+list and stays current as entries ship.
 
 ## License
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+from ..no_window import NO_WINDOW
+
 
 def _win_kill_on_close_job():
     """Create a Windows Job Object that kills every assigned process when
@@ -94,8 +96,3 @@ def _assign_to_job(job, proc: "subprocess.Popen") -> bool:
     k32.AssignProcessToJobObject.restype = wintypes.BOOL
     k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     return bool(k32.AssignProcessToJobObject(job, int(proc._handle)))
-
-
-def _no_window_flags() -> int:
-    """Suppress console windows for native helper binaries on Windows."""
-    return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0

@@ -13,6 +13,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
+from .no_window import NO_WINDOW
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 _log = logging.getLogger(__name__)
@@ -27,9 +29,8 @@ def _resolve_git_sha() -> str:
         text=True,
         timeout=5,
         check=False,
+        creationflags=NO_WINDOW,
     )
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
         result = subprocess.run(cmd, **kwargs)
     except (OSError, subprocess.SubprocessError) as exc:

@@ -43,6 +43,7 @@ import yaml
 
 from src.host_profile import CONFIG_PATH, hub_port
 from src.model_registry import Model, local_models
+from src.no_window import NO_WINDOW
 from src.server_process import WIN_NEW_GROUP
 from src.webapp_config import append_auth_token, ensure_auth_token, load_webapp_config
 
@@ -631,7 +632,7 @@ def _set_clipboard(text: str) -> None:
     if sys.platform == "win32":
         # Avoid pyperclip dep — invoke clip.exe directly.
         p = subprocess.Popen(
-            ["clip"], stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW,
+            ["clip"], stdin=subprocess.PIPE, creationflags=NO_WINDOW,
         )
         p.communicate(input=text.encode("utf-16le"))
         return

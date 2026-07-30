@@ -16,6 +16,8 @@ from typing import Optional
 
 import psutil
 
+from .no_window import NO_WINDOW
+
 logger = logging.getLogger(__name__)
 
 _NVIDIA_SMI_TIMEOUT_S = 3.0
@@ -90,7 +92,7 @@ def gpu_stats() -> list[dict[str, Optional[float]]]:
             text=True,
             timeout=_NVIDIA_SMI_TIMEOUT_S,
             check=True,
-            creationflags=_no_window_flag(),
+            creationflags=NO_WINDOW,
         )
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
         logger.debug("nvidia-smi unavailable: %s", exc)
@@ -125,8 +127,3 @@ def _to_float(raw: str) -> Optional[float]:
         return None
 
 
-def _no_window_flag() -> int:
-    """CREATE_NO_WINDOW on Windows so nvidia-smi doesn't flash a console."""
-    if sys.platform == "win32":
-        return 0x08000000
-    return 0

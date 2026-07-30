@@ -36,7 +36,11 @@ def is_alive(pid: int) -> bool:
     try:
         if sys.platform == "win32":
             r = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True
+                ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True,
+                # Inline ternary, not src.no_window.NO_WINDOW — this module is
+                # deliberately stdlib-only (see module docstring), it can't
+                # assume any other src.* module still imports cleanly.
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
             return str(pid) in r.stdout
         os.kill(pid, 0)

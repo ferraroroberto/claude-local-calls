@@ -23,7 +23,19 @@ from typing import Any, Optional
 import psutil
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _lib import no_window_flags  # noqa: E402
+
 logger = logging.getLogger("detect_machine_specs")
+
+# UTF-8 stdout so emoji log lines don't throw under a captured/redirected run
+# on Windows (cp1252 fallback otherwise raises UnicodeEncodeError) — same
+# guard as scripts/bench_voice.py and scripts/bench_orpheus.py.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+except Exception:  # noqa: BLE001
+    pass
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = REPO_ROOT / "config" / "machine_specs.yaml"
@@ -74,6 +86,7 @@ def _cpu_model_windows() -> str:
             [POWERSHELL_EXE, "-NoProfile", "-Command",
              "(Get-CimInstance Win32_Processor | Select-Object -First 1).Name"],
             capture_output=True, text=True, timeout=15, check=True,
+            creationflags=no_window_flags(),
         )
         return out.stdout.strip()
     except (subprocess.SubprocessError, FileNotFoundError):
@@ -112,6 +125,7 @@ def _gpus_via_nvidia_smi() -> list[dict[str, Any]]:
              "--query-gpu=name,memory.total,driver_version,compute_cap",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=15, check=True,
+            creationflags=no_window_flags(),
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return []
@@ -145,6 +159,7 @@ def _gpus_via_windows_cim() -> list[dict[str, Any]]:
              "Select-Object Name,AdapterRAM,DriverVersion | "
              "ConvertTo-Json -Compress"],
             capture_output=True, text=True, timeout=15, check=True,
+            creationflags=no_window_flags(),
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return []
@@ -193,6 +208,7 @@ def _storage_windows() -> list[dict[str, Any]]:
              "Select-Object Model,Size,MediaType | "
              "ConvertTo-Json -Compress"],
             capture_output=True, text=True, timeout=15, check=True,
+            creationflags=no_window_flags(),
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return []
@@ -224,6 +240,7 @@ def _storage_linux() -> list[dict[str, Any]]:
         out = subprocess.run(
             ["lsblk", "-J", "-b", "-d", "-o", "NAME,SIZE,MODEL,ROTA"],
             capture_output=True, text=True, timeout=15, check=True,
+            creationflags=no_window_flags(),
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return []

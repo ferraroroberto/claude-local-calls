@@ -21,8 +21,12 @@ Machines tab.
     from app-launcher's session-host to the browser (Step 3).
 
 The read-only probes are loopback-bypass-safe like the other admin reads;
-the power actions and the terminal proxy ride the normal auth (they trigger
-real remote/host actions), matching ``hosts.py``'s bootstrap/sync stance.
+the power actions ride the normal bearer-token middleware (they trigger real
+remote/host actions), matching ``hosts.py``'s bootstrap/sync stance. The
+terminal proxy applies the *same* rules but has to do it in-route via
+``middleware.authorize_websocket``: the middleware is a
+``BaseHTTPMiddleware`` and so never runs for a ``websocket``-scope
+connection.
 """
 
 from __future__ import annotations
@@ -38,6 +42,8 @@ from starlette.responses import Response
 from src import machine_console, remote_bootstrap, ssh_terminal
 from src.host_profile import get_host, resolve
 from src.wake_on_lan import WakeOnLanError, send_wake
+
+from ..middleware import authorize_websocket
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -138,15 +144,35 @@ async def terminal_status() -> Dict[str, Any]:
     return await ssh_terminal.terminal_status()
 
 
+def _admin_token_getter(websocket: WebSocket):
+    """Read the admin token off the sub-app's state, matching the accessor
+    ``app_web/server.py`` hands :class:`BearerTokenMiddleware`. Deferred to
+    call time (not handshake time) because ``webapp_config`` is reloaded on
+    the app's state, so a cached value would go stale."""
+    return lambda: getattr(
+        getattr(websocket.app.state, "webapp_config", None), "auth_token", ""
+    )
+
+
 @router.websocket("/api/machines/{host_id}/terminal")
 async def machine_terminal(websocket: WebSocket, host_id: str) -> None:
     """Proxy an ``ssh <user>@<host>`` PTY session (app-launcher's session-
     host) to the browser (#309, Step 3).
 
+    The handshake is gated *before* ``accept()`` by
+    ``middleware.authorize_websocket`` — ``BaseHTTPMiddleware`` (and so
+    ``BearerTokenMiddleware``) only runs for ``http`` scope and never sees a
+    websocket, so this route carries the check itself rather than inheriting
+    it. Same trust rules as every other admin route (loopback bypass,
+    proxied-loopback detection, ``extra_allowlist``, then bearer header or
+    ``?token=`` — which is what the SPA already appends).
+
     Creates the session upstream, then pumps frames both ways until either
     side closes. On any setup failure the socket is accepted just long
     enough to send one JSON error frame, so the SPA can show why the
     terminal didn't open instead of a silent close."""
+    if not await authorize_websocket(websocket, _admin_token_getter(websocket)):
+        return
     await websocket.accept()
     host = get_host(host_id)
     if host is None or not host.can_ssh:

@@ -177,6 +177,24 @@ def _load_cached(
     return entries
 
 
+def _parse_iso_ts(raw: Optional[str]) -> datetime:
+    """Parse an ISO-8601 timestamp (bare, ``Z``-suffixed, or offset-aware);
+    fall back to ``now()`` on any failure.
+
+    Shared by the Claude/Codex/Copilot/AgentsView usage parsers — each used
+    to hand-roll its own copy of this with a *different* exception set and a
+    different ``Z`` normalization, so the same malformed timestamp was
+    handled differently depending on which vendor wrote it. ``replace("Z",
+    "+00:00")`` (rather than ``rstrip("Z")``) also correctly preserves a
+    non-UTC offset already present in the string instead of overwriting it.
+    """
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return datetime.now(tz=timezone.utc)
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
 def _encode_project_key(path: str) -> str:
     """Encode a raw filesystem path into the project-key form Claude Code uses.
 
@@ -235,13 +253,7 @@ def _parse_jsonl_file(path: Path, project_key: str) -> List[_UsageRecord]:
                     continue
 
                 # Timestamp — fall back gracefully.
-                ts_raw = obj.get("timestamp", "")
-                try:
-                    ts = datetime.fromisoformat(ts_raw.rstrip("Z")).replace(
-                        tzinfo=timezone.utc
-                    )
-                except (ValueError, AttributeError):
-                    ts = datetime.now(tz=timezone.utc)
+                ts = _parse_iso_ts(obj.get("timestamp", ""))
 
                 model = msg.get("model") or "unknown"
                 session_id = obj.get("sessionId") or str(path.stem)

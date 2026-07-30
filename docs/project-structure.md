@@ -262,8 +262,8 @@ the envelope into OpenAI shape; for the local llama-server backends
   - `python -m src.run_backend qwen35_4b` / `gemma4_26b` / `whisper`
     / `whisper_translate` / `chatterbox` (active rotation), plus
     `orpheus` (on-demand TTS) and `qwen` / `glm` / `gemma4_e4b`
-    (ad-hoc / fallback) (or the matching
-    `launchers/run_*.bat` / `.sh`) — starts the matching
+    (ad-hoc / fallback) (or `launchers/run_model.bat` / `.sh <id>`,
+    the parameterized launcher — #448) — starts the matching
     `llama-server` / `whisper-server` / TTS-shim child with args from
     `models.yaml`. The `whisper_translate` slot uses the
     `whisper-server` engine (eager-load, medium on CPU, ~1.5 GB RAM).

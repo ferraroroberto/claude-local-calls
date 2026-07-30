@@ -53,6 +53,7 @@ from src.code_usage import (
     _UsageRecord,
     _encode_project_key,
     _load_cached,
+    _parse_iso_ts,
     _project_pretty,
 )
 
@@ -97,14 +98,6 @@ _vscode_workspace_cache: Dict[str, Optional[str]] = {}
 # ---------------------------------------------------------------------------
 
 
-def _parse_ts(raw: Optional[str]) -> datetime:
-    """Parse an ISO-8601 event timestamp; fall back to now() on failure."""
-    try:
-        return datetime.fromisoformat(raw.rstrip("Z")).replace(tzinfo=timezone.utc)
-    except (ValueError, AttributeError, TypeError):
-        return datetime.now(tz=timezone.utc)
-
-
 def _read_workspace_cwd(session_dir: Path) -> Optional[str]:
     try:
         raw = yaml.safe_load((session_dir / "workspace.yaml").read_text(encoding="utf-8"))
@@ -142,7 +135,7 @@ def _parse_cli_events_file(path: Path, cwd: Optional[str]) -> List[_UsageRecord]
 
                 data = obj.get("data") or {}
                 session_id = data.get("sessionId") or path.parent.name
-                ts = _parse_ts(obj.get("timestamp"))
+                ts = _parse_iso_ts(obj.get("timestamp"))
                 model_metrics = data.get("modelMetrics") or {}
                 for model, metrics in model_metrics.items():
                     if not isinstance(metrics, dict):

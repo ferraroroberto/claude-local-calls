@@ -1,5 +1,5 @@
 ---
-description: Interactively swap one (or more) of the active local roles to a different model. Reads the latest frontier run, asks the user what to change, and edits config/models.yaml + writes a launcher + (optionally) downloads the weights. Human-in-the-loop. Never touches the `claude` subscription path.
+description: Interactively swap one (or more) of the active local roles to a different model. Reads the latest frontier run, asks the user what to change, and edits config/models.yaml + syncs docs/tests + (optionally) downloads the weights. Human-in-the-loop. Never touches the `claude` subscription path.
 ---
 
 You are running a **manual, ad-hoc role swap** for the local LLM hub.
@@ -46,8 +46,9 @@ they want; ask. Plan-mode rules apply throughout.
   + `LOCAL_LLM_HUB_HOST`).
 - `docs/frontier/runs/LATEST` → that run's `report.md` and
   `frontier.json` for the recommendations (`shortlist`).
-- `launchers/` — list existing `run_*.bat` / `.sh` files so we can
-  template a new one consistently.
+- Nothing to inspect in `launchers/` for this — the parameterized
+  `launchers/run_model.bat` / `.sh <id>` (#448) already covers any
+  registry id; there is no per-model launcher file to write or template.
 
 ### 2. Show the current state to the user
 
@@ -100,7 +101,6 @@ Will edit config/models.yaml:
   ~ models.gemma4_e4b.aliases: ["agentic_light"] → []   (alias follows role)
   ~ models.qwen3_4b.aliases:  []  → ["agentic_light"]   (new role-holder)
   ~ hosts.tower.enabled: + qwen3_4b
-Will write launchers/run_qwen3_4b.bat, .sh
 Will run: python scripts/download_models.py --only qwen3_4b   (~3 GB)
 Will append to docs/frontier/runs/<latest>/report.md §10
 
@@ -109,9 +109,8 @@ Will sync code + docs (§5b — required for upgrade/retire):
                               diagram, autostart default, launcher list,
                               run_backend examples, Python SDK example)
   ~ docs/model-comparison.md (registry table row + role row)
-  ~ docs/project-structure.md (mermaid launcher list, models/ contents,
-                              run_backend dispatcher line, key-facts
-                              "Purpose" paragraph)
+  ~ docs/project-structure.md (models/ contents, run_backend dispatcher
+                              line, key-facts "Purpose" paragraph)
   ~ launchers/run_all.bat / .sh (add new id; keep ex-incumbent for fallback)
   ~ tests/test_router.py + tests/test_streaming.py
                              (model name + port assertion match the new role)
@@ -129,9 +128,8 @@ Get explicit user approval ("yes" / "go") before executing.
   contract — the `roles:` pointer is internal bookkeeping; both must
   flip together or the hub will keep routing `model="agentic_light"`
   to the old row.
-- Write `launchers/run_<id>.bat` and `run_<id>.sh` modeled after a
-  sibling launcher in the same family. Set the title and the python
-  invocation to the new id; everything else is boilerplate.
+- Nothing to write in `launchers/` — `run_model.bat` / `.sh <id>` (#448)
+  already covers any registry id with no per-model file needed.
 - If the user approved download: shell out to
   `& .\.venv\Scripts\python.exe scripts/download_models.py --only <id>`
   on Windows (or `./.venv/bin/python ...` on POSIX) and stream the
@@ -197,8 +195,6 @@ ex-incumbent.
 
 4. **`docs/project-structure.md`.** Carries role-bound names in
    several mermaid blocks and the "Key facts for LLM context" prose:
-   - The `launchers/` node in the **Module diagram** — add the new
-     launcher in family-grouped order.
    - The `run_backend.py` node — update the dispatcher token list to
      include the new id.
    - The `models/` node — add the new GGUF filename. Tag the
@@ -248,7 +244,6 @@ ex-incumbent.
 8. **Final grep sweep.** Re-run the audit grep from step 1. Anything
    left should be one of:
    - `docs/frontier/runs/<previous>/…` — historical, leave it
-   - the previous role-holder's launcher pair (if kept enabled)
    - explicit "fallback" / "previous role-holder" notes you just wrote
    - `config/models.yaml` rows for the previous holder (if kept)
 
@@ -295,7 +290,7 @@ confirm before stopping anything they might still be using.
      xxx)* on the same tab, or `Stop-Process -Id <pid>` as a last
      resort.
    - **Retired outright.** Same — stop it, then optionally remove
-     the launcher pair / yaml row in a follow-up.
+     the `config/models.yaml` row in a follow-up.
 
    The hub on `:8000` does **not** need to stop. `src.model_registry`
    re-reads `config/models.yaml` per request, so the new role pointer
@@ -303,12 +298,12 @@ confirm before stopping anything they might still be using.
    the user asks (and never bounce the tray — its log buffer is in-
    process and a restart loses history the user may want).
 
-3. **Start the new backend.** Run the launcher you just wrote.
+3. **Start the new backend.** Run the parameterized launcher.
    Llama-server takes 3-30 s to load the GGUF and warm up; do not
    declare it ready on the basis of the launcher having printed a
    banner.
    ```
-   # Foreground (own terminal): launchers\run_<new_id>.bat
+   # Foreground (own terminal): launchers\run_model.bat <new_id>
    # Background from this session:
    & .\.venv\Scripts\python.exe -m src.run_backend <new_id>
    ```
@@ -370,8 +365,8 @@ confirm before stopping anything they might still be using.
 
 - Re-read `config/models.yaml` and the role's row to confirm the
   pointer is correct after the live restart.
-- Confirm the new launcher pair exists and contains the right
-  `src.run_backend <id>` invocation.
+- Confirm `launchers\run_model.bat <new_id>` resolves the new row
+  (no per-model file needed — #448).
 - Summarize for the user:
   - what was running, what was stopped, what was started
   - smoke test result (passed / skipped / failed counts)
@@ -401,7 +396,8 @@ requires it.
 - Active host's `enabled:` list contains the new id
 - the new id is `startup: eager` on the intended host (when the swapped
   role should autostart, #430)
-- `launchers/run_<new_id>.bat` and `.sh` exist and reference the new id
+- `launchers/run_model.bat` / `.sh <new_id>` needs no new file — the
+  parameterized launcher (#448) already covers it
 - `launchers/run_all.{bat,sh}` knows about the new id
 - (If requested) weights downloaded to `models/`
 - `docs/frontier/runs/<latest>/report.md` §10 reflects the new
@@ -425,4 +421,4 @@ requires it.
   the ex-incumbent against the new role pointer)
 - A fresh `grep` for the old role-holder's id / display_name finds
   hits only in historical changelogs, prior frontier runs, fallback
-  notes you wrote, and (if kept enabled) its own launcher / yaml row
+  notes you wrote, and (if kept enabled) its own `config/models.yaml` row

@@ -8,7 +8,7 @@
  */
 
 import { els, state, MACHINES_POLL_MS } from './state.js';
-import { jsonApi, postJson, api, toast, escapeHtml, fmtClock, shortGpu } from './api.js';
+import { jsonApi, postJson, api, toast, escapeHtml, fmtClock, shortGpu, fmtGbValue } from './api.js';
 import { icon } from './_vendored/icons/icons.js';
 import { openMachinesTerminal, wireMachinesTerminal } from './machines_terminal.js';
 import { openDiagnostics, wireDiagnostics, refreshDiagnosticsChip } from './diagnostics.js';
@@ -82,10 +82,6 @@ function fmtUptimeHuman(seconds) {
   return d + 'd' + (remH ? ' ' + remH + 'h' : '');
 }
 
-/* Bare "X.X" (no unit suffix) for a value already in GB — distinct contract
- * from fleet_placement.js's fmtGb, which takes raw MB and returns "X.X GB"
- * with the unit baked in (design-drift audit #384). */
-function fmtGbValue(n) { return Number.isFinite(n) ? n.toFixed(1) : '—'; }
 function fmtPct(n) { return Number.isFinite(n) ? Math.round(n) + '%' : '—'; }
 
 /* Wi-Fi RSSI (dBm) -> a plain-English band (#397). Conventional Wi-Fi

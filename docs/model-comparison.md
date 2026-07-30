@@ -41,7 +41,7 @@ All rows speak the same OpenAI-compatible `POST /v1/audio/speech` shape through 
 > **Demoted candidates** (kept defined in `config/models.yaml` but
 > **not in the active rotation** — see `enabled:` for the active host):
 > `qwen3.5-9b`, `glm-4.5-air`. Bring up ad-hoc with
-> `launchers/run_qwen.bat` / `run_glm.bat` if you need them.
+> `launchers/run_model.bat qwen` / `run_model.bat glm` if you need them.
 
 \* Single-stream generation on an RTX 5060 Ti 16 GB, short
 prompts (~100 input tokens). Ranges are indicative, not a
@@ -80,8 +80,9 @@ model was still thinking.
 1. Add the model to [config/models.yaml](../config/models.yaml)
    and the relevant host's `enabled` list (see the existing
    plan docs for the pattern).
-2. Add a launcher pair in `launchers/` (`run_<id>.bat` / `.sh`) and
-   a line in `launchers/run_all.*`.
+2. Add a line for it in `launchers/run_all.*` (the parameterized
+   `launchers/run_model.bat` / `.sh <id>` already covers ad-hoc bring-up
+   for any registry id — #448 — with nothing further to write).
 3. Extend the registry test.
 4. Run `python -m src.install --fix` and verify the smoke test
    shows a pass row.

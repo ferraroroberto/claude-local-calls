@@ -107,7 +107,7 @@ def test_codex_cost_prices_cached_subset(codex_dir):
     # 1M input of which 200k cached, 100k output, gpt-5.5 → $5 / $0.50 / $30 per M.
     r = _UsageRecord(
         session_id="s", project_key="k", project_name="k", model="gpt-5.5",
-        ts=codex_usage._parse_ts("2026-06-05T20:00:00Z"),
+        ts=codex_usage._parse_iso_ts("2026-06-05T20:00:00Z"),
         input_tokens=1_000_000, output_tokens=100_000,
         cache_creation_tokens=0, cache_read_tokens=200_000,
         reasoning_output_tokens=0, vendor="codex",
@@ -127,7 +127,7 @@ def test_claude_fable_cost_uses_fable_family_rates():
     # 1M input, 200k of it cache reads, 100k output. Fable: $10 / $1 / $50 per M.
     r = _UsageRecord(
         session_id="s", project_key="k", project_name="k", model="claude-fable-5",
-        ts=codex_usage._parse_ts("2026-07-09T20:00:00Z"),
+        ts=codex_usage._parse_iso_ts("2026-07-09T20:00:00Z"),
         input_tokens=1_000_000, output_tokens=100_000,
         cache_creation_tokens=0, cache_read_tokens=200_000,
     )

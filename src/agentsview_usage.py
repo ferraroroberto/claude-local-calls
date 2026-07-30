@@ -50,6 +50,7 @@ import httpx
 from src.code_usage import (
     _UsageRecord,
     _encode_project_key,
+    _parse_iso_ts,
     _project_pretty,
 )
 
@@ -345,7 +346,7 @@ def _fetch_agent_sessions(client: httpx.Client, agent: str) -> None:
             if not sid:
                 continue
             seen += 1
-            ts = _parse_ts(
+            ts = _parse_iso_ts(
                 sess.get("startedAt") or sess.get("started_at") or sess.get("date")
             )
             if sid in _session_cache and ts < active_since:
@@ -367,15 +368,6 @@ def _fetch_session_usage(client: httpx.Client, session_id: str) -> dict:
         return {}
     resp.raise_for_status()
     return resp.json() or {}
-
-
-def _parse_ts(raw: Optional[str]) -> datetime:
-    """Parse an ISO-8601 timestamp; fall back to now() on failure."""
-    try:
-        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return datetime.now(tz=timezone.utc)
 
 
 def _project_fields(raw_project: Optional[str], agent: str) -> tuple:
@@ -411,7 +403,7 @@ def _records_for_session(
     the first record only, so totals are exact and never double-counted.
     """
     vendor = _AGENT_VENDOR_MAP.get(agent, agent)
-    ts = _parse_ts(
+    ts = _parse_iso_ts(
         sess.get("startedAt") or sess.get("started_at") or sess.get("date")
     )
     project_key, project_name = _project_fields(sess.get("project"), agent)
@@ -438,7 +430,7 @@ def _records_for_session(
                 model=model,
                 # Rows carry a real per-call timestamp (verified v0.37.5);
                 # fall back to the session start when absent.
-                ts=_parse_ts(row["timestamp"]) if row.get("timestamp") else ts,
+                ts=_parse_iso_ts(row["timestamp"]) if row.get("timestamp") else ts,
                 input_tokens=_int(row.get("input_tokens")),
                 output_tokens=_int(row.get("output_tokens")),
                 cache_creation_tokens=_int(row.get("cache_creation_input_tokens")),

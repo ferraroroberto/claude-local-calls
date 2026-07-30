@@ -32,7 +32,6 @@ import argparse
 import asyncio
 import logging
 import os
-import signal
 import subprocess
 import sys
 import threading
@@ -54,6 +53,7 @@ from .backend_process import (
 )
 from .http_client import aclose as _aclose_http, get_async_client
 from .model_registry import Model
+from .process_supervisor import ProcessSupervisor
 from .server_process import WIN_NEW_GROUP
 
 log = logging.getLogger("whisper_translate_proxy")
@@ -176,20 +176,9 @@ class _ChildSupervisor:
             self.proc = None
             return
         log.info("stopping whisper child (%s, pid=%s)", reason, proc.pid)
-        try:
-            if sys.platform == "win32":
-                try:
-                    proc.send_signal(signal.CTRL_BREAK_EVENT)
-                except Exception:
-                    pass
-            proc.terminate()
-            try:
-                proc.wait(timeout=SHUTDOWN_GRACE_S)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5.0)
-        except Exception as exc:
-            log.warning("error stopping whisper child: %s", exc)
+        ok, msg = ProcessSupervisor.stop_popen(proc, terminate_timeout=SHUTDOWN_GRACE_S, kill_timeout=5.0)
+        if not ok:
+            log.warning("error stopping whisper child: %s", msg)
         self.proc = None
 
     def touch(self) -> None:

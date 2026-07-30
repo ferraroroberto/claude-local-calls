@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -47,6 +46,7 @@ from src.code_usage import (
     _UsageRecord,
     _encode_project_key,
     _load_cached,
+    _parse_iso_ts,
     _project_pretty,
 )
 
@@ -65,14 +65,6 @@ _file_cache: Dict[str, _FileStats] = {}
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
-
-
-def _parse_ts(raw: Optional[str]) -> datetime:
-    """Parse a rollout ISO-8601 timestamp; fall back to now() on failure."""
-    try:
-        return datetime.fromisoformat(raw.rstrip("Z")).replace(tzinfo=timezone.utc)
-    except (ValueError, AttributeError):
-        return datetime.now(tz=timezone.utc)
 
 
 def _parse_rollout_file(path: Path) -> List[_UsageRecord]:
@@ -128,7 +120,7 @@ def _parse_rollout_file(path: Path) -> List[_UsageRecord]:
                                 _project_pretty(key) if cur_cwd else "(unknown)"
                             ),
                             model=cur_model,
-                            ts=_parse_ts(obj.get("timestamp")),
+                            ts=_parse_iso_ts(obj.get("timestamp")),
                             input_tokens=int(usage.get("input_tokens") or 0),
                             output_tokens=int(usage.get("output_tokens") or 0),
                             cache_creation_tokens=0,

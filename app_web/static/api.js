@@ -260,6 +260,20 @@ export function fmtBytes(n) {
   return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
 }
 
+/* MB (VRAM/RAM figure) -> compact "X.X GB" label, unit baked in. Shared by
+ * the Models fleet-editor and Machines/Placement tabs (#448 dedup — was
+ * defined verbatim in both). */
+export function fmtGb(mb) {
+  return (Number(mb || 0) / 1024).toFixed(1) + ' GB';
+}
+
+/* Bare "X.X" (no unit suffix) for a value already in GB — distinct contract
+ * from fmtGb, which takes raw MB and bakes the unit in (design-drift audit
+ * #384; #448 dedup — was defined verbatim in both Machines and Placement). */
+export function fmtGbValue(n) {
+  return Number.isFinite(n) ? n.toFixed(1) : '—';
+}
+
 export function fmtAge(ts) {
   if (!ts) return '';
   const ms = Date.now() - new Date(ts).getTime();

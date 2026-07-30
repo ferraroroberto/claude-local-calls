@@ -10,9 +10,8 @@ resilience the shim buys.
 from __future__ import annotations
 
 import asyncio
-import socket
+import subprocess
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -78,59 +77,27 @@ def test_parakeet_server_wires_loop_factory():
     _wires_loop_factory("src/parakeet_server.py")
 
 
-async def _noop_handler(reader, writer):
-    writer.close()
+def _run_event_loop_worker(mode: str) -> subprocess.CompletedProcess:
+    """Run the real-socket abort bombardment in its own process (#441).
 
-
-def _abort_connect_sync(port: int) -> None:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
-    try:
-        s.settimeout(0.5)
-        s.connect(("127.0.0.1", port))
-    except OSError:
-        pass
-    finally:
-        s.close()  # SO_LINGER(1, 0) forces an RST instead of a FIN
-
-
-async def _still_accepting(port: int) -> bool:
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", port), timeout=1.0
-        )
-        writer.close()
-        await writer.wait_closed()
-        return True
-    except (OSError, asyncio.TimeoutError):
-        return False
-
-
-async def _bombard_with_aborts(rounds: int, burst: int) -> None:
-    server = await asyncio.start_server(_noop_handler, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    try:
-        for _ in range(rounds):
-            threads = [
-                threading.Thread(target=_abort_connect_sync, args=(port,))
-                for _ in range(burst)
-            ]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-            await asyncio.sleep(0.02)
-            assert await _still_accepting(
-                port
-            ), "listener died on an aborted client connection (issue #222)"
-    finally:
-        server.close()
-        await server.wait_closed()
+    The bombardment (``tests/_event_loop_worker.py``) deliberately corrupts
+    OS-level asyncio/proactor state -- that's the whole point of the
+    proactor-loop test below. #416's original investigation into the full
+    suite's order-dependent ``asyncio.run()`` failures named this file as
+    the prime suspect for leaking that corruption into later tests sharing
+    the same pytest process; #417 fixed a different, confirmed leak but
+    never actually ruled this one in or out. Running it out-of-process means
+    whatever it perturbs dies with the subprocess instead."""
+    return subprocess.run(
+        [sys.executable, "-m", "tests._event_loop_worker", mode],
+        cwd=_REPO_ROOT, capture_output=True, text=True, timeout=60,
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="proactor-loop bug is Windows-only")
 def test_selector_loop_survives_aborted_connections():
-    asyncio.run(_bombard_with_aborts(rounds=10, burst=20), loop_factory=asyncio.SelectorEventLoop)
+    result = _run_event_loop_worker("selector")
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="proactor-loop bug is Windows-only")
@@ -138,7 +105,5 @@ def test_proactor_loop_dies_on_aborted_connections():
     """Documents the bug this issue fixes -- the shim exists because this
     fails. If a future CPython/uvicorn release fixes the proactor loop
     itself, this test (not the shim) is what should be revisited."""
-    with pytest.raises(AssertionError):
-        asyncio.run(
-            _bombard_with_aborts(rounds=10, burst=20), loop_factory=asyncio.ProactorEventLoop
-        )
+    result = _run_event_loop_worker("proactor")
+    assert result.returncode == 0, result.stdout + result.stderr

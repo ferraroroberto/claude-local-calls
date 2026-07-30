@@ -5,9 +5,13 @@ callers must present ``Authorization: Bearer <token>``, or
 ``?token=…`` on the URL (the latter is what bookmarked / shared
 URLs use; the SPA strips it from ``window.location`` on first load).
 
-WebSocket handshakes are not seen by this middleware. The /admin
-sub-app intentionally does not expose websockets — SSE is enough for
-the live-ops streams.
+WebSocket handshakes are not seen by this middleware:
+``BaseHTTPMiddleware`` only ever runs for ``http``-scope connections, so
+a ``@router.websocket(...)`` route gets no coverage from it at all. Any
+websocket route must therefore call :func:`authorize_websocket`
+explicitly before ``accept()`` — the middleware cannot do it for you.
+Most live-ops streams use SSE (plain HTTP, covered here); the Machines
+tab's terminal proxy is the one websocket route, and it calls the guard.
 """
 
 from __future__ import annotations
@@ -86,6 +90,78 @@ def _client_in_allowlist(client_host: str, allowlist: List[str]) -> bool:
     return False
 
 
+def _caller_is_trusted(
+    *,
+    client_host: str,
+    headers,
+    query_params,
+    app_state,
+    get_token,
+) -> bool:
+    """Core caller-identity decision, independent of ASGI scope type.
+
+    Shared by :func:`_authenticate` (``http`` scope, via the two
+    ``BaseHTTPMiddleware`` subclasses) and :func:`authorize_websocket`
+    (``websocket`` scope, which no middleware ever sees) so both scopes
+    resolve caller trust from exactly one implementation — a route reached
+    over a websocket must not be easier to reach than the same route over
+    HTTP. Returns ``True`` when the caller may proceed.
+
+    Every ``True`` below is an independent OR — the *order* they're checked
+    in doesn't change the outcome, only whether a token check is reached.
+    Exempt *paths* are deliberately not part of this: they're an HTTP-only
+    concern (login/static must load before a token exists), and a websocket
+    route is never exempt.
+    """
+    token = (get_token() or "").strip()
+    if not token:
+        return True
+    if client_host in LOOPBACK_HOSTS and not _is_proxied(headers):
+        return True
+    cfg = getattr(app_state, "webapp_config", None)
+    extra = getattr(cfg, "extra_allowlist", []) if cfg else []
+    if _client_in_allowlist(client_host, extra):
+        return True
+
+    presented = ""
+    auth_header = headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        presented = auth_header[7:].strip()
+    if not presented:
+        presented = query_params.get("token", "").strip()
+
+    return bool(presented and hmac.compare_digest(presented, token))
+
+
+async def authorize_websocket(websocket, get_token) -> bool:
+    """Bearer gate for a websocket handshake — call before ``accept()``.
+
+    ``BaseHTTPMiddleware`` only runs for ``http``-scope connections, so
+    :class:`BearerTokenMiddleware` never sees a websocket handshake and a
+    ``@router.websocket(...)`` route is responsible for its own check.
+    Applies the same trust rules as the HTTP path via
+    :func:`_caller_is_trusted` (loopback bypass, proxied-loopback
+    detection, ``extra_allowlist``, then ``Authorization: Bearer`` or
+    ``?token=``).
+
+    Returns ``True`` when the caller may proceed. Otherwise closes the
+    socket with 1008 (policy violation) *without* accepting it and returns
+    ``False``, so the caller should simply ``return``.
+    """
+    client_host = websocket.client.host if websocket.client else ""
+    if _caller_is_trusted(
+        client_host=client_host,
+        headers=websocket.headers,
+        query_params=websocket.query_params,
+        app_state=websocket.app.state,
+        get_token=get_token,
+    ):
+        return True
+    logger.warning("⚠️ websocket handshake refused for %s", client_host or "?")
+    await websocket.close(code=1008)
+    return False
+
+
 def _authenticate(
     request: Request,
     get_token,
@@ -100,33 +176,17 @@ def _authenticate(
 
     Returns ``None`` when the request should proceed (caller calls
     ``call_next``), or the 401 :class:`JSONResponse` to return directly
-    when it must be blocked. Every pass-through condition below is an
-    independent OR — the *order* they're checked in doesn't change the
-    outcome, only whether a token check is even reached.
+    when it must be blocked.
     """
-    client_host = request.client.host if request.client else ""
-    is_loopback = client_host in LOOPBACK_HOSTS and not _is_proxied(request.headers)
-
-    token = (get_token() or "").strip()
-    if not token:
-        return None
-    if is_loopback:
-        return None
-    cfg = getattr(request.app.state, "webapp_config", None)
-    extra = getattr(cfg, "extra_allowlist", []) if cfg else []
-    if _client_in_allowlist(client_host, extra):
-        return None
     if path in exempt_exact or any(path.startswith(p) for p in exempt_prefixes):
         return None
-
-    presented = ""
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        presented = auth_header[7:].strip()
-    if not presented:
-        presented = request.query_params.get("token", "").strip()
-
-    if presented and hmac.compare_digest(presented, token):
+    if _caller_is_trusted(
+        client_host=request.client.host if request.client else "",
+        headers=request.headers,
+        query_params=request.query_params,
+        app_state=request.app.state,
+        get_token=get_token,
+    ):
         return None
 
     return JSONResponse(

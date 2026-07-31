@@ -498,38 +498,3 @@ def get_summary(period: str = "today", vendor: str = "all") -> dict:
     if prev_totals is not None:
         result["prev_totals"] = prev_totals
     return result
-
-
-def get_today_totals_for_project(project_dir: str) -> Optional[dict]:
-    """Quick helper for the status-line script (not used by the SPA router).
-
-    ``project_dir`` is the raw filesystem path, e.g. ``E:\\automation\\local-llm-hub``.
-    Returns a dict with ``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
-    ``cache_creation_tokens``, ``requests`` for today, or ``None`` if no data.
-    """
-    # Encode the path the same way Claude Code does.
-    encoded = encode_project_key(project_dir)
-    proj_dir = _CLAUDE_PROJECTS_DIR / encoded
-    if not proj_dir.is_dir():
-        return None
-
-    today = _today_utc()
-    acc = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_creation_tokens": 0,
-        "cache_read_tokens": 0,
-        "requests": 0,
-    }
-    found = False
-    for jf in proj_dir.glob("*.jsonl"):
-        for r in _load_file(jf, encoded):
-            if r.ts.astimezone(timezone.utc).date() == today:
-                acc["input_tokens"] += r.input_tokens
-                acc["output_tokens"] += r.output_tokens
-                acc["cache_creation_tokens"] += r.cache_creation_tokens
-                acc["cache_read_tokens"] += r.cache_read_tokens
-                acc["requests"] += 1
-                found = True
-
-    return acc if found else None

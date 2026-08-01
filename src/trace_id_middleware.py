@@ -1,4 +1,4 @@
-"""X-Trace-Id contract — accept caller IDs in, always emit one out.
+"""Response header contract — X-Trace-Id, request-id, and Anthropic parity.
 
 The hub speaks the W3C ``traceparent`` standard natively (OpenTelemetry
 handles it transparently). But many small clients — voice-transcriber,
@@ -16,6 +16,23 @@ shove it in an ``X-Trace-Id`` header. This middleware bridges:
   span's trace ID (hex). Clients can read it after the call to attach
   feedback / scores later via ``POST /admin/api/trace/{id}/feedback``.
 
+On top of that contract this middleware also speaks Anthropic's header
+vocabulary (#461), because it is the one layer that sees every response —
+including the 401s and 4xx envelopes raised before any route runs:
+
+- **``request-id``** on every non-static response, aliased to the same
+  trace ID ``X-Trace-Id`` carries, so one identifier ties the client's
+  record, the hub log line, and the Langfuse trace together. When tracing
+  is off there is no span to read, so a random 128-bit ID keeps the header
+  unconditional rather than silently absent — in that mode there is no
+  ``X-Trace-Id`` for it to disagree with.
+- **``anthropic-version`` / ``anthropic-beta``**, on the Anthropic-shape
+  routes only, per :mod:`src.anthropic_headers`.
+
+``X-Trace-Id`` itself is untouched — existing clients (voice-transcriber,
+openClaw, ad-hoc scripts) read it and must keep seeing exactly what they
+saw before.
+
 Sits OUTERMOST in the middleware stack — added after
 ``instrument_fastapi_app(app)`` so it wraps the OTel layer.
 """
@@ -26,6 +43,8 @@ import logging
 import secrets
 from typing import Any, Awaitable, Callable
 
+from .anthropic_errors import is_anthropic_shape_path
+from .anthropic_headers import parity_headers
 from .observability import derive_trace_id_from_uuid
 
 logger = logging.getLogger(__name__)
@@ -35,6 +54,17 @@ logger = logging.getLogger(__name__)
 # and clutters the response shape. We still process headers on every
 # request because the cost is a dict lookup.
 _NOISE_PREFIXES = ("/admin/static",)
+
+# Paths whose request-id is worth a log line. The whole point of emitting
+# the header is that a caller can quote it in a support question and the
+# request be findable — so the API surface is logged and the admin SPA's
+# own polling is not.
+_LOGGED_PREFIXES = ("/v1/",)
+
+
+def _fallback_request_id() -> str:
+    """A trace-ID-shaped random ID, for when OTel is disabled."""
+    return format(secrets.randbits(128), "032x")
 
 
 def _trace_id_hex_from_current_span() -> str:
@@ -75,17 +105,36 @@ class TraceIdHeaderMiddleware:
             await self.app(scope, receive, send)
             return
 
+        path = scope.get("path", "") or ""
+        method = scope.get("method", "?")
+        is_noise = any(path.startswith(p) for p in _NOISE_PREFIXES)
+        request_headers = list(scope.get("headers") or [])
         scope = self._maybe_synthesize_traceparent(scope)
 
         async def send_wrapper(message: dict) -> None:
             if message.get("type") == "http.response.start":
+                headers = list(message.get("headers", []))
+                # Never clobber a header the handler set itself.
+                present = {name.lower() for name, _ in headers}
                 tid_hex = _trace_id_hex_from_current_span()
-                if tid_hex:
-                    headers = list(message.get("headers", []))
-                    # Don't clobber an X-Trace-Id the handler set itself.
-                    if not any(name.lower() == b"x-trace-id" for name, _ in headers):
-                        headers.append((b"x-trace-id", tid_hex.encode("ascii")))
-                        message["headers"] = headers
+                if tid_hex and b"x-trace-id" not in present:
+                    headers.append((b"x-trace-id", tid_hex.encode("ascii")))
+                if not is_noise and b"request-id" not in present:
+                    request_id = tid_hex or _fallback_request_id()
+                    headers.append((b"request-id", request_id.encode("ascii")))
+                    if any(path.startswith(p) for p in _LOGGED_PREFIXES):
+                        logger.info(
+                            "ℹ️ request-id=%s %s %s -> %s",
+                            request_id,
+                            method,
+                            path,
+                            message.get("status", "?"),
+                        )
+                if not is_noise and is_anthropic_shape_path(path):
+                    for name, value in parity_headers(request_headers):
+                        if name not in present:
+                            headers.append((name, value))
+                message["headers"] = headers
             await send(message)
 
         await self.app(scope, receive, send_wrapper)

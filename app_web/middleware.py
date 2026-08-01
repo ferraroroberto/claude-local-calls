@@ -1,8 +1,9 @@
 """Bearer-token middleware for the /admin sub-app.
 
 Loopback callers (PC itself) bypass the bearer token. Non-loopback
-callers must present ``Authorization: Bearer <token>``, or
-``?token=…`` on the URL (the latter is what bookmarked / shared
+callers must present ``Authorization: Bearer <token>``, ``x-api-key:
+<token>`` (the Anthropic SDK's own credential header, #461), or
+``?token=…`` on the URL (the last is what bookmarked / shared
 URLs use; the SPA strips it from ``window.location`` on first load).
 
 WebSocket handshakes are not seen by this middleware:
@@ -127,6 +128,13 @@ def _caller_is_trusted(
     auth_header = headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         presented = auth_header[7:].strip()
+    if not presented:
+        # ``x-api-key`` is how the Anthropic SDK authenticates (#461), so an
+        # SDK pointed at the hub the ordinary way — ``api_key=<hub token>``,
+        # no ``default_headers`` special-casing — presents its credential
+        # here. Accepted as an equal alternative to the bearer token: same
+        # constant-time compare, same 401 when it's wrong.
+        presented = (headers.get("x-api-key", "") or "").strip()
     if not presented:
         presented = query_params.get("token", "").strip()
 

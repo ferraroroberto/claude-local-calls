@@ -17,8 +17,9 @@ flowchart TB
   end
 
   subgraph core["src/server.py — FastAPI hub (:8000)"]
-    SRV["POST /v1/messages (Anthropic shape)\nPOST /v1/chat/completions (OpenAI shape)\nGET /v1/models · /health · /info\nGET / -> 307 /admin/"]
+    SRV["POST /v1/messages · /v1/messages/count_tokens (Anthropic shape)\nPOST /v1/chat/completions (OpenAI shape)\nGET /v1/models · /health · /info\nGET / -> 307 /admin/"]
     CHATT["chat_translation.py\nschemas + media extraction + prompt flatten +\nper-backend dispatch (split out of server.py, issue #245)"]
+    TOKCNT["token_counting.py (issue #463)\nper-backend input_tokens: llama-server\n/apply-template + /tokenize = exact;\nclaude/gemini CLI = char heuristic, returned\nwith exact:false + warning, never as a measurement"]
     ANTHERR["anthropic_errors.py (issue #460)\napp-level exception handlers: Anthropic\n{type:error, error:{type,message}} envelope,\npath-scoped to /v1/messages so the OpenAI\nshape keeps FastAPI's {detail: ...}"]
     ANTHHDR["trace_id_middleware.py + anthropic_headers.py (issues #4, #461)\noutermost ASGI middleware: X-Trace-Id in/out,\nrequest-id aliased to the trace ID on every response,\nanthropic-version/-beta echo (+ Warning: 299 for\nbetas the hub does not implement)"]
     CORS["cors_policy.py (issue #462)\nCORSMiddleware added LAST, so it wraps even the\nbearer gate and a credential-less preflight OPTIONS\nis answered, not 401'd; loopback origins by default,\nextras named in webapp_config.json, never a wildcard"]
@@ -32,6 +33,7 @@ flowchart TB
   TRAY --> SRV
   RUNHUB --> SRV
   SRV --> CHATT
+  SRV -->|/v1/messages/count_tokens| TOKCNT
   SRV -->|errors on /v1/messages| ANTHERR
   SRV -->|response headers on every request| ANTHHDR
   SRV -->|browser preflight + origin gate| CORS

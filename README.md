@@ -983,6 +983,8 @@ local-llm-hub/
 │   ├── server_otel_receiver.py  # POST /v1/metrics OTLP receiver (#68)
 │   ├── chat_translation.py   # request/response schemas, content-block extraction,
 │   │                         #   prompt flattening, per-backend dispatch (issue #245)
+│   ├── token_counting.py     # POST /v1/messages/count_tokens — per-backend input_tokens,
+│   │                         #   exact on llama-server, flagged approximate on the CLIs (#463)
 │   ├── anthropic_errors.py   # Anthropic {"type":"error",…} envelope for /v1/messages
 │   │                         #   errors — path-scoped so /v1/chat/completions is
 │   │                         #   untouched (issue #460)
@@ -1571,6 +1573,65 @@ the real API (issue #460):
 429 `rate_limit_error`, 503 `overloaded_error`, other 5xx `api_error`.
 `/v1/chat/completions` and the `/admin` API deliberately keep FastAPI's
 `{"detail": …}` shape — OpenAI-shape callers parse a different envelope.
+
+### Counting input tokens (issue #463)
+
+`POST /v1/messages/count_tokens` takes the same body as `/v1/messages`
+(`model` + `messages` + optional `system`; `max_tokens` is ignored) and
+answers with Anthropic's `input_tokens`, so a caller can size a prompt
+against a model's context — or its budget — before paying to find out:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/messages/count_tokens \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.5-4b","system":"You are terse.","messages":[{"role":"user","content":"Count to three."}]}'
+```
+
+```json
+{"input_tokens": 23, "model": "qwen3.5-4b", "backend": "openai",
+ "method": "llama_server_tokenizer", "exact": true}
+```
+
+**Read `exact` before you trust the number.** The honest count differs per
+backend family, so the hub resolves it per backend instead of applying one
+global guess — and when it cannot measure, it says so rather than dressing
+an estimate up as a measurement:
+
+| Backend | `method` | `exact` | How |
+| --- | --- | --- | --- |
+| `openai` (llama-server: qwen, gemma, glm) | `llama_server_tokenizer` | ✅ yes | `POST /apply-template` renders the messages through the model's own chat template, `POST /tokenize` counts the result (`add_special: true`, matching what llama-server does for a real completion) |
+| `openai`, pre-`/apply-template` llama-server | `llama_server_tokenizer_untemplated` | ❌ no | Real vocabulary, but the per-turn template tokens are missing, so the true prompt is *larger*. Upgrade llama-server for an exact count |
+| `claude` (`claude -p` CLI) | `character_heuristic` | ❌ no | `len(text) / 4` over the caller's own system + message text |
+| `gemini` (`agy` CLI) | `character_heuristic` | ❌ no | Same heuristic — `agy` exposes no tokenizer either |
+| remote-owned rows (`host:`/`hosts:` elsewhere) | *whatever the owner reports* | *passed through* | Proxied to the owning host's hub, which repeats this decision against the backend actually in front of it |
+| `whisper` / `tts` | — | — | 400, same rejection `/v1/messages` gives ("POST audio to … instead") |
+
+Every non-exact response also carries a `warning` string naming the method
+and its blind spots (e.g. image/document blocks, which are not counted at
+all). An unknown model 400s exactly as `/v1/messages` does, in the same
+Anthropic error envelope.
+
+**Why the CLI backends can't be exact.** `claude-*` and `gemini-*` are
+driven through a subscription CLI, not an API key, so there is no
+`count_tokens` call to forward to and no published offline tokenizer for
+the current model generation. The only exact number available would come
+from running the generation — which is the cost this endpoint exists to
+avoid.
+
+**Measured delta on the claude path** (2026-08-01, `claude-haiku-4-5`,
+`system: "You are terse."` + one 15-char user turn): the hub returned
+`input_tokens: 8`; the identical body through `/v1/messages` reported
+`input_tokens: 10` with `cache_creation_input_tokens: 33590`. So the
+heuristic is within ~20% of the caller's *own* content — but the call's
+real input was ~33.6 k tokens, because `claude -p` prepends Claude Code's
+own system prompt and tool definitions and they land in the cache-write
+bucket. Budget against `input_tokens` from this endpoint as "how big is my
+prompt", never as "what will this call cost".
+
+**On-demand models.** Counting against a `startup: on_demand` row
+(`gemma4-26b-a4b-it`, `glm-4.5-air`) loads it, because its tokenizer is the
+only thing that can answer exactly — same spawn-and-wait a real request
+does, and the same idle watchdog unloads it afterwards.
 
 Generate an image (Google Imagen via `agy`) — OpenAI Images shape,
 returns `data[].b64_json`:

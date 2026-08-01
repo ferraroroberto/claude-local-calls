@@ -21,6 +21,10 @@ active rotation — not in any host's `enabled:` list.)
 
 Two shapes exposed:
   * POST /v1/messages          - Anthropic shape (drop-in for the SDK)
+  * POST /v1/messages/count_tokens
+                               - Anthropic shape; exact on llama-server,
+                                 explicitly flagged as approximate on the
+                                 subscription-CLI backends
   * POST /v1/chat/completions  - OpenAI shape (passthrough/translation)
   * GET  /v1/models            - union of enabled names (both shapes)
 
@@ -106,6 +110,7 @@ from .openai_upstream import (
     clean_openai_response,
     iter_cleaned_sse,
 )
+from .token_counting import count_tokens as _count_tokens
 from .trace_id_middleware import TraceIdHeaderMiddleware
 
 logging.basicConfig(
@@ -269,6 +274,7 @@ def info() -> Dict[str, Any]:
             "health": "GET /health",
             "audio_health": "GET /v1/audio/health",
             "messages": "POST /v1/messages",
+            "count_tokens": "POST /v1/messages/count_tokens",
             "chat_completions": "POST /v1/chat/completions",
             "models": "GET /v1/models",
             "docs": "GET /docs",
@@ -410,6 +416,34 @@ def messages(req: MessagesRequest, request: Request) -> JSONResponse:
         u["input_tokens"], u["output_tokens"],
         u["cache_read_input_tokens"], u["cache_creation_input_tokens"],
         payload["stop_reason"], model.backend,
+    )
+    return JSONResponse(payload)
+
+
+@app.post("/v1/messages/count_tokens")
+def count_tokens(req: MessagesRequest, request: Request) -> JSONResponse:
+    """Anthropic-shape token counting — same request body as /v1/messages.
+
+    Returns ``{"input_tokens": N, ...}``. The count is *exact* for
+    llama-server-backed models (their own tokenizer answers) and explicitly
+    flagged ``exact: false`` with a ``warning`` for the subscription-CLI
+    backends, which expose no tokenizer — see ``src/token_counting.py``.
+    """
+    model = _resolve(req.model)
+    ctx = getattr(request.state, "obs_ctx", None)
+    if ctx is not None:
+        ctx.backend = model.backend
+    if (reject := _reject_non_chat_backend(model, req.model)) is not None:
+        raise reject
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="messages must not be empty")
+
+    payload = _count_tokens(model, req)
+    # Deliberately NOT written to ctx.in_tok: no tokens were consumed, and the
+    # Hub tab's usage/cost aggregates sum that field over the request ring.
+    logger.info(
+        "/v1/messages/count_tokens model=%s backend=%s -> input_tokens=%s exact=%s",
+        req.model, model.backend, payload.get("input_tokens"), payload.get("exact"),
     )
     return JSONResponse(payload)
 

@@ -20,6 +20,7 @@ flowchart TB
     SRV["POST /v1/messages (Anthropic shape)\nPOST /v1/chat/completions (OpenAI shape)\nGET /v1/models · /health · /info\nGET / -> 307 /admin/"]
     CHATT["chat_translation.py\nschemas + media extraction + prompt flatten +\nper-backend dispatch (split out of server.py, issue #245)"]
     ANTHERR["anthropic_errors.py (issue #460)\napp-level exception handlers: Anthropic\n{type:error, error:{type,message}} envelope,\npath-scoped to /v1/messages so the OpenAI\nshape keeps FastAPI's {detail: ...}"]
+    ANTHHDR["trace_id_middleware.py + anthropic_headers.py (issues #4, #461)\noutermost ASGI middleware: X-Trace-Id in/out,\nrequest-id aliased to the trace ID on every response,\nanthropic-version/-beta echo (+ Warning: 299 for\nbetas the hub does not implement)"]
     LIFECYCLE["server_lifecycle.py\nstartup/shutdown hooks + resource sampler +\nstartup-profile autostart (backends/Docker/\nLangfuse, issue #265) +\nfleet reconcile loop (boot + ~5min, issue #353)"]
     REG["model_registry.py\nModel rows from config/models.yaml +\nhub_peer_ids() (hub-running peers, #372)"]
     HOSTP["host_profile.py\nresolve active host"]
@@ -31,6 +32,7 @@ flowchart TB
   RUNHUB --> SRV
   SRV --> CHATT
   SRV -->|errors on /v1/messages| ANTHERR
+  SRV -->|response headers on every request| ANTHHDR
   SRV --> LIFECYCLE
   SRV --> REG
   REG --> HOSTP

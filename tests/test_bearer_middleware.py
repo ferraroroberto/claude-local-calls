@@ -92,6 +92,35 @@ def test_parent_allows_non_loopback_with_correct_token(monkeypatch):
     assert r.status_code == 200
 
 
+def test_parent_allows_non_loopback_with_correct_api_key(monkeypatch):
+    """``x-api-key`` is an equal alternative to the bearer token (#461) — an
+    Anthropic SDK configured the ordinary way authenticates without any
+    ``default_headers`` special-casing."""
+    _patch_parent_token(monkeypatch, "parentsecret")
+    client = TestClient(server_mod.app)
+    r = client.get(
+        "/v1/models",
+        headers={**_PROXY_HEADERS, "x-api-key": "parentsecret"},
+    )
+    assert r.status_code == 200
+
+
+def test_parent_blocks_non_loopback_with_wrong_api_key(monkeypatch):
+    _patch_parent_token(monkeypatch, "parentsecret")
+    client = TestClient(server_mod.app)
+    r = client.get("/v1/models", headers={**_PROXY_HEADERS, "x-api-key": "nope"})
+    assert r.status_code == 401
+
+
+def test_parent_loopback_still_bypasses_with_junk_api_key(monkeypatch):
+    """Loopback bypass is unchanged — an SDK's default ``api_key="local-dummy"``
+    must not start failing locally now that the header is read."""
+    _patch_parent_token(monkeypatch, "parentsecret")
+    client = TestClient(server_mod.app)
+    r = client.get("/v1/models", headers={"x-api-key": "local-dummy"})
+    assert r.status_code == 200
+
+
 def test_parent_exempt_path_bypasses_even_without_token(monkeypatch):
     _patch_parent_token(monkeypatch, "parentsecret")
     client = TestClient(server_mod.app)

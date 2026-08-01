@@ -1014,7 +1014,8 @@ local-llm-hub/
 │   ├── system_stats.py       # live RAM/CPU/GPU readings (consumed by Hub tab sparklines)
 │   ├── observability.py      # OpenTelemetry bootstrap: tracing + metrics → local Langfuse (issue #4)
 │   ├── async_fanout.py       # shared thread-safe asyncio pub/sub fan-out for SSE subscribers
-│   ├── trace_id_middleware.py  # X-Trace-Id contract: accept caller IDs in, always emit one out
+│   ├── trace_id_middleware.py  # X-Trace-Id contract + request-id / anthropic-* response headers (#461)
+│   ├── anthropic_headers.py  # anthropic-version / anthropic-beta parity decisions (#461)
 │   ├── event_loop.py         # Windows proactor-loop shim so uvicorn survives client aborts (#222)
 │   ├── build_info.py         # single source of truth for "what commit is this process running"
 │   ├── services.py           # host-side service helpers: Docker engine + Langfuse stack (#27)
@@ -1671,6 +1672,60 @@ and filters language and voice choices to the selected engine. It also shows
 only controls the engine supports. The language selector is UI metadata: calls
 still use the same `model` and `voice` fields as Home Automation, App Launcher,
 and WhatsApp Radar.
+
+## API headers (issue #461)
+
+What the hub reads off a request and what it writes back, so an
+`anthropic`-SDK client sees the header vocabulary it expects.
+
+**Accepted on the way in:**
+
+| Header | Effect |
+| --- | --- |
+| `Authorization: Bearer <token>` | Authenticates a non-loopback caller. |
+| `x-api-key: <token>` | Same thing — the Anthropic SDK's own credential header, so `Anthropic(api_key="<hub token>", base_url=…)` authenticates with no `default_headers` special-casing. A wrong value is rejected exactly as a wrong bearer token is. |
+| `?token=<token>` | Same thing, on the URL (bookmarked/shared admin links). |
+| `anthropic-version` | Echoed back. The hub does not vary its wire shape by version, so this is an acknowledgement, not a negotiation. |
+| `anthropic-beta` | Echoed back, **never honoured** — see the caveat below. |
+| `X-Trace-Id` | Bridged into a W3C `traceparent`, so repeat calls land in one Langfuse trace. |
+
+Loopback callers still bypass authentication entirely — none of the above
+changes that.
+
+**Emitted on the way out:**
+
+| Header | Meaning |
+| --- | --- |
+| `request-id` | Correlation ID for the request, on every response except `/admin/static/*`. Aliased to the trace ID, so it equals `X-Trace-Id` and is the same value the hub logs (`request-id=… POST /v1/messages -> 200`) and Langfuse traces. When telemetry is off (`OTEL_SDK_DISABLED=true`) there is no trace ID, so the hub mints a random one and no `X-Trace-Id` is emitted. |
+| `X-Trace-Id` | Unchanged — the existing contract, emitted whenever a span is live. |
+| `anthropic-version` | The version the caller sent, or `2023-06-01` when it sent none. |
+| `anthropic-beta` | The betas the caller asked for, verbatim. |
+| `Warning: 299 local-llm-hub "…"` | Accompanies any echoed `anthropic-beta`. |
+
+**`anthropic-beta` caveat — read this before relying on one.** The hub
+implements **no** Anthropic beta feature. It accepts the header (rejecting
+it would 400 an SDK caller who set a beta the hub has no opinion about) and
+echoes it back as a receipt, but every requested beta that is not
+implemented also gets an RFC 7234 advisory on the same response:
+
+```
+anthropic-beta: context-1m-2025-08-07
+Warning: 299 local-llm-hub "anthropic-beta received but not implemented: context-1m-2025-08-07"
+```
+
+The echo means "received", never "honoured". The implemented set is
+`IMPLEMENTED_BETAS` in `src/anthropic_headers.py` — empty, and a value only
+goes in there when the beta is genuinely wired up.
+
+Check it from loopback:
+
+```bash
+curl -is -X POST http://127.0.0.1:8000/v1/messages \
+  -H "content-type: application/json" \
+  -H "anthropic-beta: context-1m-2025-08-07" \
+  -d '{"model":"claude_haiku","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}' \
+  | findstr /i "request-id x-trace-id anthropic- warning"
+```
 
 ## Observability (issue #4)
 

@@ -982,6 +982,9 @@ local-llm-hub/
 │   ├── server_otel_receiver.py  # POST /v1/metrics OTLP receiver (#68)
 │   ├── chat_translation.py   # request/response schemas, content-block extraction,
 │   │                         #   prompt flattening, per-backend dispatch (issue #245)
+│   ├── anthropic_errors.py   # Anthropic {"type":"error",…} envelope for /v1/messages
+│   │                         #   errors — path-scoped so /v1/chat/completions is
+│   │                         #   untouched (issue #460)
 │   ├── server_common.py      # model-resolution + OTel span helpers shared by
 │   │                         #   server.py / server_audio_asr.py / server_audio_tts.py / server_images.py
 │   ├── server_audio_asr.py   # /v1/audio/{transcriptions,translations,health} — whisper proxy + failover (#451)
@@ -1549,6 +1552,21 @@ List enabled models:
 ```bash
 curl -s http://127.0.0.1:8000/v1/models
 ```
+
+**Error responses.** `/v1/messages` answers errors in the Anthropic
+envelope, so the SDK's typed exceptions (`BadRequestError`,
+`RateLimitError`, …) and its retry logic behave here as they do against
+the real API (issue #460):
+
+```json
+{"type": "error", "error": {"type": "invalid_request_error", "message": "messages must not be empty"}}
+```
+
+`error.type` follows the status: 400/422 `invalid_request_error`, 401
+`authentication_error`, 403 `permission_error`, 404 `not_found_error`,
+429 `rate_limit_error`, 503 `overloaded_error`, other 5xx `api_error`.
+`/v1/chat/completions` and the `/admin` API deliberately keep FastAPI's
+`{"detail": …}` shape — OpenAI-shape callers parse a different envelope.
 
 Generate an image (Google Imagen via `agy`) — OpenAI Images shape,
 returns `data[].b64_json`:

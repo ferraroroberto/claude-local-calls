@@ -45,6 +45,11 @@ def _stub_envelope(text: str = "described"):
     }
 
 
+def _err_message(response) -> str:
+    """Message out of /v1/messages' Anthropic error envelope (#460)."""
+    return response.json()["error"]["message"]
+
+
 def test_claude_path_writes_image_and_passes_to_cli(monkeypatch):
     captured = {}
 
@@ -220,7 +225,7 @@ def test_local_backend_rejects_image_with_helpful_400():
         }],
     })
     assert r.status_code == 400
-    detail = r.json()["detail"]
+    detail = _err_message(r)
     assert "text-only" in detail
     assert "claude-*" in detail or "gemini-*" in detail
 
@@ -244,7 +249,7 @@ def test_bad_base64_returns_400(monkeypatch):
         }],
     })
     assert r.status_code == 400
-    assert "bad image block" in r.json()["detail"]
+    assert "bad image block" in _err_message(r)
 
 
 def test_no_images_skips_temp_dir(monkeypatch):
@@ -381,7 +386,7 @@ def test_bad_pdf_base64_returns_400(monkeypatch):
         }],
     })
     assert r.status_code == 400
-    assert "bad document block" in r.json()["detail"]
+    assert "bad document block" in _err_message(r)
 
 
 def test_local_backend_rejects_document_with_helpful_400():
@@ -400,6 +405,6 @@ def test_local_backend_rejects_document_with_helpful_400():
         }],
     })
     assert r.status_code == 400
-    detail = r.json()["detail"]
+    detail = _err_message(r)
     assert "text-only" in detail
     assert "claude-*" in detail or "gemini-*" in detail

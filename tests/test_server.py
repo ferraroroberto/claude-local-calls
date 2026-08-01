@@ -109,7 +109,14 @@ def test_messages_empty_list_returns_400(monkeypatch):
         },
     )
     assert r.status_code == 400
-    assert "messages must not be empty" in r.json()["detail"]
+    # Anthropic error envelope, not FastAPI's {"detail": ...} (#460).
+    assert r.json() == {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "messages must not be empty",
+        },
+    }
 
 
 def test_messages_cli_error_returns_502(monkeypatch):
@@ -130,4 +137,7 @@ def test_messages_cli_error_returns_502(monkeypatch):
         },
     )
     assert r.status_code == 502
-    assert "boom" in r.json()["detail"]
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "api_error"
+    assert "boom" in body["error"]["message"]

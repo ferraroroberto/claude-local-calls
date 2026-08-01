@@ -258,7 +258,15 @@ async def playground_send(
     except Exception:  # noqa: BLE001
         body = {}
     if not r.is_success:
-        detail = (body.get("detail") if isinstance(body, dict) else None) or r.text or f"HTTP {r.status_code}"
+        # /v1/messages answers errors in the Anthropic envelope (#460);
+        # `detail` is kept as a fallback for anything else on this path.
+        err = body.get("error") if isinstance(body, dict) else None
+        detail = (
+            (err.get("message") if isinstance(err, dict) else None)
+            or (body.get("detail") if isinstance(body, dict) else None)
+            or r.text
+            or f"HTTP {r.status_code}"
+        )
         raise HTTPException(status_code=r.status_code, detail=str(detail)[:500])
 
     text = ""

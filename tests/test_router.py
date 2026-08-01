@@ -77,7 +77,8 @@ def test_messages_unknown_model_400():
         },
     )
     assert r.status_code == 400
-    assert "unknown model" in r.json()["detail"]
+    # Anthropic error envelope on the Anthropic-shape route (#460).
+    assert "unknown model" in r.json()["error"]["message"]
 
 
 def test_chat_completions_passthrough_openai(monkeypatch):

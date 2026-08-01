@@ -59,6 +59,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from .anthropic_errors import install_anthropic_error_handlers
 from .chat_translation import (
     MessagesRequest,
     _flatten_messages,
@@ -152,6 +153,12 @@ def _envelope_to_anthropic(env: Dict[str, Any], requested_model: str) -> Dict[st
 # ---- FastAPI app ----
 
 app = FastAPI(title="Local LLM Hub", version="0.3.0")
+# Errors raised on the Anthropic-shape routes serialise as Anthropic's
+# {"type": "error", "error": {...}} envelope instead of FastAPI's
+# {"detail": ...} (#460), so the anthropic SDK's typed exceptions and
+# retry logic behave against the hub as they do against the real API.
+# Path-scoped: /v1/chat/completions keeps its existing shape.
+install_anthropic_error_handlers(app)
 # Observability middleware records every /v1/messages + /v1/chat/completions
 # call into an in-memory ring read by the admin webapp's Hub tab. Volatile
 # by design; the durable telemetry layer is the OTel + Langfuse stack

@@ -12,6 +12,8 @@ Holds:
     URL without re-parsing yaml on every menu refresh)
   * tailnet allowlist (extra IPs/CIDRs beyond loopback that bypass
     bearer-token enforcement)
+  * CORS allowed origins (extra browser origins beyond loopback that may
+    read a hub response from page JavaScript)
 """
 
 from __future__ import annotations
@@ -52,6 +54,12 @@ class WebappConfig:
     # Extra IPs / CIDRs allowed to bypass the bearer-token gate on top
     # of loopback. Empty by default — keep auth strict.
     extra_allowlist: list = field(default_factory=list)
+    # Extra browser origins allowed to call the hub from page JavaScript,
+    # on top of loopback (which is always allowed — see src/cors_policy.py).
+    # Exact origins only, e.g. "https://llm.example.com"; a "*" entry is
+    # dropped with a warning rather than honoured. Read once at startup,
+    # so a change here needs a hub restart — unlike ``auth_token``.
+    cors_allow_origins: list = field(default_factory=list)
 
 
 def load_webapp_config(path: Optional[Path] = None) -> WebappConfig:
@@ -79,6 +87,7 @@ def load_webapp_config(path: Optional[Path] = None) -> WebappConfig:
         webauthn_rp_name=str(raw.get("webauthn_rp_name", "Local LLM Hub")),
         webauthn_origin=str(raw.get("webauthn_origin", "")),
         extra_allowlist=list(raw.get("extra_allowlist") or []),
+        cors_allow_origins=list(raw.get("cors_allow_origins") or []),
     )
     return cfg
 
@@ -95,6 +104,7 @@ def save_webapp_config(cfg: WebappConfig, path: Optional[Path] = None) -> Path:
         "webauthn_rp_name": cfg.webauthn_rp_name,
         "webauthn_origin": cfg.webauthn_origin,
         "extra_allowlist": cfg.extra_allowlist,
+        "cors_allow_origins": cfg.cors_allow_origins,
     }
 
     tmp = target.with_suffix(target.suffix + ".tmp")

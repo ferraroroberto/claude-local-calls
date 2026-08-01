@@ -70,6 +70,7 @@ from .chat_translation import (
     _run_openai_backend,
 )
 from .claude_cli import ClaudeCLIError, call_claude
+from .cors_policy import install_cors
 from .gemini_cli import GeminiCLIError, call_gemini
 from .host_profile import hub_bind_host, hub_port
 from .hub_log import install_root_handler
@@ -205,6 +206,16 @@ try:
     app.state.webapp_config = _load_wcfg()
 except Exception as _exc:  # noqa: BLE001
     logger.warning("⚠️ could not load webapp_config: %s", _exc)
+
+# CORS for browser-based clients (#462) — added LAST so it sits outside
+# every layer above, including the bearer gate. A preflight OPTIONS
+# carries no Authorization header by the browser's design, so it has to
+# be answered here rather than 401'd downstream; real requests still
+# travel the full stack and meet the gate unchanged. Loopback origins are
+# allowed by default, extra origins are named in webapp_config.json, and
+# a wildcard never ships — the policy and its rationale live in
+# src/cors_policy.py.
+install_cors(app, getattr(app.state, "webapp_config", None))
 
 
 # Startup/shutdown handlers + the background resource sampler live in

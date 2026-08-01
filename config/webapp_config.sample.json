@@ -1,0 +1,9 @@
+{
+  "auth_token": "",
+  "auth_password": "",
+  "webauthn_rp_id": "",
+  "webauthn_rp_name": "Local LLM Hub",
+  "webauthn_origin": "",
+  "extra_allowlist": [],
+  "cors_allow_origins": []
+}

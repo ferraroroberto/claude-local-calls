@@ -962,7 +962,8 @@ local-llm-hub/
 │   ├── startup_profile.example.json  # template + fresh-clone default for service autostart (#265, services-only since #430)
 │   ├── startup_profile.json          # live service-autostart profile, rewritten by the admin UI (gitignored, #304)
 │   ├── fleet_maintenance.json        # live {host: {until, reason}} reconcile drain markers (gitignored, #411)
-│   ├── webapp_config.json            # admin auth: bearer token, optional password, webauthn rp (gitignored)
+│   ├── webapp_config.json            # admin auth: bearer token, optional password, webauthn rp, CORS origins (gitignored)
+│   ├── webapp_config.sample.json     # committed template + fresh-clone default for the above
 │   ├── machine_specs_example.yaml    # template for scripts/detect_machine_specs.py's real output
 │   ├── claude_pricing.json / gemini_pricing.json / openai_pricing.json  # per-model $/token
 │   │                                  #   tables for the Code-tab usage/cost parsers
@@ -1016,6 +1017,8 @@ local-llm-hub/
 │   ├── async_fanout.py       # shared thread-safe asyncio pub/sub fan-out for SSE subscribers
 │   ├── trace_id_middleware.py  # X-Trace-Id contract + request-id / anthropic-* response headers (#461)
 │   ├── anthropic_headers.py  # anthropic-version / anthropic-beta parity decisions (#461)
+│   ├── cors_policy.py        # CORS policy — loopback-by-default origins, SDK request headers,
+│   │                         #   exposed response headers; installed outermost (#462)
 │   ├── event_loop.py         # Windows proactor-loop shim so uvicorn survives client aborts (#222)
 │   ├── build_info.py         # single source of truth for "what commit is this process running"
 │   ├── services.py           # host-side service helpers: Docker engine + Langfuse stack (#27)
@@ -1054,7 +1057,7 @@ local-llm-hub/
 │   │   ├── process.py               #   shared Windows job-object process-lifecycle helpers
 │   │   ├── chatterbox.py, kokoro.py, orpheus.py, piper.py  #   one module per engine
 │   │   └── __init__.py              #   build_engine() dispatch + re-exports
-│   ├── webapp_config.py      # admin webapp config loader (bearer token, webauthn, allowlist)
+│   ├── webapp_config.py      # admin webapp config loader (bearer token, webauthn, allowlist, CORS origins)
 │   ├── webauthn_gate.py      # passkey gate (optional — needs `webauthn` package)
 │   ├── static_versioning.py  # ?v=<hash> stamping for /admin/static assets
 │   ├── hub_log.py            # in-memory log ring buffer (admin Hub tab streams it)
@@ -1725,6 +1728,81 @@ curl -is -X POST http://127.0.0.1:8000/v1/messages \
   -H "anthropic-beta: context-1m-2025-08-07" \
   -d '{"model":"claude_haiku","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}' \
   | findstr /i "request-id x-trace-id anthropic- warning"
+```
+
+## CORS — calling the hub from a browser (issue #462)
+
+Page JavaScript can call the hub directly. A sister webapp on this
+machine does **not** need to proxy `/v1/messages` through its own backend
+just to satisfy the browser.
+
+**What is allowed out of the box:** every loopback origin — `http` or
+`https`, `localhost` / `127.x.x.x` / `[::1]`, any port. Nothing else.
+
+That default is not arbitrary: loopback is *already* the hub's trust
+boundary (a loopback caller skips the bearer token entirely), so letting a
+loopback origin read the response grants nothing it did not already have.
+A page served from somewhere else still makes its request from
+`127.0.0.1`, so it is the **origin** check — not the client IP — that
+stops it reading the answer.
+
+**Adding an origin:** name it in `config/webapp_config.json` (template:
+`config/webapp_config.sample.json`).
+
+```json
+{
+  "cors_allow_origins": ["https://llm.example.com"]
+}
+```
+
+Exact origins only — scheme + host + port, no path, no trailing slash.
+This is read once at startup, so restart the hub (`tray.bat --restart`)
+after changing it; that is unlike `auth_token`, which is re-read per
+request.
+
+**No wildcard ships, and `"*"` is not a way to get one.** A `"*"` entry is
+dropped with a warning rather than honoured. `allow_origins: ["*"]` is
+precisely the shape that turns a loopback-trusting service into one any
+page in any tab can drive, and the hub declines to offer it. For the same
+reason `allow_credentials` is off: the hub sets no cookies and uses no
+HTTP-auth realm — it authenticates from `Authorization` / `x-api-key` /
+`?token=`, all of which a plain cross-origin `fetch` carries fine — so the
+credentialed-CORS risk class is declined outright instead of being
+contained by the origin list.
+
+**CORS is not an auth bypass.** The middleware sits outermost so a
+preflight `OPTIONS` — which a browser sends with no credentials, by
+design — is answered instead of 401'd. The real request behind it travels
+the full stack and meets the bearer gate exactly as before.
+
+**Readable response headers.** A header a browser cannot read is the same
+as not sending it, so the hub's own contracts are on `expose_headers`:
+`request-id`, `X-Trace-Id`, `anthropic-version`, `anthropic-beta`,
+`Warning`, `WWW-Authenticate`. Request headers are a named list (not `*`)
+covering both SDKs' vocabulary — `authorization`, `content-type`,
+`x-api-key`, `anthropic-version`, `anthropic-beta`, the OpenAI
+`openai-*` headers, and the `x-stainless-*` telemetry headers both
+generated SDKs attach unconditionally. The full policy, and why each
+piece is the way it is, is `src/cors_policy.py`.
+
+From a page on any loopback origin:
+
+```js
+const r = await fetch("http://127.0.0.1:8000/v1/models");
+console.log(r.headers.get("X-Trace-Id"), await r.json());
+```
+
+Check the preflight by hand — allowed, then refused:
+
+```bash
+curl -is -X OPTIONS http://127.0.0.1:8000/v1/messages \
+  -H "Origin: http://localhost:3000" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: content-type, x-api-key"
+
+curl -is -X OPTIONS http://127.0.0.1:8000/v1/messages \
+  -H "Origin: https://evil.example" \
+  -H "Access-Control-Request-Method: POST"
 ```
 
 ## Observability (issue #4)

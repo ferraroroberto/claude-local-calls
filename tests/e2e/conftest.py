@@ -19,6 +19,8 @@ from typing import Iterator
 import httpx
 import pytest
 
+from src import win_job
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Bounded default Playwright timeout (#100): cap implicit auto-waiting actions
@@ -72,12 +74,25 @@ def hub_url() -> Iterator[str]:
         env=env,
         creationflags=creationflags,
     )
+    # Contain the hub and anything it spawns (e.g. an on-demand TTS backend
+    # loaded mid-test, #468) in one Job Object, so tearing this fixture down
+    # reaps the whole tree instead of just the hub PID — a plain
+    # ``proc.terminate()`` never reaches a grandchild, and an on-demand
+    # backend is deliberately spawned in its own process group (so a
+    # restart's CTRL_BREAK doesn't hit it), so it survives that alone.
+    # ``None`` on non-Windows / on API failure — the ``if job`` guards below
+    # then fall back to the previous hub-PID-only teardown.
+    job = win_job.create_kill_on_close_job(f"local-llm-hub-e2e-{port}")
+    if job:
+        win_job.assign_pid(job, proc.pid)
 
     deadline = time.time() + 30.0
     last_err = "timed out"
     while time.time() < deadline:
         if proc.poll() is not None:
             log_fp.close()
+            if job:
+                win_job.terminate_and_close(job)
             tail = log_path.read_text(encoding="utf-8")[-1500:]
             pytest.fail(f"hub exited before becoming reachable. Log tail:\n{tail}")
         try:
@@ -90,16 +105,28 @@ def hub_url() -> Iterator[str]:
     else:
         proc.terminate()
         log_fp.close()
+        if job:
+            win_job.terminate_and_close(job)
         pytest.fail(f"hub never became reachable: {last_err}")
 
     try:
         yield url
     finally:
+        if job:
+            # Kills the hub *and* every backend it spawned in the meantime,
+            # even one whose immediate parent (the hub) already exited —
+            # the exact shape of #468's incident.
+            win_job.terminate_and_close(job)
+        else:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
         try:
-            proc.terminate()
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait(timeout=5)
         log_fp.close()
 
 

@@ -1,0 +1,1023 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Local LLM Frontier — 2026-08-06</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #F5F1E8; }
+  body { font-family: Georgia, "Times New Roman", serif; color: #1A2332; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React 18 + Recharts via CDN. Babel-standalone parses the JSX in the
+     <script type="text/babel"> block below so the file works from
+     file:// without a build step. -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/prop-types@15/prop-types.min.js"></script>
+<script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script id="frontier-data" type="application/json">
+{
+  "run_date": "2026-08-06",
+  "hardware": {
+    "gpu": "RTX 5060 Ti 16 GB",
+    "gpu_bandwidth_gb_s": 448,
+    "ram_gb": 128,
+    "cpu": "Ryzen 7 7800X3D",
+    "os": "Windows 11 Pro"
+  },
+  "weights": {
+    "agentic": 0.35,
+    "polish": 0.25,
+    "multilingual": 0.25,
+    "longctx": 0.15
+  },
+  "tier_info": {
+    "A": {"label": "Fast lane", "color": "#7B8B5E", "desc": "Small, fully GPU-resident, sub-50 ms latency"},
+    "B": {"label": "Balanced", "color": "#B5664E", "desc": "Fits in 16 GB VRAM, the workhorse zone"},
+    "C": {"label": "Quality", "color": "#3E5C66", "desc": "CPU offload, slow but highest accuracy"}
+  },
+  "models": [
+    {
+      "id": "qwen35-4b",
+      "name": "Qwen 3.5 4B",
+      "family": "Qwen",
+      "tier": "A",
+      "params": "4B",
+      "arch": "hybrid (DeltaNet + sparse MoE)",
+      "quant": "Q4_K_M",
+      "vram_gb": 3,
+      "tps": 110,
+      "quality": 65,
+      "ctx": "262k native",
+      "license": "Apache 2.0",
+      "fits_vram": true,
+      "frontier": true,
+      "primary_use": "★ Incumbent fast lane — OpenClaw routing, fast tool calls, edge",
+      "note": "Feb 2026 release, swapped into agentic_light on 2026-05-10. Hybrid Gated DeltaNet + sparse MoE on a 4B base, 262k native ctx, 201 languages incl. ES/CA. No new 4B-class challenger through August 2026; a rumored Qwen 3.8-27B open-weight companion has not shipped."
+    },
+    {
+      "id": "qwen3-4b-2507",
+      "name": "Qwen3 4B (2507)",
+      "family": "Qwen",
+      "tier": "A",
+      "params": "4B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 3,
+      "tps": 100,
+      "quality": 63,
+      "ctx": "32k (256k YaRN)",
+      "license": "Apache 2.0",
+      "fits_vram": true,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Solid small agentic model from late 2025. Dominated by Qwen 3.5 4B on context, multilingual reach, and quality."
+    },
+    {
+      "id": "gemma3-4b",
+      "name": "Gemma 3 4B",
+      "family": "Gemma",
+      "tier": "A",
+      "params": "4B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 3,
+      "tps": 100,
+      "quality": 60,
+      "ctx": "128k",
+      "license": "Gemma",
+      "fits_vram": true,
+      "frontier": true,
+      "primary_use": "Fast multilingual triage, transcript shaping, Catalan",
+      "note": "Best Catalan support of the small models. Weaker function calling than Qwen3.5. Useful as a CPU-side translation specialist on the 7800X3D."
+    },
+    {
+      "id": "phi4-mini",
+      "name": "Phi-4 Mini",
+      "family": "Phi",
+      "tier": "A",
+      "params": "3.8B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 2.5,
+      "tps": 120,
+      "quality": 49,
+      "ctx": "16k",
+      "license": "MIT",
+      "fits_vram": true,
+      "frontier": true,
+      "primary_use": "English reasoning, structured output",
+      "note": "Speed king in the small tier, but multilingual gap rules it out for ES/CA."
+    },
+    {
+      "id": "llama32-3b",
+      "name": "Llama 3.2 3B",
+      "family": "Llama",
+      "tier": "A",
+      "params": "3B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 2,
+      "tps": 120,
+      "quality": 43,
+      "ctx": "128k",
+      "license": "Llama 3.2",
+      "fits_vram": true,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Dominated. 2026 community testing reports unreliable triage / hallucinated replies."
+    },
+    {
+      "id": "granite-41-8b",
+      "name": "Granite 4.1 8B",
+      "family": "Granite",
+      "tier": "A",
+      "params": "8B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 5,
+      "tps": 60,
+      "quality": 64,
+      "ctx": "128k",
+      "license": "Apache 2.0",
+      "fits_vram": true,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Late-Apr 2026 release; strong enterprise tool-calling in the 8B class (est. composite — headline numbers are coding-weighted, which this stack ignores). Dominated by Qwen 3.5 4B on speed and Qwen3.5 9B on quality at similar VRAM."
+    },
+    {
+      "id": "ministral3-14b",
+      "name": "Ministral 3 14B",
+      "family": "Mistral",
+      "tier": "B",
+      "params": "14B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 8.5,
+      "tps": 35,
+      "quality": 70,
+      "ctx": "256k",
+      "license": "Apache 2.0",
+      "fits_vram": true,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Dec 2025 release. Good European multilingual incl. ES, 256k ctx — but dominated by GPT-OSS 20B and the tier-B MoEs on both chart axes."
+    },
+    {
+      "id": "qwen35-9b",
+      "name": "Qwen3.5 9B",
+      "family": "Qwen",
+      "tier": "B",
+      "params": "9B",
+      "arch": "hybrid",
+      "quant": "Q4_K_M",
+      "vram_gb": 5.5,
+      "tps": 80,
+      "quality": 71,
+      "ctx": "250k+",
+      "license": "Apache 2.0",
+      "fits_vram": true,
+      "frontier": false,
+      "primary_use": "Ultra-long-context document work",
+      "note": "Confirmed 250k+ context on this exact GPU. Loses to Gemma 4 26B MoE and Qwen 3.6 35B-A3B on speed AND quality."
+    },
+    {
+      "id": "gemma4-12b-unified",
+      "name": "Gemma 4 12B Unified",
+      "family": "Gemma",
+      "tier": "B",
+      "params": "12B",
+      "arch": "dense (encoder-free multimodal)",
+      "quant": "Q4_K_M",
+      "vram_gb": 7,
+      "tps": 45,
+      "quality": 76,
+      "ctx": "256k",
+      "license": "Apache 2.0 (per launch coverage — verify)",
+      "fits_vram": true,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Released 2026-06-03. Encoder-free multimodal: text, image, and native AUDIO input straight into the backbone; 140 languages; benchmark coverage 'nearing the 26B' (est. composite 76, tps est. from Gemma 3 12B). Dominated on both chart axes by Gemma 4 26B MoE — its niche is the ~7 GB footprint and native-audio input, neither of which the current roles need. Watch for a future combined ASR+LLM lane."
+    },
+    {
+      "id": "gemma3-12b",
+      "name": "Gemma 3 12B",
+      "family": "Gemma",
+      "tier": "B",
+      "params": "12B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 7,
+      "tps": 50,
+      "quality": 69,
+      "ctx": "128k",
+      "license": "Gemma",
+      "fits_vram": true,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Dominated by Gemma 4 26B MoE on every axis, and by Gemma 4 12B Unified within its own size class."
+    },
+    {
+      "id": "mistral-small-32",
+      "name": "Mistral Small 3.2",
+      "family": "Mistral",
+      "tier": "B",
+      "params": "~22B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 13,
+      "tps": 30,
+      "quality": 74,
+      "ctx": "128k",
+      "license": "Apache 2.0",
+      "fits_vram": true,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Strong European multilingual but dominated on speed by MoE alternatives."
+    },
+    {
+      "id": "gptoss-20b",
+      "name": "GPT-OSS 20B",
+      "family": "GPT-OSS",
+      "tier": "B",
+      "params": "21B / 3.6B active",
+      "arch": "MoE",
+      "quant": "MXFP4 (native)",
+      "vram_gb": 12,
+      "tps": 100,
+      "quality": 72,
+      "ctx": "131k",
+      "license": "Apache 2.0",
+      "fits_vram": true,
+      "frontier": true,
+      "primary_use": "Tool-heavy agentic pipelines",
+      "note": "Excellent BFCL/τ-bench, native MXFP4 fits 16 GB. MMMLU Spanish 79.7 (medium reasoning) confirmed 2026-07-24 — decent, not leading. Catalan still unverified."
+    },
+    {
+      "id": "gemma4-26b-moe",
+      "name": "Gemma 4 26B MoE",
+      "family": "Gemma",
+      "tier": "B",
+      "params": "26B / 4B active",
+      "arch": "MoE",
+      "quant": "native (W4)",
+      "vram_gb": 14,
+      "tps": 99,
+      "quality": 83,
+      "ctx": "256k",
+      "license": "Gemma",
+      "fits_vram": true,
+      "frontier": true,
+      "primary_use": "★ Incumbent workhorse — transcripts, documents, deep agentic, EN↔ES↔CA",
+      "note": "Still the standout 16 GB-class model as of August 2026. Tie with Qwen 3.6 35B-A3B persists. DeepSeek V4 Flash (284B/13B active, shipped 2026-07-31) is the window's new entrant but doesn't clear the bar — see the dropped-models note. Kimi K3, GLM-5.2 stay confirmed NO-GOs; Mistral's 'fat but sparse' MoE still pre-open-weights."
+    },
+    {
+      "id": "qwen36-35b-a3b",
+      "name": "Qwen 3.6 35B-A3B",
+      "family": "Qwen",
+      "tier": "B",
+      "params": "35B / 3B active",
+      "arch": "MoE (hybrid DeltaNet)",
+      "quant": "Q4_K_M",
+      "vram_gb": 13.5,
+      "tps": 98,
+      "quality": 84,
+      "ctx": "262k native (1M extensible)",
+      "license": "Apache 2.0",
+      "fits_vram": true,
+      "frontier": true,
+      "primary_use": "★ Tied with Gemma 4 26B MoE — agentic, long-doc, 201-language multilingual",
+      "note": "Released 2026-04-16; still the newest locally-runnable Qwen as of August 2026 — Qwen 3.7 confirmed API-only (Max/Plus), no open weights of any 3.7 variant found; unconfirmed 'Qwen 3.8' chatter has not shipped. Composite within ~1% of Gemma 4 26B → tie stands."
+    },
+    {
+      "id": "qwen36-27b",
+      "name": "Qwen 3.6 27B (dense)",
+      "family": "Qwen",
+      "tier": "B",
+      "params": "27B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 16,
+      "tps": 31,
+      "quality": 80,
+      "ctx": "65k usable",
+      "license": "Apache 2.0",
+      "fits_vram": false,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Dominated by the 35B-A3B MoE sibling on speed AND quality at the same VRAM footprint — MoE wins on this hardware."
+    },
+    {
+      "id": "gemma3-27b",
+      "name": "Gemma 3 27B (dense)",
+      "family": "Gemma",
+      "tier": "B",
+      "params": "27B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 16,
+      "tps": 15,
+      "quality": 77,
+      "ctx": "128k",
+      "license": "Gemma",
+      "fits_vram": false,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Dominated by Gemma 4 26B MoE: same family, higher quality, ~6× faster decode thanks to MoE."
+    },
+    {
+      "id": "qwen35-35b-moe",
+      "name": "Qwen3.5-35B-A3B",
+      "family": "Qwen",
+      "tier": "C",
+      "params": "35B / 3B active",
+      "arch": "MoE",
+      "quant": "Q4_K_M",
+      "vram_gb": 18,
+      "tps": 40,
+      "quality": 79,
+      "ctx": "160k",
+      "license": "Apache 2.0",
+      "fits_vram": false,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Predecessor to Qwen 3.6 35B-A3B. Dominated by the 3.6 update on speed and benchmark scores at lower VRAM."
+    },
+    {
+      "id": "qwen3-32b",
+      "name": "Qwen3 32B (dense)",
+      "family": "Qwen",
+      "tier": "C",
+      "params": "32B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 19.5,
+      "tps": 11,
+      "quality": 84,
+      "ctx": "128k",
+      "license": "Apache 2.0",
+      "fits_vram": false,
+      "frontier": true,
+      "primary_use": "Quality runs, hard agentic, batch overnight",
+      "note": "BFCL v3 leader among open weights (75.7%). ~3.5 GB CPU spill, ~10–12 t/s. Held off the Tier B frontier by Qwen 3.6 35B-A3B which matches its quality at ~9× the speed. Still beats DeepSeek V4 Flash's estimated Tier-C profile on speed at a comparable or better verified quality."
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash 0731",
+      "family": "DeepSeek",
+      "tier": "C",
+      "params": "284B / 13B active",
+      "arch": "MoE",
+      "quant": "IQ3-class (est.)",
+      "vram_gb": 117,
+      "tps": 11,
+      "quality": 70,
+      "ctx": "1M (reported)",
+      "license": "MIT",
+      "fits_vram": false,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "New 2026-07-31. Genuinely the right shape (MoE, small active set) but doesn't clear the bar: Q4_K_M needs ~160 GB (over this box's ~144 GB budget), so a fitting quant is IQ3-class (~117 GB, real quality loss). Estimated ~11 t/s (RAM-bandwidth-bound on the 13B active set) — see §4 worked example. Quality is a rough placeholder estimate (no first-party or leaderboard evidence isolating non-coding composite quality — DeepSeek's strength is math/code, 0% weight here). Not recommended — watch item only."
+    },
+    {
+      "id": "mistral-medium-35",
+      "name": "Mistral Medium 3.5",
+      "family": "Mistral",
+      "tier": "C",
+      "params": "128B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 75,
+      "tps": 2,
+      "quality": 86,
+      "ctx": "256k",
+      "license": "Modified MIT",
+      "fits_vram": false,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Dense 128B is too large for this box even with 128 GB RAM offload — single-digit t/s. Modified MIT license has revenue gates. Dropped on hardware grounds, not quality."
+    },
+    {
+      "id": "llama33-70b",
+      "name": "Llama 3.3 70B",
+      "family": "Llama",
+      "tier": "C",
+      "params": "70B",
+      "arch": "dense",
+      "quant": "Q4_K_M",
+      "vram_gb": 40,
+      "tps": 4,
+      "quality": 82,
+      "ctx": "128k",
+      "license": "Llama 3.3",
+      "fits_vram": false,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Heavy CPU offload (24 GB+ in RAM). Dominated by Qwen3 32B: faster AND higher quality at lower VRAM."
+    },
+    {
+      "id": "kimi-k3",
+      "name": "Kimi K3",
+      "family": "Kimi",
+      "tier": "C",
+      "params": "2.8T / 16B active (896 experts)",
+      "arch": "MoE",
+      "quant": "MXFP4",
+      "vram_gb": 594,
+      "tps": 0.5,
+      "quality": 90,
+      "ctx": "1M",
+      "license": "Modified MIT (check)",
+      "fits_vram": false,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Open weights shipped 2026-07-27 on schedule, as MXFP4 (~594 GB total download) — Moonshot's own quantization-aware-trained native format. Still an order of magnitude past this box's ~144 GB combined VRAM+RAM. Confirms, doesn't change, the prior decisive NO-GO. Not chart-plotted at a realistic operating point; listed for completeness only."
+    },
+    {
+      "id": "glm-5-2",
+      "name": "GLM-5.2",
+      "family": "GLM",
+      "tier": "C",
+      "params": "744B / 40B active",
+      "arch": "MoE",
+      "quant": "n/a",
+      "vram_gb": 245,
+      "tps": 1,
+      "quality": 91,
+      "ctx": "1M",
+      "license": "MIT",
+      "fits_vram": false,
+      "frontier": false,
+      "primary_use": "—",
+      "note": "Standing NO-GO carried from prior runs (docs/glm-5.2-evaluation.md, #141): >1 TB VRAM in BF16, smallest useful quant ~245 GB combined vs this box's ~144 GB. A GLM-5.5 flagship is rumored for August 2026 (JPMorgan research note, 2026-06-25) but has no model card, benchmark, or endpoint yet — watch next cycle."
+    }
+  ],
+  "asr_models": [
+    {
+      "id": "parakeet-v3",
+      "name": "Parakeet TDT v3 (Mac ANE)",
+      "params": "0.6B",
+      "vram_gb": 2,
+      "rtfx": "65.8× measured (ANE, fleet benchmark #343)",
+      "languages": "25 incl. EN/ES",
+      "translate": false,
+      "license": "NVIDIA (weights) / MIT (FluidAudio runtime)",
+      "role": "current",
+      "tagline": "★ Primary since 2026-07-22 — placement/latency swap, not accuracy",
+      "note": "Unchanged incumbent since #350. Fastest STT in the fleet — 65.8× RTFx, sub-second even on 108 s clips. Published MLS/FLEURS Spanish WER modestly beats Whisper Large v3 (4.39% vs 4.89% MLS; 3.41% vs 4.32% FLEURS) — but this project's own jargon-heavy dictation-domain testing (docs/parakeet-asr-evaluation.md) shows the reverse: 2-4x worse WER, drops the 'Claude Code' wake phrase entirely, mangles 'YOLO'->'yellow'. The identified fix (FluidAudio CustomVocabularyContext) was built and disproven 2026-07-24 (#401) — see the new asr_models entry below. No fix currently exists."
+    },
+    {
+      "id": "whisper-turbo-failover",
+      "name": "Whisper Large v3 Turbo (failover)",
+      "params": "809M",
+      "vram_gb": 1.6,
+      "rtfx": "40x tower / 19.3x gaming (measured, boosted)",
+      "languages": "EN, ES + 97 others",
+      "translate": false,
+      "license": "MIT",
+      "role": "fallback",
+      "tagline": "◆ Automatic failover since 2026-07-22",
+      "note": "Unchanged. Still the accuracy leader on this domain thanks to the #91 --carry-initial-prompt boosting glossary — a lever Parakeet structurally lacks (no decode-time TDT biasing hook exists in FluidAudio 0.15.4). Hosted on gaming (#343) with a CPU fallback on the tower per #342."
+    },
+    {
+      "id": "parakeet-fluidaudio-vocab",
+      "name": "Parakeet + FluidAudio CustomVocabularyContext",
+      "params": "0.6B + ~97 MB CTC model",
+      "vram_gb": 2,
+      "rtfx": "n/a — disproven, not shipped",
+      "languages": "25 incl. EN/ES",
+      "translate": false,
+      "license": "NVIDIA / MIT",
+      "role": "disproven",
+      "tagline": "✗ Built + disproven same-day (#401, 2026-07-24)",
+      "note": "The prior run's runtime_upgrade recommendation. FluidAudio's only vocabulary mechanism is a post-hoc CTC rescorer that can swap an emitted word for a similar one — it cannot insert a phrase the TDT decoder dropped entirely. 'Claude Code' heard as 'Yes'/'Yeah' has ~0 string similarity to swap from; 'YOLO' is blocked by the short-word similarity guard against 'yellow'. A four-setting threshold sweep found a hard wall: FP-free settings are no-ops on both targets, and settings that fix either target corrupt unrelated correct words (mention→Notion, tab→Tailscale, left/right→Playwright). Carried watch per docs/frontier/local-findings.md, backfilled 2026-08-06."
+    },
+    {
+      "id": "fw-turbo",
+      "name": "faster-whisper Turbo (CTranslate2)",
+      "params": "809M (CT2)",
+      "vram_gb": 1,
+      "rtfx": "1.0x vs whisper.cpp — measured, disproven",
+      "languages": "EN, ES + 97 others",
+      "translate": false,
+      "license": "MIT",
+      "role": "disproven",
+      "tagline": "✗ Disproven locally (#274) — no longer the primary's concern",
+      "note": "Measured 1.0x speedup (not the claimed ~2x), WER parity-to-worse, drops the 'Claude Code' wake phrase 0/2 across an 18-attempt sweep. Carried watch per docs/frontier/local-findings.md (#277). Relevant only to the whisper failover leg's own engine, not the live primary."
+    },
+    {
+      "id": "fw-large-v3",
+      "name": "faster-whisper Large v3",
+      "params": "1.55B (CT2)",
+      "vram_gb": 2,
+      "rtfx": "30-50x",
+      "languages": "EN, ES + 97 others",
+      "translate": true,
+      "license": "MIT",
+      "role": "alt",
+      "tagline": "☆ Use for ES → EN single-pass translation",
+      "note": "Higher accuracy than Turbo and supports task=translate. Fallback for workload G when the LLM slot is busy."
+    },
+    {
+      "id": "granite-speech",
+      "name": "IBM Granite Speech 3.3 8B",
+      "params": "8B",
+      "vram_gb": 5,
+      "rtfx": "15-30x",
+      "languages": "EN, FR, DE, ES, PT",
+      "translate": true,
+      "license": "Apache 2.0",
+      "role": "alt",
+      "tagline": "☆ Accuracy upgrade if the failover's own errors start to matter",
+      "note": "5.85% avg WER — top tier on the HF leaderboard. EN/FR/DE/ES/PT plus speech translation X<->EN. Heavier (~5 GB, ~3x the latency)."
+    },
+    {
+      "id": "qwen3-asr",
+      "name": "Qwen3-ASR 1.7B",
+      "params": "1.7B",
+      "vram_gb": 1.5,
+      "rtfx": "TBD",
+      "languages": "52 incl. EN/ES",
+      "translate": false,
+      "license": "Apache 2.0",
+      "role": "watch",
+      "tagline": "⏱ Watch — no domain-specific comparison exists",
+      "note": "Technical report published Feb 2026 (arXiv 2601.21337) with multilingual evals on Common Voice/FLEURS/MLS — no head-to-head vs whisper on THIS project's jargon-heavy dictation domain, the exact gap that made Parakeet's generic leaderboard numbers misleading (see 7.2.1). No update found this run either. Smoke-test locally before trusting any published number for this workload."
+    },
+    {
+      "id": "canary-qwen",
+      "name": "NVIDIA Canary-Qwen 2.5B",
+      "params": "2.5B",
+      "vram_gb": 5,
+      "rtfx": "20-40x",
+      "languages": "EN (limited multilingual)",
+      "translate": false,
+      "license": "NVIDIA",
+      "role": "dropped",
+      "tagline": "✗ Dropped — English-only in practice",
+      "note": "#1 on HF Open ASR Leaderboard at 5.63% WER, but English-strong with very limited Spanish support."
+    }
+  ],
+  "asr_translation_paths": [
+    {
+      "id": "single",
+      "label": "Architecture (i) — Single-model",
+      "headline": "faster-whisper Large v3 with task=translate",
+      "pros": "Simplest pipeline, ~2 GB VRAM, ~30× realtime, single pass",
+      "cons": "Literal English output. No style polish, no summarization, occasional idiom loss.",
+      "verdict": "Fallback when LLM slot is occupied"
+    },
+    {
+      "id": "two-stage",
+      "label": "Architecture (ii) — Two-stage",
+      "headline": "faster-whisper Turbo (ES) → Gemma 4 26B MoE (translate + polish + disfluency)",
+      "pros": "Higher quality, context-aware translation, polishing + filler removal in same LLM call. Catalan extension comes free.",
+      "cons": "~15 GB VRAM total — fast-lane model drops out for batches.",
+      "verdict": "★ Default for batch audio translation"
+    }
+  ],
+  "disfluency_verdict": {
+    "decision": "Fold into the LLM polishing pass",
+    "reasoning": "Specialized disfluency-removal models (DisfluencyFixer, DISCO) are research-grade and primarily EN/HI/DE/FR — Spanish coverage is sparse. Tier-B LLMs (Gemma 4 26B MoE, Qwen 3.6 35B-A3B) handle disfluency removal extremely well as part of an instruction-following pass. Adding a separate component means another model loaded, another VRAM slot, another point of failure, and worse multilingual coverage than the LLM you already run.",
+    "prompt": "Clean up this transcript:\n- Remove filler words (um, uh, eh, este, like, you know)\n- Remove false starts and self-corrections, keep the corrected version\n- Tighten conciseness without losing meaning or voice\n- Preserve technical terms and proper nouns exactly\n- Keep the output in [Spanish/English] — do not translate\n\nTranscript:\n{transcript}"
+  },
+  "concurrency_recipes": [
+    {
+      "id": "two-lanes",
+      "label": "Recipe 1 — Two lanes",
+      "summary": "Qwen 3.5 4B (GPU, ~3 GB) + Gemma 4 26B MoE (GPU, ~14 GB).",
+      "note": "Both at full speed. Total ~17 GB — minor shared-memory spill, handled gracefully on Blackwell. Tower GPU is exclusively agentic since the 2026-07-22 audio placement move (#343)."
+    },
+    {
+      "id": "qwen36-stack",
+      "label": "Recipe 2 — Qwen 3.6 stack (Apache 2.0 only)",
+      "summary": "Qwen 3.5 4B (GPU, ~3 GB) + Qwen 3.6 35B-A3B (GPU, ~13.5 GB).",
+      "note": "All-Apache stack — useful when license clarity matters (Macaya Bank work). Speed parity with Recipe 1."
+    },
+    {
+      "id": "quality-batch",
+      "label": "Recipe 3 — Quality batch",
+      "summary": "Qwen 3.5 4B (GPU) + Qwen3 32B dense (GPU + ~3.5 GB CPU spill).",
+      "note": "Fast lane unaffected. 32B at ~10 t/s — overnight transcript reprocessing."
+    },
+    {
+      "id": "three-concurrent",
+      "label": "Recipe 4 — Three concurrent",
+      "summary": "Qwen 3.5 4B + GPT-OSS 20B (GPU, ~15 GB) + Gemma 3 4B (CPU-only, RAM).",
+      "note": "The 7800X3D's 96 MB L3 makes Gemma 3 4B on CPU run ~10 t/s — useful as a Catalan-strong specialist."
+    }
+  ],
+  "top_picks": [
+    {
+      "tier": "A",
+      "model_id": "qwen35-4b",
+      "why": "Best small agentic model on this hardware as of August 2026 — and now the incumbent. Hybrid DeltaNet + sparse MoE, 262k native ctx, 201 languages, Apache 2.0. No new 4B-class challenger since February."
+    },
+    {
+      "tier": "B",
+      "model_id": "gemma4-26b-moe",
+      "why": "99 t/s, full 256k context, Google-grade multilingual including Catalan. Tie with Qwen 3.6 35B-A3B persists through August 2026 — keep Gemma as default on Catalan track record; switch to Qwen 3.6 if you need pure Apache 2.0."
+    },
+    {
+      "tier": "C",
+      "model_id": "qwen3-32b",
+      "why": "BFCL leader at 75.7%. ~10 t/s with mild CPU spill — reserve for batch quality runs where correctness > latency. Still beats DeepSeek V4 Flash's estimated profile on verified speed and quality."
+    }
+  ],
+  "shortlist": {
+    "agentic_light": {
+      "current": "qwen3.5-4b",
+      "current_id": "qwen35_4b",
+      "recommended": "qwen3.5-4b",
+      "recommended_id": "qwen35_4b",
+      "recommended_action": "keep",
+      "reason": "Incumbent (swapped in 2026-05-10) is still the Tier A Pareto pick: ~110 t/s, ~3 GB, 262k native ctx, 201 languages, Apache 2.0. No new 4B-class entrant this window; a rumored Qwen 3.8-27B open-weight companion has not shipped."
+    },
+    "agentic_heavy": {
+      "current": "gemma4-26b-a4b-it",
+      "current_id": "gemma4_26b",
+      "recommended": "gemma4-26b-a4b-it",
+      "recommended_id": "gemma4_26b",
+      "recommended_action": "keep",
+      "reason": "Incumbent and Tier B top pick; tie (≤3%) with Qwen 3.6 35B-A3B persists. DeepSeek V4 Flash (284B/13B active, MIT, shipped 2026-07-31) is a new entrant but needs an IQ3-class quant to fit (~117 GB), lands at an estimated ~11 t/s, and has no verified non-coding composite quality edge — not recommended. Kimi K3 and GLM-5.2 stay confirmed hardware NO-GOs; Mistral's 'fat but sparse' MoE is still early-access only."
+    },
+    "audio_transcribe": {
+      "current": "parakeet-tdt-0.6b-v3 (mac ANE) + whisper fallback",
+      "current_id": "parakeet",
+      "recommended": "parakeet-tdt-0.6b-v3 (mac ANE) + whisper fallback",
+      "recommended_id": "parakeet",
+      "recommended_action": "watch",
+      "reason": "No role change. The prior run's identified fix — FluidAudio's CustomVocabularyContext rescorer — was built and disproven the same day it was proposed (issue #401, closed not-planned 2026-07-24): a post-hoc rescorer can only swap an emitted word for a similar one, it cannot insert a phrase the TDT decoder dropped entirely, so no threshold setting recovers the wake phrase/jargon without corrupting correct words elsewhere. This run backfilled that disproof into docs/frontier/local-findings.md (it was missed in the closing PR #407) so it isn't re-proposed. No other candidate fix or ASR alternative surfaced this window — Qwen3-ASR remains an unverified watch item with no domain-specific comparison."
+    },
+    "audio_translate": {
+      "current": "whisper-medium",
+      "current_id": "whisper_translate",
+      "recommended": "whisper-medium (defer)",
+      "recommended_id": "whisper_translate",
+      "recommended_action": "watch",
+      "reason": "Unchanged: the two-stage path (Turbo → Gemma 4 26B MoE) stays the default for ES→EN; whisper-medium remains a lazy-loaded fallback for when the LLM slot is busy. No new speech-translation entrant this window changes this."
+    }
+  }
+}
+</script>
+
+<script type="text/babel" data-presets="react">
+const DATA = JSON.parse(document.getElementById('frontier-data').textContent);
+const MODELS = DATA.models;
+const ASR_MODELS = DATA.asr_models;
+const ASR_TRANSLATION_PATHS = DATA.asr_translation_paths;
+const DISFLUENCY_VERDICT = DATA.disfluency_verdict;
+const TIER_INFO = DATA.tier_info;
+const RECIPES = DATA.concurrency_recipes;
+const TOP_PICKS = DATA.top_picks;
+
+const ASR_COLOR = '#8C5A8E';
+
+// ASR role -> visual treatment. 'current' is the live incumbent (parakeet,
+// since 2026-07-22); 'fallback' is the automatic failover leg (whisper);
+// 'upgrade' would be a recommended-but-unbuilt variant; 'disproven' is a
+// carried local-findings.md entry that no longer applies to the live primary.
+const ASR_ROLE_STYLES = {
+  current:   { border: '#3E5C66', eyebrow: '#3E5C66', big: true,  dim: false },
+  fallback:  { border: '#7B8B5E', eyebrow: '#7B8B5E', big: true,  dim: false },
+  upgrade:   { border: ASR_COLOR, eyebrow: ASR_COLOR, big: true,  dim: false },
+  disproven: { border: '#1A2332', eyebrow: '#B5664E', big: false, dim: true  },
+  alt:       { border: '#1A2332', eyebrow: '#1A2332', big: false, dim: false },
+  watch:     { border: '#1A2332', eyebrow: '#B5664E', big: false, dim: false },
+  dropped:   { border: '#1A2332', eyebrow: '#1A2332', big: false, dim: true  },
+};
+
+const { useState, useMemo } = React;
+const {
+  ScatterChart, Scatter, XAxis, YAxis, ZAxis,
+  CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+} = Recharts;
+
+function CustomTooltip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const m = payload[0].payload;
+  return (
+    <div style={{
+      background: '#FBF7EE',
+      border: '1px solid #1A2332',
+      boxShadow: '4px 4px 0 #1A2332',
+      padding: '12px 14px',
+      fontFamily: 'Georgia, serif',
+      fontSize: '13px',
+      color: '#1A2332',
+      maxWidth: '300px',
+    }}>
+      <div style={{ fontWeight: 700, fontSize: '15px', marginBottom: '6px' }}>
+        {m.name} {m.frontier && <span style={{ color: '#B5664E' }}>★</span>}
+      </div>
+      <div style={{ fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '11px', lineHeight: 1.6, opacity: 0.85 }}>
+        {m.params} · {m.arch} · {m.quant}<br />
+        VRAM {m.vram_gb} GB · {m.tps} t/s · ctx {m.ctx}<br />
+        License: {m.license}
+      </div>
+      <div style={{ marginTop: '8px', borderTop: '1px solid #1A233222', paddingTop: '6px', fontSize: '12px' }}>
+        <div style={{ marginBottom: '4px' }}>
+          <span style={{ fontWeight: 600 }}>Quality:</span> {m.quality}/100
+        </div>
+        {m.primary_use && m.primary_use !== '—' && (
+          <div style={{ marginBottom: '4px', fontStyle: 'italic' }}>{m.primary_use}</div>
+        )}
+        <div style={{ opacity: 0.8 }}>{m.note}</div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [vramMode, setVramMode] = useState('fits');
+  const [activeTiers, setActiveTiers] = useState({ A: true, B: true, C: true });
+
+  const filtered = useMemo(() => MODELS.filter(m => {
+    if (vramMode === 'fits' && !m.fits_vram) return false;
+    if (!activeTiers[m.tier]) return false;
+    return true;
+  }), [vramMode, activeTiers]);
+
+  const frontierModels = useMemo(
+    () => filtered.filter(m => m.frontier).sort((a, b) => a.tps - b.tps),
+    [filtered]
+  );
+  const dominated = useMemo(() => filtered.filter(m => !m.frontier), [filtered]);
+
+  const styles = {
+    page: { minHeight: '100vh', background: '#F5F1E8', color: '#1A2332', padding: '24px 16px 48px' },
+    container: { maxWidth: '1100px', margin: '0 auto' },
+    eyebrow: { fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '11px', letterSpacing: '0.18em', textTransform: 'uppercase', opacity: 0.7, marginBottom: '8px' },
+    h1: { fontWeight: 700, fontSize: 'clamp(28px, 5vw, 44px)', lineHeight: 1.1, letterSpacing: '-0.02em', margin: '0 0 12px' },
+    sub: { fontSize: '15px', lineHeight: 1.6, opacity: 0.85, maxWidth: '720px', marginBottom: '24px' },
+    metaRow: { display: 'flex', flexWrap: 'wrap', gap: '16px 32px', fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '11px', letterSpacing: '0.04em', opacity: 0.85, borderTop: '1px solid #1A233244', borderBottom: '1px solid #1A233244', padding: '10px 0', marginBottom: '24px' },
+    metaItem: { whiteSpace: 'nowrap' },
+    metaLabel: { opacity: 0.6, marginRight: '6px' },
+    controls: { display: 'flex', flexWrap: 'wrap', gap: '20px 32px', marginBottom: '20px', alignItems: 'flex-start' },
+    controlGroup: { display: 'flex', flexDirection: 'column', gap: '8px' },
+    controlLabel: { fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', opacity: 0.6 },
+    pillRow: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
+    pill: (active, color) => ({
+      fontFamily: 'JetBrains Mono, Courier New, monospace',
+      fontSize: '11px',
+      letterSpacing: '0.05em',
+      padding: '6px 12px',
+      border: `1.5px solid ${color || '#1A2332'}`,
+      background: active ? (color || '#1A2332') : 'transparent',
+      color: active ? '#F5F1E8' : (color || '#1A2332'),
+      cursor: 'pointer',
+      transition: 'all 0.15s',
+    }),
+    chartCard: { background: '#FBF7EE', border: '1.5px solid #1A2332', boxShadow: '6px 6px 0 #1A2332', padding: '20px 16px 12px', marginBottom: '32px' },
+    legend: { display: 'flex', flexWrap: 'wrap', gap: '16px', fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '11px', marginTop: '8px', paddingTop: '12px', borderTop: '1px dashed #1A233244' },
+    legendItem: { display: 'flex', alignItems: 'center', gap: '6px' },
+    sectionH2: { fontSize: '24px', fontWeight: 700, letterSpacing: '-0.01em', margin: '40px 0 4px' },
+    sectionRule: { borderTop: '2px solid #1A2332', width: '40px', marginBottom: '20px' },
+    cardGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' },
+    pickCard: (color) => ({ background: '#FBF7EE', border: `1.5px solid ${color}`, borderLeftWidth: '6px', padding: '16px 18px' }),
+    pickEyebrow: (color) => ({ fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '10px', letterSpacing: '0.2em', textTransform: 'uppercase', color, marginBottom: '6px' }),
+    pickName: { fontSize: '20px', fontWeight: 700, marginBottom: '4px' },
+    pickStats: { fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '11px', opacity: 0.75, marginBottom: '10px' },
+    pickWhy: { fontSize: '13px', lineHeight: 1.5 },
+    footer: { marginTop: '48px', paddingTop: '20px', borderTop: '1px solid #1A233244', fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '10px', letterSpacing: '0.08em', opacity: 0.6 },
+  };
+
+  const topPicks = TOP_PICKS.map(tp => ({
+    tier: tp.tier,
+    model: MODELS.find(m => m.id === tp.model_id),
+    why: tp.why,
+  }));
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.container}>
+        <div style={styles.eyebrow}>Roberto · Local Inference Stack · v.{DATA.run_date}</div>
+        <h1 style={styles.h1}>The Efficient Frontier of Local AI</h1>
+        <p style={styles.sub}>
+          A hardware- and workload-specific Pareto frontier for the {DATA.hardware.gpu} + {DATA.hardware.ram_gb} GB DDR5 workstation.
+          Optimized for OpenClaw agentic work, transcript polishing, document processing, EN↔ES↔CA translation,
+          and audio (transcription EN/ES + audio translation ES → EN).
+          <em> Coding workloads excluded by design.</em>
+        </p>
+
+        <div style={styles.metaRow}>
+          <span style={styles.metaItem}><span style={styles.metaLabel}>RUN</span>{DATA.run_date}</span>
+          <span style={styles.metaItem}><span style={styles.metaLabel}>GPU</span>{DATA.hardware.gpu} · {DATA.hardware.gpu_bandwidth_gb_s} GB/s</span>
+          <span style={styles.metaItem}><span style={styles.metaLabel}>CPU</span>{DATA.hardware.cpu}</span>
+          <span style={styles.metaItem}><span style={styles.metaLabel}>RAM</span>{DATA.hardware.ram_gb} GB DDR5</span>
+          <span style={styles.metaItem}><span style={styles.metaLabel}>MODELS</span>{filtered.length} of {MODELS.length}</span>
+        </div>
+
+        <div style={styles.controls}>
+          <div style={styles.controlGroup}>
+            <span style={styles.controlLabel}>VRAM Budget</span>
+            <div style={styles.pillRow}>
+              <button onClick={() => setVramMode('all')} style={styles.pill(vramMode === 'all', '#1A2332')}>Allow CPU offload</button>
+              <button onClick={() => setVramMode('fits')} style={styles.pill(vramMode === 'fits', '#1A2332')}>Fits fully in 16 GB</button>
+            </div>
+          </div>
+
+          <div style={styles.controlGroup}>
+            <span style={styles.controlLabel}>Tiers</span>
+            <div style={styles.pillRow}>
+              {Object.entries(TIER_INFO).map(([tier, info]) => (
+                <button
+                  key={tier}
+                  onClick={() => setActiveTiers({ ...activeTiers, [tier]: !activeTiers[tier] })}
+                  style={styles.pill(activeTiers[tier], info.color)}
+                >
+                  {tier} · {info.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div style={styles.chartCard}>
+          <ResponsiveContainer width="100%" height={460}>
+            <ScatterChart margin={{ top: 20, right: 24, bottom: 50, left: 20 }}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#1A233233" />
+              <XAxis
+                type="number" dataKey="tps" name="tokens/sec" domain={[0, 130]}
+                tick={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, fill: '#1A2332' }}
+                stroke="#1A2332"
+                label={{ value: '→ tokens / second (single-stream, RTX 5060 Ti)', position: 'bottom', offset: 20, style: { fontSize: 13, fill: '#1A2332', fontStyle: 'italic' } }}
+              />
+              <YAxis
+                type="number" dataKey="quality" name="quality" domain={[40, 95]}
+                tick={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, fill: '#1A2332' }}
+                stroke="#1A2332"
+                label={{ value: '↑ composite quality (non-coding)', angle: -90, position: 'insideLeft', offset: 0, style: { fontSize: 13, fill: '#1A2332', fontStyle: 'italic', textAnchor: 'middle' } }}
+              />
+              <ZAxis type="number" dataKey="vram_gb" range={[80, 600]} name="VRAM" />
+              <Tooltip content={<CustomTooltip />} cursor={{ strokeDasharray: '3 3' }} />
+
+              <Scatter data={dominated} shape="circle">
+                {dominated.map((m) => (
+                  <Cell key={m.id} fill="transparent" stroke={TIER_INFO[m.tier].color} strokeWidth={1.5} />
+                ))}
+              </Scatter>
+
+              <Scatter data={frontierModels} shape="circle">
+                {frontierModels.map((m) => (
+                  <Cell key={m.id} fill={TIER_INFO[m.tier].color} stroke="#1A2332" strokeWidth={1.5} fillOpacity={0.85} />
+                ))}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
+
+          <div style={styles.legend}>
+            <div style={styles.legendItem}>
+              <span style={{ width: 14, height: 14, borderRadius: '50%', background: '#1A2332', border: '1.5px solid #1A2332', display: 'inline-block' }} />
+              <span>On Pareto frontier</span>
+            </div>
+            <div style={styles.legendItem}>
+              <span style={{ width: 14, height: 14, borderRadius: '50%', background: 'transparent', border: '1.5px solid #1A2332', display: 'inline-block' }} />
+              <span>Dominated</span>
+            </div>
+            <div style={styles.legendItem}>
+              <span style={{ fontStyle: 'italic', opacity: 0.7 }}>Bubble size ∝ VRAM at recommended quant. Default view hides Kimi K3 / GLM-5.2 / DeepSeek V4 Flash (off-chart or CPU-offload-only, ~594 GB / ~245 GB / ~117 GB) — toggle "Allow CPU offload" to see them plotted for scale.</span>
+            </div>
+          </div>
+        </div>
+
+        <h2 style={styles.sectionH2}>Top Pick Per Tier</h2>
+        <div style={styles.sectionRule} />
+        <div style={styles.cardGrid}>
+          {topPicks.map(({ tier, model, why }) => {
+            const info = TIER_INFO[tier];
+            return (
+              <div key={tier} style={styles.pickCard(info.color)}>
+                <div style={styles.pickEyebrow(info.color)}>Tier {tier} · {info.label}</div>
+                <div style={styles.pickName}>{model.name}</div>
+                <div style={styles.pickStats}>
+                  {model.params} · {model.quant}<br />
+                  {model.vram_gb} GB VRAM · {model.tps} t/s · ctx {model.ctx}<br />
+                  License: {model.license}
+                </div>
+                <div style={styles.pickWhy}>{why}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <h2 style={styles.sectionH2}>Concurrency Recipes</h2>
+        <div style={styles.sectionRule} />
+        <div style={styles.cardGrid}>
+          {RECIPES.map(r => (
+            <div key={r.id} style={{ background: '#FBF7EE', border: '1.5px solid #1A2332', padding: '16px 18px' }}>
+              <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', letterSpacing: '0.2em', textTransform: 'uppercase', opacity: 0.6, marginBottom: '6px' }}>{r.label}</div>
+              <div style={{ fontSize: '14px', lineHeight: 1.6 }}>
+                <div dangerouslySetInnerHTML={{ __html: r.summary.replace(/\b(Qwen[\w\.\-]*|Gemma[\w\s\.\-]*MoE|Gemma[\w\s\.\-]*4B|GPT-OSS[\w\s\.\-]*)\b/g, '<strong>$1</strong>') }} />
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', opacity: 0.75, marginTop: '4px' }}>{r.note}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <h2 style={styles.sectionH2}>Audio Stack — ASR (Workloads F, G, H)</h2>
+        <div style={styles.sectionRule} />
+        <p style={{ fontSize: '14px', lineHeight: 1.6, opacity: 0.85, marginBottom: '20px', maxWidth: '760px' }}>
+          The <strong>audio_transcribe</strong> incumbent is unchanged since the 2026-07-22 out-of-band switch
+          (#350, voice-transcriber#149): Parakeet TDT v3 on the Mac Mini's Apple Neural Engine stays primary, with
+          Whisper Large v3 Turbo as automatic failover. What changed is the fix: last run's recommendation — wiring
+          FluidAudio's <code>CustomVocabularyContext</code> rescorer into the Mac worker to recover the dropped
+          "Claude Code" wake phrase and mangled jargon — was built and <strong>disproven the same day</strong>
+          (#401). A post-hoc rescorer can only swap an emitted word for a similar one; it cannot insert a phrase the
+          TDT decoder dropped entirely, so no threshold setting both recovers the targets and avoids corrupting
+          correct words elsewhere. Verdict: <code>watch</code>, backfilled into
+          <code>docs/frontier/local-findings.md</code> so it isn't re-proposed.
+        </p>
+
+        <div style={{ ...styles.cardGrid, marginBottom: '32px' }}>
+          {ASR_MODELS.map(m => {
+            const style = ASR_ROLE_STYLES[m.role] || ASR_ROLE_STYLES.alt;
+            return (
+              <div key={m.id} style={{
+                background: style.dim ? '#F0EBDF' : '#FBF7EE',
+                border: `1.5px solid ${style.border}`,
+                borderLeftWidth: style.big ? '6px' : '1.5px',
+                padding: '16px 18px',
+                opacity: style.dim ? 0.55 : 1,
+              }}>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: style.eyebrow, opacity: style.dim ? 0.7 : 1, marginBottom: '6px' }}>{m.tagline}</div>
+                <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '6px' }}>{m.name}</div>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', opacity: 0.75, marginBottom: '10px', lineHeight: 1.6 }}>
+                  {m.params} · {m.vram_gb} GB VRAM · RTFx {m.rtfx}<br />
+                  Languages: {m.languages}<br />
+                  Translate to EN: {m.translate ? '✅ yes' : '❌ no'} · License: {m.license}
+                </div>
+                <div style={{ fontSize: '13px', lineHeight: 1.5 }}>{m.note}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <h3 style={{ fontSize: '17px', fontWeight: 700, margin: '24px 0 12px', letterSpacing: '-0.01em' }}>
+          Workload G — ES audio → English: which architecture?
+        </h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+          {ASR_TRANSLATION_PATHS.map(p => {
+            const isPrimary = p.verdict.startsWith('★');
+            return (
+              <div key={p.id} style={{
+                background: '#FBF7EE',
+                border: `1.5px solid ${isPrimary ? ASR_COLOR : '#1A2332'}`,
+                borderLeftWidth: isPrimary ? '6px' : '1.5px',
+                padding: '16px 18px',
+              }}>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', color: isPrimary ? ASR_COLOR : '#1A2332', opacity: 0.75, marginBottom: '6px' }}>{p.label}</div>
+                <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: '10px', lineHeight: 1.4 }}>{p.headline}</div>
+                <div style={{ fontSize: '13px', lineHeight: 1.5, marginBottom: '6px' }}>
+                  <strong style={{ color: '#7B8B5E' }}>+</strong> {p.pros}
+                </div>
+                <div style={{ fontSize: '13px', lineHeight: 1.5, marginBottom: '10px' }}>
+                  <strong style={{ color: '#B5664E' }}>−</strong> {p.cons}
+                </div>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', letterSpacing: '0.04em', paddingTop: '8px', borderTop: '1px dashed #1A233244' }}>
+                  {p.verdict}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <h3 style={{ fontSize: '17px', fontWeight: 700, margin: '32px 0 12px', letterSpacing: '-0.01em' }}>
+          Workload H — disfluency / filler-word removal
+        </h3>
+        <div style={{
+          background: '#FBF7EE',
+          border: `1.5px solid ${ASR_COLOR}`,
+          borderLeftWidth: '6px',
+          padding: '16px 18px',
+        }}>
+          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', letterSpacing: '0.2em', textTransform: 'uppercase', color: ASR_COLOR, marginBottom: '8px' }}>
+            ★ Verdict — {DISFLUENCY_VERDICT.decision}
+          </div>
+          <div style={{ fontSize: '13px', lineHeight: 1.6, marginBottom: '12px' }}>{DISFLUENCY_VERDICT.reasoning}</div>
+          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '10px', letterSpacing: '0.18em', textTransform: 'uppercase', opacity: 0.6, marginBottom: '6px' }}>
+            Drop-in prompt for the LLM polishing pass
+          </div>
+          <pre style={{ fontFamily: 'JetBrains Mono, Courier New, monospace', fontSize: '11px', lineHeight: 1.5, background: '#F5F1E8', border: '1px solid #1A233233', padding: '12px 14px', margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{DISFLUENCY_VERDICT.prompt}</pre>
+        </div>
+
+        <div style={styles.footer}>
+          GENERATED {DATA.run_date} · METHODOLOGY: SEE .claude/skills/frontier-refresh/SKILL.md
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>

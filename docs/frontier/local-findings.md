@@ -45,3 +45,46 @@ re-tested, update its **Status** line instead of deleting history.
   speed parity — then re-measure on the same corpus before any verdict
   upgrade.
 - **Status:** unresolved (verdict stays `watch`).
+
+---
+
+## 2026-07-24 — FluidAudio `CustomVocabularyContext` rescorer for `audio_transcribe` — DISPROVEN
+
+- **Candidate:** FluidAudio 0.15.4's CTC custom-vocabulary pipeline
+  (`CustomVocabularyContext.loadWithCtcTokens` → `CtcKeywordSpotter.spotKeywordsWithLogProbs`
+  → `VocabularyRescorer.ctcTokenRescore`) wired into the Mac Parakeet worker
+  — the mechanism the 2026-07-24 frontier run (`report.md` §0/§7.2.1/§9)
+  recommended as a `runtime_upgrade` to close the "Claude Code"/"YOLO"
+  wake-phrase and jargon regression accepted by the 2026-07-22
+  parakeet-primary switch (#350).
+- **Verdict it disproves:** `runtime_upgrade` (proposed 2026-07-24, report
+  §0 — "parakeet + FluidAudio CustomVocabularyContext").
+- **Measured:** built end-to-end and tested against the #138/#343 jargon
+  clips (issue #401). A post-hoc rescorer can only **swap** an existing
+  transcript word for an acoustically/string-similar vocabulary term — it
+  cannot **insert** a phrase the TDT decoder dropped entirely. "Claude Code"
+  heard as "Yes"/"Yeah" is structurally unrecoverable (string similarity
+  ≈ 0), and "YOLO" (4 chars) is blocked by the short-word ≥0.80 similarity
+  guard against "yellow". A four-setting threshold sweep shows a hard
+  precision/recall wall: every false-positive-free setting is a no-op on
+  both targets, while every setting that recovers a target simultaneously
+  corrupts correct words (`mention`→`Notion`, `tab`→`Tailscale`,
+  `left, right`→`Playwright`, …). For daily-driver dictation, silently
+  corrupting correct words is worse than a known-absent wake phrase, so no
+  setting is shippable.
+- **Record:** [issue #401](https://github.com/ferraroroberto/local-llm-hub/issues/401)
+  (closed not-planned 2026-07-24, full before/after sweep + root-cause
+  analysis in the closing comment); merged into
+  `docs/parakeet-asr-evaluation.md` → "Update 2026-07-24: custom-vocabulary
+  rescorer wired and DISPROVEN (#401)" via #407 (commit 160a280). No
+  `audio_transcribe` role change resulted — whisper-turbo stays the
+  jargon-safe accuracy leader (see `local-findings.md`'s own contract note:
+  this entry was not appended in #407 itself; backfilled here by the
+  2026-08-06 frontier run, which found the gap while reading this file per
+  its step 1).
+- **Re-open trigger:** a FluidAudio release that adds decode-time TDT
+  vocabulary *biasing* (not post-hoc CTC rescoring — i.e. a hook that can
+  insert a dropped phrase, not just swap an emitted one), or an alternative
+  Parakeet checkpoint/architecture exposing such a hook — then re-measure
+  on the same #138/#343 corpus before any verdict upgrade.
+- **Status:** unresolved (verdict stays `watch`).

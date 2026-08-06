@@ -1,142 +1,28 @@
 # Project structure
 
-An LLM-oriented map of `local-llm-hub`. Three views: a **component
-diagram** showing runtime data flow between clients, the hub, and the
-backends (Claude subscription via the `claude -p` CLI + Gemini
-subscription via the `agy` Antigravity CLI + local llama-server
-processes for Qwen3.5-4B (primary), Gemma 4 26B-A4B, Gemma 4 E4B
-(fallback), Qwen3.5-9B and GLM-4.5-Air (demoted, ad-hoc bring-up only) +
-whisper.cpp ASR for both transcribe (turbo, GPU) and translate
-(medium, CPU) + text-to-speech backends (Piper + Orpheus + Kokoro + Chatterbox) at
-`/v1/audio/speech`); a pointer to the repo's **filesystem layout**
-(README.md, not restated here); and a **request lifecycle** sequence.
-Use this file as context when asking
-an LLM to modify the project — it shows which file owns what, and what
-talks to what. For per-model specs, quantisation, and docs links see
-[model-comparison.md](model-comparison.md).
+An LLM-oriented map of `local-llm-hub`. What lives **here** is the
+**request lifecycle** — one sequence diagram per backend path — plus a
+**key-facts** briefing to paste as context when asking an LLM to modify
+the project. The two structural maps this file used to carry are owned
+elsewhere and deliberately not restated: the **component diagram** in
+[`architecture.mmd`](architecture.mmd) and the **filesystem layout** in
+README.md's ["Layout"](../README.md#layout) section (`#452`).
+
+For per-model specs, quantisation, and docs links see
+[model-comparison.md](model-comparison.md). For **which machine owns which
+model**, [`config/models.yaml`](../config/models.yaml) is the only source —
+no doc in this repo restates placement.
 
 ## Component diagram (runtime)
 
-```mermaid
-flowchart LR
-    subgraph Clients["External clients"]
-        SDK["anthropic SDK<br/>(base_url=127.0.0.1:8000)"]
-        OAI["openai SDK<br/>(base_url=127.0.0.1:8000/v1)"]
-        CURL["raw HTTP / curl"]
-        LAN["LAN clients<br/>(other machines, openclaw)"]
-    end
-
-    subgraph UI["Admin SPA (app_web/) — sub-app mounted at /admin"]
-        WSRV["app_web/server.py<br/>create_app() sub-app<br/>versioned static + bearer auth"]
-        WROUT["app_web/routers/<br/>hub · models · playground · services<br/>telemetry · code_usage · glossary<br/>startup_profile · fleet_placement · fleet_maintenance<br/>roles · hosts · machines · diagnostics<br/>auth · webauthn · version · misc"]
-        WSTATIC["app_web/static/<br/>index.html SPA + per-tab JS<br/>tabs: Hub · Models · Play · OTel · Code · Machines"]
-    end
-
-    subgraph Hub["FastAPI hub (src/)"]
-        SRV["src/server.py<br/>POST /v1/messages<br/>POST /v1/chat/completions<br/>GET /v1/models /health /info<br/>GET / → 307 /admin/<br/>mounts /admin sub-app"]
-        CHATT["src/chat_translation.py<br/>schemas · media extraction ·<br/>prompt flatten · per-backend dispatch"]
-        IMG["src/server_images.py<br/>POST /v1/images/generations<br/>POST /v1/images/edits"]
-        REG["src/model_registry.py<br/>YAML → Model rows"]
-        HP["src/host_profile.py<br/>resolve active host"]
-        CLI_WRAP["src/claude_cli.py<br/>call_claude()"]
-        GEM_WRAP["src/gemini_cli.py<br/>call_gemini() / call_gemini_image()<br/>serialized model switch + ConPTY"]
-        OAI_UP["src/openai_upstream.py<br/>call_openai_chat()<br/>+ shape translators"]
-        RPROXY["src/remote_proxy.py<br/>resolve owning host's base URL<br/>for non-local model rows"]
-    end
-
-    subgraph Procs["Process managers"]
-        PSUP["src/process_supervisor.py<br/>shared subprocess start/stop workflow"]
-        SP["src/server_process.py<br/>hub Popen + log ring<br/>+ kill-port helper"]
-        LP["src/backend_process.py<br/>per-model llama-server + whisper-server<br/>Popen + log ring"]
-    end
-
-    REMOTE["Remote owning-host hub<br/>e.g. mac-mini-m4 :8000<br/>(qwen3.5-9b, parakeet ASR)"]
-
-    CLAUDE["claude -p CLI<br/>(Claude Code subscription)"]
-    GEMINI["agy Antigravity CLI<br/>(Google AI Pro/Ultra subscription)<br/>ConPTY-hosted · Pro/Flash/Flash-Lite"]
-    QWEN4B["llama-server :8088<br/>Qwen3.5-4B GGUF (agentic_light)<br/>all layers on GPU"]
-    GEMMA426["llama-server :8087<br/>Gemma 4 26B-A4B IT GGUF (MoE, agentic_heavy)<br/>all layers on GPU (IQ4_XS)"]
-    QWEN["llama-server :8081<br/>Qwen3.5-9B GGUF (ad-hoc)<br/>all layers on GPU"]
-    GLM["llama-server :8082<br/>GLM-4.5-Air GGUF (ad-hoc)<br/>MoE experts on CPU"]
-    GEMMA4E["llama-server :8086<br/>Gemma 4 E4B IT GGUF (fallback)<br/>all layers on GPU"]
-
-    subgraph Dev["Dev / tests / scripts"]
-        SMOKE["scripts/smoke_test.py<br/>iterate enabled_models()"]
-        DLMODELS["scripts/download_models.py<br/>huggingface_hub"]
-        DLLLAMA["scripts/install_llama_cpp.py<br/>CUDA-win / Metal-mac"]
-        INSTALL_CLI["python -m src.install [--fix]"]
-        TESTS["tests/test_server.py<br/>test_router.py<br/>test_model_registry.py<br/>test_install.py"]
-    end
-
-    CFG[("config/models.yaml<br/>hosts + models")]
-    YAML_CACHE["models/<br/>GGUF files (gitignored)"]
-    LLAMA_BIN["vendor/llama.cpp/<br/>llama-server binary"]
-
-    SDK -->|POST /v1/messages| SRV
-    OAI -->|POST /v1/chat/completions| SRV
-    CURL -->|both shapes| SRV
-    LAN -->|both shapes<br/>(0.0.0.0:8000)| SRV
-    SMOKE -->|HTTP + SDK| SRV
-
-    SRV -.->|mounts /admin| WSRV
-    SRV --> REG
-    REG --> HP
-    REG -.reads.-> CFG
-    HP -.reads.-> CFG
-
-    SRV --> CHATT
-    CHATT -->|backend=claude| CLI_WRAP
-    CHATT -->|backend=gemini| GEM_WRAP
-    CHATT -->|backend=openai| OAI_UP
-    SRV -.->|chat_completions direct dispatch| CLI_WRAP
-    SRV -.->|chat_completions direct dispatch| GEM_WRAP
-    SRV -.->|chat_completions direct dispatch| OAI_UP
-    SRV -.->|mounts images router| IMG
-    IMG -->|call_gemini_image()| GEM_WRAP
-    CLI_WRAP -->|subprocess.run<br/>--output-format json| CLAUDE
-    GEM_WRAP -->|ConPTY (pywinpty)<br/>agy -p print mode| GEMINI
-    OAI_UP -->|POST /v1/chat/completions| QWEN4B
-    OAI_UP -->|POST /v1/chat/completions| GEMMA426
-    OAI_UP -->|POST /v1/chat/completions| QWEN
-    OAI_UP -->|POST /v1/chat/completions| GLM
-    OAI_UP -->|POST /v1/chat/completions| GEMMA4E
-
-    SRV -.->|non-local model row| RPROXY
-    RPROXY -->|forwards request verbatim| REMOTE
-
-    WSRV --> WROUT
-    WSRV --> WSTATIC
-    WROUT -->|hub tab: start/stop/logs<br/>kill stray PID| SP
-    WROUT -->|models tab: start/stop/logs per model| LP
-    WROUT -.->|play tab: httpx to /v1/messages| SRV
-
-    SP --> PSUP
-    LP --> PSUP
-    SP -->|Popen python -m src.server| SRV
-    LP -->|Popen llama-server --model ...| QWEN4B
-    LP -->|Popen llama-server --model ...| GEMMA426
-    LP -->|Popen llama-server --model ...| QWEN
-    LP -->|Popen llama-server --model ...| GLM
-    LP -->|Popen llama-server --model ...| GEMMA4E
-    LP -.reads.-> LLAMA_BIN
-    LP -.reads.-> YAML_CACHE
-
-    DLMODELS -.writes.-> YAML_CACHE
-    DLLLAMA  -.writes.-> LLAMA_BIN
-    INSTALL_CLI -.dispatches.-> DLMODELS
-    INSTALL_CLI -.dispatches.-> DLLLAMA
-
-    TESTS -->|TestClient<br/>(monkeypatched)| SRV
-
-    classDef ext fill:#2a2f3a,stroke:#555,color:#eee
-    classDef hub fill:#1d2a1d,stroke:#4a7,color:#eee
-    classDef ui fill:#2a1d2a,stroke:#a47,color:#eee
-    classDef backend fill:#2a281d,stroke:#a94,color:#eee
-    class Clients ext
-    class CLAUDE,GEMINI,QWEN4B,GEMMA426,QWEN,GLM,GEMMA4E,REMOTE backend
-    class Hub hub
-    class UI ui
-```
+Superseded as a standalone diagram — [`architecture.mmd`](architecture.mmd)
+is the repo's one hand-maintained component/runtime map, and `CLAUDE.md`
+puts it under a same-PR anti-staleness contract, which is exactly why it is
+the one that stayed true. The second copy that used to live here drifted
+(whisper moved to the `gaming` satellite, Qwen3.5-9B to `mac-mini-m4`, and
+the audio / TTS / on-demand / failover / fleet-reconcile / diagnostics
+surface never appeared in it at all) the same way the filesystem tree did
+before `#452`. See it there rather than restating it in this file.
 
 ## Module diagram (filesystem)
 
@@ -206,7 +92,7 @@ zero. The model is global persisted CLI state (no per-call flag), which
 is why a short interactive `/model` switch precedes print mode whenever
 the requested Gemini row differs from the last-selected one.
 
-### Local backend (model=qwen3.5-4b, gemma4-26b-a4b-it, plus qwen3.5-9b / glm-4.5-air / gemma4-e4b-it ad-hoc)
+### Local backend (model=qwen3.5-4b, gemma4-26b-a4b-it, plus glm-4.5-air / gemma4-e4b-it ad-hoc; qwen3.5-9b via the Mac Mini)
 
 ```mermaid
 sequenceDiagram
@@ -215,7 +101,7 @@ sequenceDiagram
     participant R as model_registry.resolve
     participant T as chat_translation._run_openai_backend
     participant U as openai_upstream.call_openai_chat
-    participant L as llama-server :8088/:8087 (active) · :8081/:8082/:8086 (ad-hoc)
+    participant L as llama-server — owner-local :8088/:8087 (active) · :8082/:8086 (ad-hoc)<br/>(:8081 qwen3.5-9b lives on mac-mini-m4, reached via remote_proxy)
 
     C->>F: POST /v1/messages<br/>{model:"qwen3.5-4b", messages, ...}
     F->>R: resolve("qwen3.5-4b")
@@ -241,13 +127,17 @@ the envelope into OpenAI shape; for the local llama-server backends
 
 - **Purpose.** Single local HTTP endpoint that speaks both Anthropic
   and OpenAI shapes and routes by model name to several backends:
-  Claude subscription (via the `claude -p` CLI), local Qwen 3.5 4B
-  (agentic_light), local Gemma 4 26B-A4B IT MoE (agentic_heavy),
-  whisper.cpp ASR (turbo transcribe + medium translate), plus Gemma 4 E4B IT
-  (fallback) and Qwen3.5-9B / GLM-4.5-Air (ad-hoc candidates). Lets
-  clients (openclaw, anthropic/openai SDKs) keep one `base_url` and
-  swap models via a string. See
-  [model-comparison.md](model-comparison.md) for per-model specs.
+  Claude subscription (via the `claude -p` CLI), Gemini subscription (via
+  the `agy` Antigravity CLI, plus Imagen at `/v1/images/*`), Qwen 3.5 4B
+  (agentic_light) and Gemma 4 26B-A4B IT MoE (agentic_heavy) on
+  llama-server, ASR at `/v1/audio/transcriptions|translations` (the
+  whisper.cpp trio — turbo transcribe, medium translate, glossary-free
+  vanilla — plus Parakeet on the Mac Mini's ANE), and TTS at
+  `/v1/audio/speech` (Piper, Orpheus, Kokoro, Chatterbox), plus Gemma 4
+  E4B IT (fallback) and Qwen3.5-9B / GLM-4.5-Air. Lets clients (openclaw,
+  anthropic/openai SDKs) keep one `base_url` and swap models via a string.
+  See [model-comparison.md](model-comparison.md) for per-model specs and
+  [`config/models.yaml`](../config/models.yaml) for which host owns each row.
 - **One config, per-host filtering.**
   [`config/models.yaml`](../config/models.yaml) lists every model and
   every host. Each host has an `enabled` whitelist — the installer,
@@ -288,14 +178,18 @@ the envelope into OpenAI shape; for the local llama-server backends
   backend is Google **Imagen**, hosted as an agentic tool inside an `agy`
   Gemini text session (there is no Nano Banana / picker image model) — see
   [docs/image-generation.md](image-generation.md) for the full rationale.
-- **Multi-host: the Mac Mini.** A model row can declare an owning `host:`
-  in `config/models.yaml`; when the active machine isn't that owner,
+- **Multi-host.** A model row can declare an owning `host:` (or an ordered
+  `hosts:` preference chain) in `config/models.yaml`; when the active
+  machine isn't the effective owner,
   [`src/remote_proxy.py`](../src/remote_proxy.py) resolves the owning
   host's own hub `base_url` and the request is forwarded there verbatim —
   a client never needs to know or care which machine actually runs a
   model. Today `qwen3.5-9b` and Parakeet ASR are owned by `mac-mini-m4`
-  and proxied through this hub's `base_url`; see the README's "Multi-host:
-  the Mac Mini" section for the full walkthrough.
+  and the whisper.cpp STT trio by the `gaming` satellite (`#323`/`#370`),
+  with [`src/model_failover.py`](../src/model_failover.py) picking the live
+  owner along a chain; see the README's "Multi-host: the Mac Mini" section
+  for the full walkthrough. Placement is the registry's to state — read it
+  there, never from a doc.
 - **The three backend-invocation entry points** are
   [`src/claude_cli.py`](../src/claude_cli.py) (owns
   `subprocess.run(["claude", "-p", ...])`),

@@ -32,7 +32,7 @@ below is **"right model, wrong size for this box,"** not "weak model."
 
 The hub's only realistic path to a >100B MoE on a 16 GB card is the
 expert-CPU-offload pattern already proven by the demoted `glm-4.5-air`
-(`-ot ".ffn_.*_exps.=CPU"`, `launchers/run_glm.bat`) — but that worked because
+(`-ot ".ffn_.*_exps.=CPU"`, `launchers/run_model.bat glm`) — but that worked because
 GLM-4.5-Air is ~106B-A12B and its **2-bit-ish quant fits in 128 GB RAM**.
 
 GLM-5.2 has **no Air or Flash variant**. The community is actively requesting one

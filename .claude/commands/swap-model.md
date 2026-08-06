@@ -109,8 +109,9 @@ Will sync code + docs (§5b — required for upgrade/retire):
                               diagram, autostart default, launcher list,
                               run_backend examples, Python SDK example)
   ~ docs/model-comparison.md (registry table row + role row)
-  ~ docs/project-structure.md (models/ contents, run_backend dispatcher
-                              line, key-facts "Purpose" paragraph)
+  ~ docs/project-structure.md (local-backend lifecycle header, entry-points
+                              bullet, key-facts "Purpose" paragraph)
+  ~ docs/architecture.mmd    (LLAMA node: active ports/models)
   ~ launchers/run_all.bat / .sh (add new id; keep ex-incumbent for fallback)
   ~ tests/test_router.py + tests/test_streaming.py
                              (model name + port assertion match the new role)
@@ -193,12 +194,10 @@ ex-incumbent.
    - If the previous holder is kept as fallback, mark its row in the
      registry table with a "(fallback)" tag rather than removing it.
 
-4. **`docs/project-structure.md`.** Carries role-bound names in
-   several mermaid blocks and the "Key facts for LLM context" prose:
-   - The `run_backend.py` node — update the dispatcher token list to
-     include the new id.
-   - The `models/` node — add the new GGUF filename. Tag the
-     ex-incumbent's GGUF "(fallback)" if kept.
+4. **`docs/project-structure.md`.** Carries role-bound names in the
+   request-lifecycle sequences and the "Key facts for LLM context" prose
+   (it no longer holds a component diagram or a `models/` listing — those
+   live in `docs/architecture.mmd` and README's "Layout", #475):
    - The **Local backend** request-lifecycle section header — list the
      new model in the active set, demote the ex-incumbent into the
      ad-hoc parenthetical.
@@ -210,6 +209,11 @@ ex-incumbent.
      context" — rewrite the backend list so the active rotation reads
      as the active rotation and the fallback / ad-hoc rows are clearly
      labelled.
+
+4b. **`docs/architecture.mmd`.** Its `LLAMA` node names the active
+   llama-server ports/models — update it when a role-holder changes.
+   Placement (which host owns the row) stays `config/models.yaml`'s
+   alone; don't restate it here.
 
 5. **`launchers/run_all.{bat,sh}`.** Add a `start … run_backend
    <new_id>` line in family-grouped order. Update the trailing

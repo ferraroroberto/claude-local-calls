@@ -41,7 +41,11 @@ Subscription-backed cloud routes (no GPU, no API keys, no Cloud project):
   procedural — see [docs/image-generation.md](docs/image-generation.md).
   Both are testable from the admin Playground's image card.
 
-Local entries in active use as of the May 2026 frontier reading:
+Self-hosted entries in active use as of the May 2026 frontier reading. A row
+runs on whichever machine `config/models.yaml` gives it — not necessarily the
+one you are reading this on; `127.0.0.1:<port>` below means "on the owning
+host", and every one of them is reachable through this hub's own `:8000`
+regardless (see [Multi-host: the Mac Mini](#multi-host-the-mac-mini)):
 
 - **`qwen3.5-4b`** — local `llama-server` running
   [unsloth/Qwen3.5-4B-GGUF](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF)
@@ -67,21 +71,30 @@ Local entries in active use as of the May 2026 frontier reading:
   since #422** (`startup: on_demand`, `idle_unload_minutes: 30`): the first
   request loads it (~tens of seconds), 30 idle minutes unload it — freeing
   ~13.4 GB of tower's VRAM for the voice path between uses.
-- **`whisper-large-v3-turbo`** — local `whisper-server`
+- **`whisper-large-v3-turbo`** — `whisper-server`
   ([ggerganov/whisper.cpp](https://github.com/ggerganov/whisper.cpp))
-  running [ggml-large-v3-turbo.bin](https://huggingface.co/ggerganov/whisper.cpp)
-  on `127.0.0.1:8090`. OpenAI-compatible `/v1/audio/transcriptions`.
-  POST either to the hub's proxy at `:8000/v1/audio/transcriptions`
-  (captured in the observability ring) or directly to `:8090` for lower
-  overhead. Port 8090 is a shared mutual-exclusion lock with
-  `E:\automation\automation\audio\transcribe_voice`. Fills the
-  `audio_transcribe` role.
-- **`whisper-medium-translate`** — sibling whisper-server on
-  `127.0.0.1:8091` running `ggml-medium.bin` on CPU. Same
-  OpenAI-compatible `/v1/audio/transcriptions` shape; supports
+  running [ggml-large-v3-turbo.bin](https://huggingface.co/ggerganov/whisper.cpp),
+  **owned by the `gaming` satellite** since #323 — the tower runs no whisper
+  backend of its own in the normal case. Reach it identically from any
+  machine: POST to *this* hub's `:8000/v1/audio/transcriptions` and the
+  request is served locally or proxied to the owning host, landing in the
+  observability ring either way. It carries the repo's first production
+  failover chain (`hosts: [gaming, mac-mini-m4, {id: tower, cpu: true}]`), so
+  the tower is the degraded CPU last rung rather than the daily owner. Fills
+  the `audio_transcribe` role — as its *fallback*; parakeet on the Mac Mini is
+  the primary. Ownership, ports, and the chain live in
+  [`config/models.yaml`](config/models.yaml); the topology is walked through
+  under [Multi-host: the Mac Mini](#multi-host-the-mac-mini) below. On a host
+  that actually runs the backend you can also POST straight to its `:8090` for
+  lower overhead (skipping the ring); that port is a shared mutual-exclusion
+  lock with `E:\automation\automation\audio\transcribe_voice`.
+- **`whisper-medium-translate`** — sibling whisper-server running
+  `ggml-medium.bin` on CPU, **also owned by `gaming`** (moved off the tower in
+  #370). Same OpenAI-compatible `/v1/audio/transcriptions` shape; supports
   `task=translate` (turbo is transcription-only — its decoder distill
-  drops translation). Eager-loaded (~1.5 GB RAM, always ready). Fills
-  the `audio_translate` role. A lazy-load mode is also available — see
+  drops translation). Eager-loaded (~1.5 GB RAM, 0 MB VRAM, always ready).
+  Fills the `audio_translate` role; address it through this hub's
+  `:8000/v1/audio/translations`. A lazy-load mode is also available — see
   [src/whisper_translate_proxy.py](src/whisper_translate_proxy.py) — for
   hosts that need to reclaim RAM when translate is rare.
 - **`whisper-vanilla`** — the same `ggml-large-v3-turbo.bin` as the turbo
@@ -99,8 +112,8 @@ Local entries in active use as of the May 2026 frontier reading:
   enough. A caller that sends its own `language` always wins. Lazy-loaded
   (spawn-on-request via
   [src/whisper_translate_proxy.py](src/whisper_translate_proxy.py),
-  idle-unload after 300 s) on external `:8094` / loopback `:18094` so it
-  costs no VRAM when idle. See issue #128.
+  idle-unload after 300 s) so it costs no VRAM when idle, and **owned by
+  `gaming`** alongside the other two whisper slots (#370). See issue #128.
 - **`piper-tts`** — fast local text-to-speech (the inverse of whisper),
   served by the in-repo FastAPI shim [src/tts_server.py](src/tts_server.py)
   on `127.0.0.1:8096`. OpenAI-compatible `POST /v1/audio/speech`. POST to
@@ -369,9 +382,9 @@ openClaw / anthropic SDK / openai SDK / curl
    │    qwen3.5-4b             → llama-server 127.0.0.1:8088             │
    │    gemma4-26b-a4b-it      → llama-server 127.0.0.1:8087             │
    │    whisper-* (via chat shape) → 400 "use /v1/audio/* or direct"    │
-   │    POST /v1/audio/transcriptions → proxy to whisper :8090          │
-   │      (model=whisper-vanilla → glossary-free turbo :8094, lazy)     │
-   │    POST /v1/audio/translations   → proxy to whisper :8091          │
+   │    POST /v1/audio/transcriptions → whisper / parakeet (role chain) │
+   │      (model=whisper-vanilla → glossary-free turbo, lazy)           │
+   │    POST /v1/audio/translations   → whisper-medium (translate)      │
    │    POST /v1/audio/speech         → proxy to tts shim :8092/:8093/:8095/:8096 │
    │      (the audio proxy lands requests in the observability ring)    │
    │    GET  /v1/audio/health         → probe whisper/tts; 503 if down   │
@@ -379,15 +392,21 @@ openClaw / anthropic SDK / openai SDK / curl
    └──────────────────────────────────────────────────────────┘
 
 audio clients  ──►  hub 127.0.0.1:8000 /v1/audio/*  ──►  whisper-server / tts shim  (proxied, observable)
-audio clients  ──►  whisper-server 127.0.0.1:8090   (turbo, transcribe, GPU; direct, lower overhead)
-audio clients  ──►  whisper-server 127.0.0.1:8091   (medium, translate, CPU; direct)
-audio clients  ──►  whisper proxy  127.0.0.1:8094   (turbo, glossary-free transcribe, GPU, lazy; via hub model=whisper-vanilla)
 audio clients  ──►  tts shim       127.0.0.1:8096   (piper, text→speech, auto-loaded; fast CPU)
 audio clients  ──►  tts shim       127.0.0.1:8093   (orpheus, text→speech, on demand; llama-server :18093 + SNAC)
 audio clients  ──►  tts shim       127.0.0.1:8095   (kokoro, text→speech, on demand; ONNX Runtime)
 audio clients  ──►  tts shim       127.0.0.1:8092   (chatterbox, text→speech, on demand; direct)
                           (whisper speaks /v1/audio/transcriptions, the tts shim /v1/audio/speech;
-                           POST via the hub proxy for observability, or direct to the port to skip it)
+                           POST via the hub proxy for observability, or direct to the port — on the
+                           host that owns the backend — to skip it)
+
+STT is NOT provisioned on this box. The whisper trio moved to the gaming
+satellite (#323/#370) and parakeet lives on the Mac Mini; the tower is only
+whisper's degraded `cpu: true` last rung. Callers still POST to this hub's
+:8000 and it proxies to the owner — but weights, builds, and `enabled:` rows
+belong on the owning machine:
+  whisper / whisper_translate / whisper_vanilla  → gaming      (192.168.0.16)
+  parakeet (transcribe primary)                  → mac-mini-m4 (192.168.0.14)
 
 Demoted (defined in config/models.yaml, not in any host's enabled list):
   glm-4.5-air — bring up via launchers/run_model.bat glm
@@ -398,8 +417,15 @@ Mac Mini (mac-mini-m4), proxied through this hub's own base_url — see below:
   parakeet    → this hub 127.0.0.1:8000  → mac hub 192.168.0.14:8000 → parakeet-server :8098
 ```
 
-See [docs/project-structure.md](docs/project-structure.md) for the full
-mermaid diagrams (components, modules, request lifecycle),
+Which machine owns which row is [`config/models.yaml`](config/models.yaml)'s
+answer alone — the block above sketches request flow, not topology.
+[Multi-host: the Mac Mini](#multi-host-the-mac-mini) below walks the current
+tower / mac-mini-m4 / gaming split.
+
+See [docs/architecture.mmd](docs/architecture.mmd) for the full component
+diagram (the one structural map under a same-PR upkeep contract),
+[docs/project-structure.md](docs/project-structure.md) for the per-backend
+request-lifecycle sequences and the LLM key-facts briefing,
 [docs/whisper-asr.md](docs/whisper-asr.md) for the whisper ASR backend
 (glossary, boosting, tuning), and
 [docs/add-tts.md](docs/add-tts.md) for the text-to-speech backend
@@ -1651,25 +1677,30 @@ curl -s http://127.0.0.1:8000/v1/images/generations \
 ```
 
 Transcribe audio via whisper — through the hub's proxy at
-`:8000/v1/audio/transcriptions` (captured in the observability ring) or
-directly to `:8090` (lower overhead, shown here):
+`:8000/v1/audio/transcriptions`, which works from any machine (the hub
+resolves the owning host and lands the call in the observability ring):
 
 ```bash
-# direct to the whisper server (skips the observability ring)
-curl -s -F file=@clip.wav -F response_format=json \
-  http://127.0.0.1:8090/v1/audio/transcriptions
-
-# or through the hub proxy (same shape, lands in the observability ring)
+# through the hub proxy (portable — works whether or not this box owns whisper)
 curl -s -F file=@clip.wav -F response_format=json \
   http://127.0.0.1:8000/v1/audio/transcriptions
+
+# only on the host that actually runs the backend (gaming today): direct to
+# whisper-server, lower overhead, skips the observability ring
+curl -s -F file=@clip.wav -F response_format=json \
+  http://127.0.0.1:8090/v1/audio/transcriptions
 ```
 
-Translate non-English audio to English via the translate slot
-(direct to :8091; medium runs eager on CPU, ~1.5 GB RAM):
+Translate non-English audio to English via the translate slot (medium runs
+eager on CPU, ~1.5 GB RAM, on the owning host):
 
 ```bash
-# whisper-server honors translate=true (not OpenAI's task=translate) on
-# the direct-to-port path; the hub proxy bridges task=translate → translate=true
+# portable: through the hub proxy, which bridges task=translate → translate=true
+curl -s -F file=@spanish.wav -F task=translate \
+  http://127.0.0.1:8000/v1/audio/translations
+
+# on the owning host only: whisper-server honors translate=true (not OpenAI's
+# task=translate) on the direct-to-port path
 curl -s -F file=@spanish.wav -F translate=true \
   http://127.0.0.1:8091/v1/audio/transcriptions
 ```
@@ -1678,7 +1709,7 @@ Or with the OpenAI SDK:
 
 ```python
 from openai import OpenAI
-asr = OpenAI(api_key="local-dummy", base_url="http://127.0.0.1:8090/v1")
+asr = OpenAI(api_key="local-dummy", base_url="http://127.0.0.1:8000/v1")
 with open("clip.wav", "rb") as f:
     r = asr.audio.transcriptions.create(model="whisper-large-v3-turbo", file=f)
 print(r.text)

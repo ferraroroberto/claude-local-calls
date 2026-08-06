@@ -1,19 +1,22 @@
 %% docs/architecture.mmd — local-llm-hub's own internal structure.
 %% Hand-authored, not generated — companion to the fleet-wide convention in
 %% ferraroroberto/fleet-config#256 (see that repo's own docs/architecture.mmd
-%% for the reference dogfood). This is deliberately smaller than
-%% docs/project-structure.md's three detailed diagrams (component/module/
-%% sequence) — it's the one-glance map; project-structure.md stays the deep
-%% reference. Update this diagram in the same PR as any material structural
-%% change (a backend added/removed, a router moved, a process manager
-%% relocated) — same anti-staleness contract as this repo's own `.fleet.toml`
-%% `description` field.
+%% for the reference dogfood). This is the repo's ONE component/runtime map:
+%% docs/project-structure.md used to carry a second copy and it drifted, so it
+%% now points here and keeps only the per-backend request-lifecycle sequences
+%% plus the LLM key-facts briefing (issue #475). Update this diagram in the
+%% same PR as any material structural change (a backend added/removed, a router
+%% moved, a process manager relocated) — same anti-staleness contract as this
+%% repo's own `.fleet.toml` `description` field.
+%%
+%% Placement (which machine owns which model row) is config/models.yaml's to
+%% state; host labels below are context, not a second registry.
 
 flowchart TB
   subgraph entry["Entry points"]
     TRAY["tray.bat / tray/tray.py\npystray icon + Cloudflare tunnel"]
     RUNHUB["run_hub.bat / .sh\npython -m src.run_backend hub"]
-    RUNMODEL["launchers/run_*.bat / .sh\npython -m src.run_backend <model_id>"]
+    RUNMODEL["launchers/run_model.bat / .sh <id> (#448)\npython -m src.run_backend <model_id>"]
   end
 
   subgraph core["src/server.py — FastAPI hub (:8000)"]

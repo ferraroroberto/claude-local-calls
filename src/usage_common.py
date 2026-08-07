@@ -13,13 +13,17 @@ is that contract made explicit: the record shape, the mtime-cache wrapper,
 and the small parsing/display helpers every vendor parser needs, under public
 names. ``code_usage.py`` (Claude JSONL parsing + the ``get_summary``
 aggregation API) and the vendor parsers all import from here.
+
+``_period_since`` (with the ``_today_utc`` it is built on) was missed by that
+sweep and kept being reached for across the boundary by ``claude_code_otel.py``;
+it moved here as :func:`period_since` / :func:`today_utc` in #471.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -111,6 +115,29 @@ def parse_iso_ts(raw: Optional[str]) -> datetime:
     except (ValueError, TypeError, AttributeError):
         return datetime.now(tz=timezone.utc)
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def today_utc() -> date:
+    """Today's date in UTC — the anchor every period window is measured from."""
+    return datetime.now(tz=timezone.utc).date()
+
+
+def period_since(period: str) -> Optional[date]:
+    """Return the earliest date (UTC) that belongs to ``period``, or None for all-time.
+
+    Shared by ``code_usage.get_summary`` and ``claude_code_otel``'s per-period
+    rollup, which must agree on where a window starts or the OTel top-up would
+    cover a different span than the records it tops up.
+    """
+    today = today_utc()
+    if period == "today":
+        return today
+    if period == "week":
+        return today - timedelta(days=6)
+    if period == "month":
+        return today - timedelta(days=29)
+    # "all"
+    return None
 
 
 def encode_project_key(path: str) -> str:

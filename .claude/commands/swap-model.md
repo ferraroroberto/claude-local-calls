@@ -30,11 +30,11 @@ they want; ask. Plan-mode rules apply throughout.
   the swap. Audio roles do not currently use this pattern.
 - After every `upgrade` or `retire` action, **the swap is not done
   until the rest of the repo agrees with the new role pointer**.
-  README, `docs/model-comparison.md`,
-  the tests that name the active fast-lane / deep-lane model, and
-  `launchers/run_all.{bat,sh}` all carry copies of the role-bound
-  ids and display names. Step §5b enforces this sync — it is part
-  of the workflow, not a "nice to have".
+  README, `docs/model-comparison.md`, and the tests that name the
+  active fast-lane / deep-lane model all carry copies of the
+  role-bound ids and display names. (`launchers/` does not — it is
+  parameterized off `config/models.yaml`, #448.) Step §5b enforces
+  this sync — it is part of the workflow, not a "nice to have".
 
 ## Workflow
 
@@ -112,7 +112,7 @@ Will sync code + docs (§5b — required for upgrade/retire):
   ~ docs/project-structure.md (local-backend lifecycle header, entry-points
                               bullet, key-facts "Purpose" paragraph)
   ~ docs/architecture.mmd    (LLAMA node: active ports/models)
-  ~ launchers/run_all.bat / .sh (add new id; keep ex-incumbent for fallback)
+    launchers/               (no edit — roster derived from models.yaml, #448)
   ~ tests/test_router.py + tests/test_streaming.py
                              (model name + port assertion match the new role)
 ```
@@ -215,12 +215,14 @@ ex-incumbent.
    Placement (which host owns the row) stays `config/models.yaml`'s
    alone; don't restate it here.
 
-5. **`launchers/run_all.{bat,sh}`.** Add a `start … run_backend
-   <new_id>` line in family-grouped order. Update the trailing
-   `echo Launched …` summary string to include the new id. Leave the
-   ex-incumbent's line in (it's still in `enabled:` for fallback);
-   `run_all` deliberately fires every backend in `enabled:` for the
-   host and disabled rows exit immediately.
+5. **`launchers/`.** Nothing to edit. `run_all.{bat,sh}` derives its
+   roster live from `config/models.yaml` (`run_backend
+   --list-launchable`, #448) and its summary line is generic, so the
+   new id is picked up the moment the yaml lands — and the
+   ex-incumbent keeps being launched for as long as it stays in
+   `enabled:`. Do **not** add a `start … run_backend <new_id>` line or
+   name the id in the `echo`: that reintroduces the hardcoded roster
+   #448 removed.
 
 6. **Tests.** The unit tests carry the active fast-lane and
    deep-lane display names as in-test fixtures so the registry and
@@ -400,9 +402,9 @@ requires it.
 - Active host's `enabled:` list contains the new id
 - the new id is `startup: eager` on the intended host (when the swapped
   role should autostart, #430)
-- `launchers/run_model.bat` / `.sh <new_id>` needs no new file — the
-  parameterized launcher (#448) already covers it
-- `launchers/run_all.{bat,sh}` knows about the new id
+- `launchers/` is untouched — `run_model.bat` / `.sh <new_id>` needs no
+  new file and `run_all.{bat,sh}` needs no new line: both are
+  parameterized off `config/models.yaml` (#448)
 - (If requested) weights downloaded to `models/`
 - `docs/frontier/runs/<latest>/report.md` §10 reflects the new
   decision with today's date

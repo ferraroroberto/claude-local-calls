@@ -233,7 +233,7 @@ def snapshot_listening_pids() -> dict[int, list[int]]:
             out = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                creationflags=NO_WINDOW,
             ).stdout
             line_re = re.compile(
                 r"\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)"
@@ -276,7 +276,7 @@ def find_port_pids(port: int) -> list[int]:
 
     Note: under ``pythonw`` (e.g. when called from the tray) Windows
     Terminal will spawn a fresh window for any console child unless we
-    pass ``CREATE_NO_WINDOW``. Callers that need ports for *many*
+    pass ``NO_WINDOW``. Callers that need ports for *many*
     sockets in one tick should prefer :func:`snapshot_listening_pids`
     to avoid spawning N netstat / lsof processes.
     """
@@ -285,7 +285,7 @@ def find_port_pids(port: int) -> list[int]:
             out = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                creationflags=NO_WINDOW,
             ).stdout
             pids: set[int] = set()
             for line in out.splitlines():
@@ -361,7 +361,7 @@ def kill_pid(target_pid: int) -> tuple[bool, str]:
             r = subprocess.run(
                 ["taskkill", "/F", "/PID", str(target_pid)],
                 capture_output=True, text=True, timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                creationflags=NO_WINDOW,
             )
             if r.returncode == 0:
                 return True, f"killed pid {target_pid}"

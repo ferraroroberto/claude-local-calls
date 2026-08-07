@@ -37,7 +37,7 @@ import json
 import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from src.usage_charts import MAX_DAILY_DAYS, build_prev_totals, build_time_series
 from src.usage_common import (
@@ -47,7 +47,9 @@ from src.usage_common import (
     load_cached,
     model_display,
     parse_iso_ts,
+    period_since,
     project_pretty,
+    today_utc,
 )
 from src.usage_pricing import record_costs
 
@@ -208,30 +210,12 @@ def _gather_records(vendor: str = "all") -> List[UsageRecord]:
 # ---------------------------------------------------------------------------
 
 
-def _today_utc() -> date:
-    return datetime.now(tz=timezone.utc).date()
-
-
 def _tok_k(n: int) -> float:
     """Round to one decimal in thousands."""
     return round(n / 1000, 1)
 
 
 _VALID_PERIODS = {"today", "week", "month", "all"}
-
-
-def _period_since(period: str) -> Optional[date]:
-    """Return the earliest date (UTC) that belongs to ``period``, or None for all-time."""
-    from datetime import timedelta
-    today = _today_utc()
-    if period == "today":
-        return today
-    if period == "week":
-        return today - timedelta(days=6)
-    if period == "month":
-        return today - timedelta(days=29)
-    # "all"
-    return None
 
 
 _OTEL_UNTRACKED_KEY = "otel-untracked"
@@ -353,8 +337,8 @@ def get_summary(period: str = "today", vendor: str = "all") -> dict:
     # durable store, deliberately NOT persisted into the history snapshot.
     if vendor in ("all", "claude"):
         records = records + _otel_delta_records(records)
-    today = _today_utc()
-    since = _period_since(period)
+    today = today_utc()
+    since = period_since(period)
 
     # ---- helpers ----
     def blank_counts() -> dict:

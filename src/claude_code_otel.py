@@ -56,8 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.code_usage import _period_since
-from src.usage_common import model_display
+from src.usage_common import model_display, period_since
 
 _log = logging.getLogger(__name__)
 
@@ -252,7 +251,7 @@ def get_usage_summary(period: str = "today") -> Dict[str, Any]:
         period = "all"
 
     points = _load_points()
-    since = _period_since(period)
+    since = period_since(period)
     if since is not None:
         points = [p for p in points if p.ts.date() >= since]
 

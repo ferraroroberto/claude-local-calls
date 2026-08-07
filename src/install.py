@@ -321,7 +321,7 @@ def _check_launchagent() -> Check:
         )
     loaded = subprocess.run(
         ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHAGENT_LABEL}"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, creationflags=NO_WINDOW,
     ).returncode == 0
     if not loaded:
         return Check(
@@ -358,10 +358,12 @@ def _check_systemd_unit() -> Check:
             fix_label="renders linux/systemd/local-llm-hub.service + `systemctl enable --now` (boot autostart + crash respawn)",
         )
     active = subprocess.run(
-        ["systemctl", "is-active", SYSTEMD_UNIT_NAME], capture_output=True, text=True,
+        ["systemctl", "is-active", SYSTEMD_UNIT_NAME],
+        capture_output=True, text=True, creationflags=NO_WINDOW,
     ).stdout.strip()
     enabled = subprocess.run(
-        ["systemctl", "is-enabled", SYSTEMD_UNIT_NAME], capture_output=True, text=True,
+        ["systemctl", "is-enabled", SYSTEMD_UNIT_NAME],
+        capture_output=True, text=True, creationflags=NO_WINDOW,
     ).stdout.strip()
     if active != "active":
         return Check(
@@ -535,6 +537,7 @@ def _fix_parakeet_worker() -> None:
         [swift, "build", "-c", "release"],
         cwd=str(PROJECT_ROOT / "mac" / "parakeet-worker"),
         check=True,
+        creationflags=NO_WINDOW,
     )
 
 
@@ -558,13 +561,14 @@ def _fix_launchagent() -> None:
     # release the label after an actual bootout — an immediate bootstrap
     # can transiently fail with "Input/output error" (confirmed live) —
     # so retry a few times with a short pause rather than a single attempt.
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LAUNCHAGENT_LABEL}"], capture_output=True)
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LAUNCHAGENT_LABEL}"],
+                   capture_output=True, creationflags=NO_WINDOW)
     result = None
     for _ in range(5):
         time.sleep(1)
         result = subprocess.run(
             ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, creationflags=NO_WINDOW,
         )
         if result.returncode == 0:
             break
@@ -594,7 +598,7 @@ def _fix_systemd_unit() -> None:
     unit_path = _systemd_unit_path()
     tee = subprocess.run(
         ["sudo", "-n", "tee", str(unit_path)],
-        input=rendered, capture_output=True, text=True,
+        input=rendered, capture_output=True, text=True, creationflags=NO_WINDOW,
     )
     if tee.returncode != 0:
         raise RuntimeError(
@@ -602,7 +606,8 @@ def _fix_systemd_unit() -> None:
             f"{tee.stderr.strip() or 'sudo -n denied — is passwordless sudo configured? (docs/machines.md)'}"
         )
     for args in (["daemon-reload"], ["enable", "--now", SYSTEMD_UNIT_NAME]):
-        p = subprocess.run(["sudo", "-n", "systemctl", *args], capture_output=True, text=True)
+        p = subprocess.run(["sudo", "-n", "systemctl", *args],
+                           capture_output=True, text=True, creationflags=NO_WINDOW)
         if p.returncode != 0:
             raise RuntimeError(
                 f"`sudo -n systemctl {' '.join(args)}` failed: "

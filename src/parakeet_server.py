@@ -39,6 +39,7 @@ from fastapi.responses import JSONResponse
 
 from .backend_process import resolve_model_for_engine
 from .event_loop import LOOP_FACTORY
+from .no_window import NO_WINDOW
 
 log = logging.getLogger("parakeet_server")
 
@@ -82,6 +83,7 @@ def _start_worker() -> "tuple[subprocess.Popen, queue.Queue[str]]":
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        creationflags=NO_WINDOW,
     )
 
     # readline() on the worker's stdout blocks indefinitely, so it can't be
@@ -133,7 +135,7 @@ def _to_wav16k_mono(src: Path) -> Path:
     dst = src.with_suffix(".norm.wav")
     subprocess.run(
         ["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(src), str(dst)],
-        check=True, capture_output=True,
+        check=True, capture_output=True, creationflags=NO_WINDOW,
     )
     return dst
 

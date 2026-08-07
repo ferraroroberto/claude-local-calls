@@ -214,11 +214,21 @@ def _flatten_messages(messages: List[Message]) -> str:
 
 def _openai_messages_to_anthropic(
     messages: List[Dict[str, Any]],
+    model_label: Optional[str] = None,
 ) -> Tuple[List[Message], Optional[str]]:
     """Normalize OpenAI-shape dict messages into Anthropic-shape ``Message``
     objects plus an extracted system prompt, so ``/v1/chat/completions`` can
     reuse ``_flatten_messages`` instead of hand-rolling its own prompt
     scaffold (issue #195 — the two routes previously diverged silently).
+
+    Non-text content parts (``image_url``, ``input_audio``, ``file``, …) are
+    **refused with a 400** rather than dropped (issue #474). This route
+    flattens a conversation down to a single text prompt for the claude /
+    gemini CLI dispatch, so silently keeping only the ``text`` parts returned a
+    well-formed 200 that answered a question the caller never asked. Refusing
+    loudly matches ``_run_openai_backend``'s guard for the same input on the
+    Anthropic-shape route; media for these backends goes to ``/v1/messages``,
+    which carries it through ``_extract_media_blocks``.
     """
     sys_text: Optional[str] = None
     turns: List[Message] = []
@@ -226,6 +236,22 @@ def _openai_messages_to_anthropic(
         role = m.get("role", "user")
         content = m.get("content", "")
         if isinstance(content, list):
+            unsupported = sorted({
+                str(p.get("type") or "unknown") if isinstance(p, dict) else type(p).__name__
+                for p in content
+                if not (isinstance(p, dict) and p.get("type") == "text")
+            })
+            if unsupported:
+                who = f"{model_label!r} " if model_label else ""
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"backend {who}cannot accept {', '.join(unsupported)} content "
+                        "on /v1/chat/completions — this route flattens messages to a "
+                        "text prompt. Send image/document input to POST /v1/messages "
+                        "instead."
+                    ),
+                )
             content = "\n".join(
                 p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
             )

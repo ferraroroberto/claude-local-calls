@@ -697,7 +697,14 @@ def chat_completions(req: ChatCompletionRequest, request: Request) -> Response:
             # flatten with the same helper /v1/messages uses (issue #195),
             # so both routes produce the same prompt shape for the same
             # conversation instead of two independently-maintained scaffolds.
-            turns, sys_text = _openai_messages_to_anthropic(req.messages)
+            try:
+                turns, sys_text = _openai_messages_to_anthropic(
+                    req.messages, model_label=model.id,
+                )
+            except HTTPException:
+                # Non-text content parts are refused, not dropped (#474).
+                error_type = "http_400"
+                raise
             prompt = _flatten_messages(turns) if turns else ""
             try:
                 if model.backend == "claude":

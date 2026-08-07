@@ -469,6 +469,13 @@ async function markBaseline() {
 async function deleteRun() {
   const runId = state.diagSelectedRun;
   if (!runId) return;
+  const run = (state.diagRuns || []).find(function (r) { return r.run_id === runId; }) || {};
+  const when = run.started_at ? fmtWhen(run.started_at) : runId;
+  const baselineWarning = run.is_baseline
+    ? ' It is the current baseline — later runs will have nothing to report drift against.'
+    : '';
+  if (!window.confirm('Delete the capture from ' + when + '?' + baselineWarning
+    + ' This cannot be undone.')) return;
   try {
     const res = await api('/admin/api/diagnostics/runs/' + encodeURIComponent(runId), { method: 'DELETE' });
     if (!res.ok) throw new Error('HTTP ' + res.status);

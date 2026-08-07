@@ -79,7 +79,11 @@ def build_time_series(
         slot["input_tokens"] += r.input_tokens + r.cache_creation_tokens
         slot["output_tokens"] += r.output_tokens
         slot["cache_read_tokens"] += r.cache_read_tokens
-        slot["requests"] += 1
+        # ``requests`` is an aggregation weight, not a flag (see UsageRecord):
+        # a code_usage_history synthetic rollup row carries the N calls it
+        # summarises, and an OTel-derived record carries 0. Counting 1 per row
+        # undercounted every pruned day and overcounted every OTel delta (#474).
+        slot["requests"] += r.requests
 
     result = []
     for b in buckets:
@@ -124,5 +128,9 @@ def build_prev_totals(
             acc["output_tokens"] += r.output_tokens
             acc["cache_creation_tokens"] += r.cache_creation_tokens
             acc["cache_read_tokens"] += r.cache_read_tokens
-            acc["requests"] += 1
+            # Weight, not a flag — same reason as build_time_series (#474).
+            # The "month" window (days 30-59 back) is always entirely past
+            # Claude Code's ~30-day transcript retention, so it is sourced
+            # from synthetic rollup rows alone and undercounted by 1-per-row.
+            acc["requests"] += r.requests
     return acc

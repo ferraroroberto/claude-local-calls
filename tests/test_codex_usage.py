@@ -171,3 +171,37 @@ def test_summary_by_vendor_merges(codex_dir, monkeypatch):
     vendors = {row["vendor"] for row in summary["by_vendor"]}
     assert vendors == {"codex"}
     assert summary["totals"]["reasoning_output_tokens"] == 3
+
+
+def test_chart_buckets_and_prev_totals_use_requests_weight():
+    """issue #474: usage_charts must accumulate the ``requests`` *weight*, not
+    1-per-row. A synthetic rollup row carries the N calls it summarises and an
+    OTel-derived row carries 0, so counting rows undercounted every day past
+    Claude Code's ~30-day transcript retention and overcounted OTel deltas."""
+    from datetime import date, datetime, timezone
+
+    from src import usage_charts
+
+    today = date(2026, 6, 30)
+
+    def _r(day: datetime, requests: int) -> usage_common.UsageRecord:
+        return usage_common.UsageRecord(
+            session_id="s", project_key="k", project_name="k",
+            model="claude-sonnet-5", ts=day,
+            input_tokens=1, output_tokens=1, cache_creation_tokens=0,
+            cache_read_tokens=0, requests=requests,
+        )
+
+    # A rollup row worth 7 calls plus an OTel row worth 0, same day.
+    in_bucket = datetime(2026, 6, 30, 12, tzinfo=timezone.utc)
+    series = usage_charts.build_time_series(
+        [_r(in_bucket, 7), _r(in_bucket, 0)], "today", today,
+    )
+    assert series[-1]["models"]["Sonnet"]["requests"] == 7
+
+    # Previous "month" window is days 30-59 back — always entirely synthetic.
+    prev_day = datetime(2026, 5, 20, 12, tzinfo=timezone.utc)  # 41 days back
+    prev = usage_charts.build_prev_totals(
+        [_r(prev_day, 7), _r(prev_day, 0)], "month", today,
+    )
+    assert prev is not None and prev["requests"] == 7

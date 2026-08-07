@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 import time
 from typing import Any, Dict, Optional
 
@@ -39,7 +38,7 @@ import httpx
 
 from . import remote_stats
 from .host_profile import get_host, hub_port
-from .no_window import NO_WINDOW
+from .ssh_exec import run_ssh
 
 logger = logging.getLogger(__name__)
 
@@ -71,29 +70,25 @@ def _run_ssh(owner: Any, address: str, payload: str, *, use_key: bool) -> Dict[s
     ``use_key`` selects the forced-command channel (``-i`` key, restricted
     remote command) vs. the hub user's own general passwordless channel —
     the only two differences between ``bootstrap``/``sync`` and the
-    reboot/shutdown power actions."""
-    cmd = ["ssh"]
+    reboot/shutdown power actions. The invocation itself is
+    ``ssh_exec.run_ssh`` (shared with ``remote_stats``, #470); only the
+    ``{ok, error}`` shape below is this layer's own."""
+    key_path = None
     if use_key:
         key_path = _ssh_key_path()
         if not key_path:
             return {"ok": False, "error": f"{_SSH_KEY_ENV} is not set in .env"}
-        cmd += ["-i", key_path]
-    cmd += [
-        "-o", "BatchMode=yes",
-        "-o", f"ConnectTimeout={_SSH_CONNECT_TIMEOUT_S}",
-        "-o", "StrictHostKeyChecking=accept-new",
+    result = run_ssh(
         f"{owner.ssh_user}@{address}",
         payload,
-    ]
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=_SSH_CONNECT_TIMEOUT_S + 10,
-            creationflags=NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        key_path=key_path,
+        timeout=_SSH_CONNECT_TIMEOUT_S + 10,
+        connect_timeout=_SSH_CONNECT_TIMEOUT_S,
+    )
+    if result.error is not None:
+        return {"ok": False, "error": result.error}
     if result.returncode != 0:
-        return {"ok": False, "error": f"ssh exit {result.returncode}: {(result.stderr or '').strip()}"}
+        return {"ok": False, "error": f"ssh exit {result.returncode}: {result.stderr.strip()}"}
     return {"ok": True}
 
 

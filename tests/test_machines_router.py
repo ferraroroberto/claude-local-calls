@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from src import machine_console as mc
 from src import server as server_mod
+from src import ssh_exec
 from src.host_profile import HostProfile, all_hosts, get_host, resolve
 
 
@@ -787,7 +788,7 @@ def test_power_command_uses_general_ssh_not_forced_command_key(monkeypatch):
         captured["cmd"] = cmd
         return _FakeCompleted(returncode=0)
 
-    monkeypatch.setattr(remote_bootstrap.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ssh_exec.subprocess, "run", _fake_run)
     result = remote_bootstrap._run_power_command("mac-mini-m4", "-r")
 
     assert result["ok"] is True
@@ -810,7 +811,7 @@ def test_power_command_flags_map_reboot_and_shutdown(monkeypatch):
         seen.append(cmd[-1])
         return _FakeCompleted(returncode=0)
 
-    monkeypatch.setattr(remote_bootstrap.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ssh_exec.subprocess, "run", _fake_run)
     r1 = _run(remote_bootstrap.reboot_host("openclaw"))
     r2 = _run(remote_bootstrap.shutdown_host("openclaw"))
 
@@ -829,7 +830,7 @@ def test_power_command_guards_missing_ssh_target(monkeypatch):
     def _boom(cmd, **kwargs):  # pragma: no cover — must never run
         raise AssertionError("ssh should not be invoked for an unroutable host")
 
-    monkeypatch.setattr(remote_bootstrap.subprocess, "run", _boom)
+    monkeypatch.setattr(ssh_exec.subprocess, "run", _boom)
     result = remote_bootstrap._run_power_command("no-such-host", "-r")
     assert result["ok"] is False
     assert "address/ssh_user" in result["error"]
@@ -842,7 +843,7 @@ def test_power_command_ssh_failure_surfaces_error(monkeypatch):
     def _fake_run(cmd, **kwargs):
         return _FakeCompleted(returncode=255, stderr="Connection refused")
 
-    monkeypatch.setattr(remote_bootstrap.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ssh_exec.subprocess, "run", _fake_run)
     result = remote_bootstrap._run_power_command("mac-mini-m4", "-h")
     assert result["ok"] is False
     assert "ssh exit 255" in result["error"] and "Connection refused" in result["error"]

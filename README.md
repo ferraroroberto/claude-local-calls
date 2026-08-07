@@ -1039,6 +1039,7 @@ local-llm-hub/
 │   ├── remote_stats.py       # remote machine liveness + stats for the Machines console (#309)
 │   ├── machine_console.py    # Machines-tab data layer: per-machine CPU/RAM/GPU/disk/uptime (#309)
 │   ├── ssh_terminal.py       # in-browser SSH terminal, reusing app-launcher's session-host PTY (#309)
+│   ├── ssh_exec.py           # the one `ssh <user>@<host> <cmd>` builder (remote_stats + remote_bootstrap, #470)
 │   ├── wake_on_lan.py        # Wake-on-LAN magic-packet builder/sender (#356)
 │   ├── system_stats.py       # live RAM/CPU/GPU readings (consumed by Hub tab sparklines)
 │   ├── observability.py      # OpenTelemetry bootstrap: tracing + metrics → local Langfuse (issue #4)
@@ -1082,7 +1083,6 @@ local-llm-hub/
 │   ├── tts_server.py            # FastAPI shim for /v1/audio/speech (engine: tts-server)
 │   ├── tts_engines/             # TTS engines: piper + chatterbox + orpheus + kokoro
 │   │   ├── common.py                #   shared TTSEngine interface, SpeechRequest, audio helpers
-│   │   ├── process.py               #   shared Windows job-object process-lifecycle helpers
 │   │   ├── chatterbox.py, kokoro.py, orpheus.py, piper.py  #   one module per engine
 │   │   └── __init__.py              #   build_engine() dispatch + re-exports
 │   ├── webapp_config.py      # admin webapp config loader (bearer token, webauthn, allowlist, CORS origins)

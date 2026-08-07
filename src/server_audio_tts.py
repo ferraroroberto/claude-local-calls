@@ -122,9 +122,6 @@ async def audio_speech(request: Request) -> Response:
     if remote is None:
         import asyncio as _asyncio
         await _asyncio.to_thread(ensure_backend_ready_or_503, target)
-    track_on_demand = remote is None and _on_demand.is_on_demand(target)
-    if track_on_demand:
-        _on_demand.request_started(target.id)
 
     def _passthrough_headers(upstream) -> dict:
         return {
@@ -132,47 +129,48 @@ async def audio_speech(request: Request) -> Response:
             if k.lower() not in {"content-length", "transfer-encoding", "connection"}
         }
 
-    # Streaming synth: hold the upstream connection open and forward bytes as
-    # they arrive, so time-to-first-audio stays low. The obs middleware still
-    # records this entry on response, exactly like the chat-stream path.
-    if stream_format == "audio":
-        client = get_async_client()
-        stream_cm = client.stream("POST", upstream_url, content=body, headers=headers)
+    # The in-flight mark covers *every* exit below by default (#470): the
+    # ``with`` finishes it on a return or a raise, so a future branch can't
+    # forget one and pin the idle-unload window open. Only the streaming
+    # branch — whose response outlives this function — opts out, and only
+    # after the upstream connection is established.
+    with _on_demand.tracking(target, remote) as track:
+        # Streaming synth: hold the upstream connection open and forward bytes
+        # as they arrive, so time-to-first-audio stays low. The obs middleware
+        # still records this entry on response, exactly like the chat-stream path.
+        if stream_format == "audio":
+            client = get_async_client()
+            stream_cm = client.stream("POST", upstream_url, content=body, headers=headers)
+            try:
+                upstream = await stream_cm.__aenter__()
+            except _httpx.HTTPError as exc:
+                raise _audio_upstream_error(exc, backend="tts-server", port=port)
+            track.detach()
+
+            async def _forward():
+                try:
+                    async for piece in upstream.aiter_bytes():
+                        yield piece
+                finally:
+                    track.finish()
+                    await stream_cm.__aexit__(None, None, None)
+
+            return StreamingResponse(
+                _forward(),
+                status_code=upstream.status_code,
+                media_type=upstream.headers.get("content-type"),
+                headers=_passthrough_headers(upstream),
+            )
+
         try:
-            upstream = await stream_cm.__aenter__()
+            client = get_async_client()
+            upstream = await client.post(upstream_url, content=body, headers=headers)
         except _httpx.HTTPError as exc:
-            if track_on_demand:
-                _on_demand.request_finished(target.id)
             raise _audio_upstream_error(exc, backend="tts-server", port=port)
 
-        async def _forward():
-            try:
-                async for piece in upstream.aiter_bytes():
-                    yield piece
-            finally:
-                if track_on_demand:
-                    _on_demand.request_finished(target.id)
-                await stream_cm.__aexit__(None, None, None)
-
-        return StreamingResponse(
-            _forward(),
+        return Response(
+            content=upstream.content,
             status_code=upstream.status_code,
             media_type=upstream.headers.get("content-type"),
             headers=_passthrough_headers(upstream),
         )
-
-    try:
-        client = get_async_client()
-        upstream = await client.post(upstream_url, content=body, headers=headers)
-    except _httpx.HTTPError as exc:
-        raise _audio_upstream_error(exc, backend="tts-server", port=port)
-    finally:
-        if track_on_demand:
-            _on_demand.request_finished(target.id)
-
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        media_type=upstream.headers.get("content-type"),
-        headers=_passthrough_headers(upstream),
-    )

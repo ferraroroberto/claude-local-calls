@@ -242,6 +242,37 @@ export function tokPair(inTok, outTok) {
   return one(inTok) + ' / ' + one(outTok);
 }
 
+/* Fill a per-backend counter table's <tbody>: one empty-state row, else one
+ * row per record with the same Backend/Model · Req · Err · p50 · p95 ·
+ * I/O-tok cells. Shared by the Hub tab's /hub/counters table and the
+ * Telemetry tab's per-model leaderboard, which had the whole scaffold
+ * copy-pasted even though their cell formatters were already deduped here
+ * (#470). No-op when the table (or its tbody) isn't in the DOM. */
+export function renderCounterTable(table, rows) {
+  if (!table) return;
+  const tbody = table.querySelector('tbody');
+  if (!tbody) return;
+  const list = rows || [];
+  tbody.innerHTML = '';
+  if (!list.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="6" class="muted small">No requests yet.</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+  list.forEach(function (r) {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="td-trunc" title="' + escapeHtml(r.key) + '">' + escapeHtml(r.key) + '</td>' +
+      '<td>' + r.requests + '</td>' +
+      '<td>' + r.errors + '</td>' +
+      '<td>' + fmtSecs(r.p50_ms) + '</td>' +
+      '<td>' + fmtSecs(r.p95_ms) + '</td>' +
+      '<td>' + tokPair(r.in_tok, r.out_tok) + '</td>';
+    tbody.appendChild(tr);
+  });
+}
+
 /* Equivalent metered-API dollar cost — "≈ $1.23" / "≈ <$0.01" / "" when
  * zero/absent (shared by Code-usage tables and the OTel tab's Claude Code
  * panel, #215-style dedup). */

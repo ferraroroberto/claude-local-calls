@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Optional
 
 from ..model_registry import Model
 from ..no_window import NO_WINDOW
+from ..win_job import assign_pid, create_kill_on_close_job, terminate_and_close
 from .common import PROJECT_ROOT, SpeechRequest, TTSEngine, TTS_LANGUAGE_LABELS, TTS_SAMPLE_TEXT, voice_option
-from .process import _assign_to_job, _win_kill_on_close_job
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class _PiperProc:
             cwd=str(PROJECT_ROOT),
             creationflags=NO_WINDOW,
         )
-        _assign_to_job(job, self._proc)
+        assign_pid(job, self._proc.pid)
         threading.Thread(target=self._reader, args=(self._proc,), daemon=True).start()
 
     def _reader(self, proc: subprocess.Popen) -> None:
@@ -222,7 +222,7 @@ class PiperEngine(TTSEngine):
         self._out_dir = Path(tempfile.mkdtemp(prefix="piper-resident-"))
         # Tie resident children to a kill-on-close job so a TerminateProcess on
         # this backend (the hub's stop path) can't leak piper.exe processes.
-        self._job = _win_kill_on_close_job()
+        self._job = create_kill_on_close_job()
         log.info(
             "Piper ready (resident mode, binary=%s, voice=%s, sr=%d)",
             self.binary,
@@ -379,14 +379,8 @@ class PiperEngine(TTSEngine):
             for proc in self._procs.values():
                 proc.close()
             self._procs.clear()
-        if self._job is not None and sys.platform == "win32":
-            try:
-                import ctypes
-
-                ctypes.WinDLL("kernel32").CloseHandle(int(self._job))
-            except Exception:  # noqa: BLE001
-                pass
-            self._job = None
+        terminate_and_close(self._job)
+        self._job = None
         if self._out_dir is not None:
             import shutil
 

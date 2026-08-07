@@ -20,7 +20,7 @@ import asyncio
 import logging
 
 from src import machine_console as mc
-from src import remote_stats
+from src import remote_stats, ssh_exec
 from src.host_profile import HostProfile, get_host
 
 
@@ -235,7 +235,7 @@ def test_run_ssh_targets_the_dial_winner(monkeypatch):
         return _Done()
 
     monkeypatch.setattr(remote_stats, "dial_address", lambda host, **kw: _TS)
-    monkeypatch.setattr(remote_stats.subprocess, "run", fake_run)
+    monkeypatch.setattr(ssh_exec.subprocess, "run", fake_run)
     host = HostProfile(
         id="peer", platform="linux", enabled=[], address=_LAN, tailscale=_TS,
         ssh_user="pilot",
@@ -263,7 +263,7 @@ def test_power_command_dials_tailnet_when_lan_dead(monkeypatch):
     monkeypatch.setattr(
         remote_stats, "dial_address", lambda host, **kw: "mac-mini.tail1121fd.ts.net"
     )
-    monkeypatch.setattr(remote_bootstrap.subprocess, "run", fake_run)
+    monkeypatch.setattr(ssh_exec.subprocess, "run", fake_run)
     result = remote_bootstrap._run_power_command("mac-mini-m4", "-r")
     assert result["ok"] is True
     assert "roberto@mac-mini.tail1121fd.ts.net" in captured["cmd"]

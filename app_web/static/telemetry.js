@@ -10,7 +10,7 @@
  */
 
 import { els, state } from './state.js';
-import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtSecs, fmtTok, fmtCost, tokPair, modelLabel, modelLabelText } from './api.js';
+import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtTok, fmtCost, tokPair, renderCounterTable, modelLabel, modelLabelText } from './api.js';
 import { icon } from './_vendored/icons/icons.js';
 
 const HEALTH_POLL_MS = 8000;
@@ -76,29 +76,7 @@ export async function fetchTelemetryMetrics() {
 }
 
 function renderTelCounters() {
-  const rows = state.telCounters || [];
-  const tbl = els.telCountersTable;
-  if (!tbl) return;
-  const tbody = tbl.querySelector('tbody');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  if (!rows.length) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="6" class="muted small">No requests yet.</td>';
-    tbody.appendChild(tr);
-    return;
-  }
-  rows.forEach(function (r) {
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td class="td-trunc" title="' + escapeAttr(r.key) + '">' + escapeHtml(r.key) + '</td>' +
-      '<td>' + r.requests + '</td>' +
-      '<td>' + r.errors + '</td>' +
-      '<td>' + fmtSecs(r.p50_ms) + '</td>' +
-      '<td>' + fmtSecs(r.p95_ms) + '</td>' +
-      '<td>' + tokPair(r.in_tok, r.out_tok) + '</td>';
-    tbody.appendChild(tr);
-  });
+  renderCounterTable(els.telCountersTable, state.telCounters);
 }
 
 function renderSummary(s) {

@@ -4,7 +4,7 @@
  */
 
 import { els, state } from './state.js';
-import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtSecs, tokPair, shortGpu, modelLabel } from './api.js';
+import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, renderCounterTable, shortGpu, modelLabel } from './api.js';
 import { langfuseTraceUrl, fetchTelemetryHealth } from './telemetry.js';
 import { icon } from './_vendored/icons/icons.js';
 
@@ -48,29 +48,7 @@ export async function fetchCounters() {
 }
 
 function renderCounters() {
-  const rows = state.counters || [];
-  const tbl = els.countersTable;
-  if (!tbl) return;
-  const tbody = tbl.querySelector('tbody');
-  if (!tbody) return;
-  tbody.innerHTML = '';
-  if (!rows.length) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="6" class="muted small">No requests yet.</td>';
-    tbody.appendChild(tr);
-    return;
-  }
-  rows.forEach(function (r) {
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td class="td-trunc" title="' + escapeHtml(r.key) + '">' + escapeHtml(r.key) + '</td>' +
-      '<td>' + r.requests + '</td>' +
-      '<td>' + r.errors + '</td>' +
-      '<td>' + fmtSecs(r.p50_ms) + '</td>' +
-      '<td>' + fmtSecs(r.p95_ms) + '</td>' +
-      '<td>' + tokPair(r.in_tok, r.out_tok) + '</td>';
-    tbody.appendChild(tr);
-  });
+  renderCounterTable(els.countersTable, state.counters);
 }
 
 // --------------------------------------------------------- live requests
@@ -470,92 +448,56 @@ async function onPeerAction(hostId, action, pastTense) {
   }
 }
 
-async function onAgentsviewStartClick() {
-  if (state.agentsviewBusy) return;
-  state.agentsviewBusy = true;
+// One start/stop action on a service row: busy flag → re-render → POST →
+// {ok, steps}-driven toast → clear the flag and refresh (#284). AgentsView,
+// Docker Desktop and Langfuse all ride this one helper (#470 — AgentsView
+// kept its own hand-rolled copy when #284 generalized the shape). `busyKey`
+// is the `state` flag the row's buttons read to disable themselves.
+async function onServiceAction(label, busyKey, path, verb, doneLabel) {
+  if (state[busyKey]) return;
+  state[busyKey] = true;
   renderServices();
   try {
-    const result = await postJson('/admin/api/services/agentsview/launch', {});
+    const result = await postJson(path, {});
     if (result.ok) {
-      toast('AgentsView started', 'good');
+      toast(label + ' ' + doneLabel, 'good');
     } else {
       const first = (result.steps || []).find(function (s) { return s.status === 'error'; });
-      toast('AgentsView start failed — ' + (first ? first.detail : 'unknown'), 'error');
+      toast(label + ' ' + verb + ' failed — ' + (first ? first.detail : 'unknown'), 'error');
     }
   } catch (exc) {
-    toast('AgentsView start failed: ' + (exc.message || exc), 'error');
+    toast(label + ' ' + verb + ' failed: ' + (exc.message || exc), 'error');
   } finally {
-    state.agentsviewBusy = false;
+    state[busyKey] = false;
     await fetchServicesStatus();
   }
 }
 
-async function onAgentsviewStopClick() {
-  if (state.agentsviewBusy) return;
-  state.agentsviewBusy = true;
-  renderServices();
-  try {
-    const result = await postJson('/admin/api/services/agentsview/stop', {});
-    if (result.ok) {
-      toast('AgentsView stopped', 'good');
-    } else {
-      const first = (result.steps || []).find(function (s) { return s.status === 'error'; });
-      toast('AgentsView stop failed — ' + (first ? first.detail : 'unknown'), 'error');
-    }
-  } catch (exc) {
-    toast('AgentsView stop failed: ' + (exc.message || exc), 'error');
-  } finally {
-    state.agentsviewBusy = false;
-    await fetchServicesStatus();
-  }
+// AgentsView's start endpoint is `/launch`, not `/start` — hence the full
+// path per action rather than a shared prefix + verb.
+function onAgentsviewStartClick() {
+  return onServiceAction('AgentsView', 'agentsviewBusy',
+    '/admin/api/services/agentsview/launch', 'start', 'started');
+}
+function onAgentsviewStopClick() {
+  return onServiceAction('AgentsView', 'agentsviewBusy',
+    '/admin/api/services/agentsview/stop', 'stop', 'stopped');
 }
 
-// Docker Desktop + Langfuse individual start/stop (#284) — same
-// {ok, steps}-driven toast shape as the AgentsView pair above, complementing
+// Docker Desktop + Langfuse individual start/stop (#284) — complementing
 // (not replacing) the combined "Launch Docker + Langfuse" recovery button.
-async function onDockerAction(action, busyLabel, doneLabel) {
-  if (state.dockerBusy) return;
-  state.dockerBusy = true;
-  renderServices();
-  try {
-    const result = await postJson('/admin/api/services/docker/' + action, {});
-    if (result.ok) {
-      toast('Docker ' + doneLabel, 'good');
-    } else {
-      const first = (result.steps || []).find(function (s) { return s.status === 'error'; });
-      toast('Docker ' + busyLabel + ' failed — ' + (first ? first.detail : 'unknown'), 'error');
-    }
-  } catch (exc) {
-    toast('Docker ' + busyLabel + ' failed: ' + (exc.message || exc), 'error');
-  } finally {
-    state.dockerBusy = false;
-    await fetchServicesStatus();
-  }
+function onDockerStartClick() {
+  return onServiceAction('Docker', 'dockerBusy', '/admin/api/services/docker/start', 'start', 'started');
 }
-function onDockerStartClick() { return onDockerAction('start', 'start', 'started'); }
-function onDockerStopClick() { return onDockerAction('stop', 'stop', 'stopped'); }
-
-async function onLangfuseAction(action, busyLabel, doneLabel) {
-  if (state.langfuseBusy) return;
-  state.langfuseBusy = true;
-  renderServices();
-  try {
-    const result = await postJson('/admin/api/services/langfuse/' + action, {});
-    if (result.ok) {
-      toast('Langfuse ' + doneLabel, 'good');
-    } else {
-      const first = (result.steps || []).find(function (s) { return s.status === 'error'; });
-      toast('Langfuse ' + busyLabel + ' failed — ' + (first ? first.detail : 'unknown'), 'error');
-    }
-  } catch (exc) {
-    toast('Langfuse ' + busyLabel + ' failed: ' + (exc.message || exc), 'error');
-  } finally {
-    state.langfuseBusy = false;
-    await fetchServicesStatus();
-  }
+function onDockerStopClick() {
+  return onServiceAction('Docker', 'dockerBusy', '/admin/api/services/docker/stop', 'stop', 'stopped');
 }
-function onLangfuseStartClick() { return onLangfuseAction('start', 'start', 'started'); }
-function onLangfuseStopClick() { return onLangfuseAction('stop', 'stop', 'stopped'); }
+function onLangfuseStartClick() {
+  return onServiceAction('Langfuse', 'langfuseBusy', '/admin/api/services/langfuse/start', 'start', 'started');
+}
+function onLangfuseStopClick() {
+  return onServiceAction('Langfuse', 'langfuseBusy', '/admin/api/services/langfuse/stop', 'stop', 'stopped');
+}
 
 // --------------------------------------------------------- wire buttons
 export function wireHub() {

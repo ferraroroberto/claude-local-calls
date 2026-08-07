@@ -26,13 +26,12 @@ import asyncio
 import concurrent.futures
 import logging
 import socket
-import subprocess
 import threading
 import time
 from typing import Any, Dict, List, Optional
 
 from src.host_profile import HostProfile
-from src.no_window import NO_WINDOW
+from src.ssh_exec import run_ssh
 
 logger = logging.getLogger(__name__)
 
@@ -414,21 +413,14 @@ def _run_ssh(host: HostProfile, command: str) -> Optional[str]:
     """Run a read-only command over the hub user's own SSH (not the
     forced-command key). Returns stdout, or None on any failure. Dials the
     host's currently-live address (LAN, else tailnet — #396)."""
-    cmd = [
-        "ssh",
-        "-o", "BatchMode=yes",
-        "-o", f"ConnectTimeout={_SSH_CONNECT_TIMEOUT_S}",
-        "-o", "StrictHostKeyChecking=accept-new",
+    result = run_ssh(
         f"{host.ssh_user}@{dial_address(host, wait=True)}",
         command,
-    ]
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=_SSH_CONNECT_TIMEOUT_S + 12,
-            creationflags=NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        logger.debug("remote stats ssh to %s failed: %s", host.id, exc)
+        timeout=_SSH_CONNECT_TIMEOUT_S + 12,
+        connect_timeout=_SSH_CONNECT_TIMEOUT_S,
+    )
+    if result.error is not None:
+        logger.debug("remote stats ssh to %s failed: %s", host.id, result.error)
         return None
     if result.returncode != 0:
         return None

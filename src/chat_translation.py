@@ -308,21 +308,16 @@ def _run_openai_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
         _system_to_text(req.system),
     )
     from . import on_demand as _on_demand
-    track_on_demand = remote is None and _on_demand.is_on_demand(model)
-    if track_on_demand:
-        _on_demand.request_started(model.id)
     try:
-        raw = call_openai_chat(
-            base_url,
-            model=model.id if remote else model.display_name,
-            messages=messages,
-            max_tokens=req.max_tokens,
-            temperature=req.temperature,
-            headers=_remote_headers(model) if remote else None,
-        )
+        with _on_demand.tracking(model, remote):
+            raw = call_openai_chat(
+                base_url,
+                model=model.id if remote else model.display_name,
+                messages=messages,
+                max_tokens=req.max_tokens,
+                temperature=req.temperature,
+                headers=_remote_headers(model) if remote else None,
+            )
     except UpstreamError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    finally:
-        if track_on_demand:
-            _on_demand.request_finished(model.id)
     return openai_to_anthropic_envelope(raw)

@@ -34,8 +34,10 @@ So instead of a binary we run a thin in-repo FastAPI shim
 implementations live behind one common interface
 ([src/tts_engines/common.py](../src/tts_engines/common.py)) in the
 [src/tts_engines/](../src/tts_engines/) package, one module per engine
-(`chatterbox.py`, `kokoro.py`, `orpheus.py`, `piper.py`) plus a shared
-`process.py` for the Windows job-object process-lifecycle helpers.
+(`chatterbox.py`, `kokoro.py`, `orpheus.py`, `piper.py`). An engine that owns
+an OS child contains it with the fleet-wide Windows job-object helpers in
+[src/win_job.py](../src/win_job.py) (`create_kill_on_close_job` /
+`assign_pid` / `terminate_and_close`) — never its own ctypes copy (#470).
 
 ## The TTS registry rows ([config/models.yaml](../config/models.yaml))
 

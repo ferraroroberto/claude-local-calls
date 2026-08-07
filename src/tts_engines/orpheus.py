@@ -24,6 +24,7 @@ import httpx
 
 from ..model_registry import Model
 from ..process_supervisor import ProcessSupervisor
+from ..win_job import assign_pid, create_kill_on_close_job, terminate_and_close
 from .common import (
     PROJECT_ROOT,
     SpeechRequest,
@@ -34,7 +35,6 @@ from .common import (
     resolve_device,
     voice_option,
 )
-from .process import _assign_to_job, _win_kill_on_close_job
 
 log = logging.getLogger(__name__)
 
@@ -191,8 +191,8 @@ class OrpheusEngine(TTSEngine):
         # Tie the child's lifetime to ours: when this tts_server process
         # dies (even via the hub's TerminateProcess), the OS closes the job
         # handle and reaps the llama-server, freeing its VRAM and port.
-        self._job = _win_kill_on_close_job()
-        if not _assign_to_job(self._job, self.proc) and self._job is not None:
+        self._job = create_kill_on_close_job()
+        if not assign_pid(self._job, self.proc.pid) and self._job is not None:
             log.warning("could not assign llama-server to job object; relying on close()")
         t = threading.Thread(target=self._forward_stdout, args=(self.proc,), daemon=True)
         t.start()
@@ -495,11 +495,5 @@ class OrpheusEngine(TTSEngine):
                 log.warning("error stopping Orpheus llama-server: %s", msg)
         job = self._job
         self._job = None
-        if job is not None and sys.platform == "win32":
-            try:
-                import ctypes
-
-                ctypes.WinDLL("kernel32").CloseHandle(int(job))
-            except Exception:  # noqa: BLE001
-                pass
+        terminate_and_close(job)
         self.snac = None

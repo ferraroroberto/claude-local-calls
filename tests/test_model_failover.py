@@ -11,24 +11,13 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-import yaml
 
-from src import backend_process, host_profile, model_failover, model_registry
+from src import backend_process, model_failover, model_registry
 from src.model_failover import (
     POLICY_STICKY,
     FailoverSettings,
     OwnershipTracker,
 )
-
-
-def _write_config(tmp_path, content: dict):
-    cfg = tmp_path / "models.yaml"
-    cfg.write_text(yaml.safe_dump(content), encoding="utf-8")
-    return cfg
-
-
-def _patch_config_path(monkeypatch, cfg_path):
-    monkeypatch.setattr(host_profile, "CONFIG_PATH", cfg_path)
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +29,7 @@ def _reset_failover_state():
     model_failover._ENGINE_STARTED.clear()
 
 
-def _chain_config(tmp_path, **overrides):
+def _chain_config(write_config, **overrides):
     """Three-host fleet with one multi-host model (whisper) and one bare-host
     model (qwen) — the canonical #342 scenario."""
     content = {
@@ -69,14 +58,14 @@ def _chain_config(tmp_path, **overrides):
         },
     }
     content.update(overrides)
-    return _write_config(tmp_path, content)
+    return write_config(content)
 
 
 # --------------------------------------------------------------------------- #
 # Schema: hosts chain parsing (registry layer)
 # --------------------------------------------------------------------------- #
-def test_bare_host_parses_as_one_element_chain(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_bare_host_parses_as_one_element_chain(monkeypatch, write_config):
+    _chain_config(write_config)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
     qwen = model_registry.resolve("qwen3.5-9b")
     assert qwen.host == "mac"
@@ -84,8 +73,8 @@ def test_bare_host_parses_as_one_element_chain(tmp_path, monkeypatch):
     assert qwen.cpu_hosts == []
 
 
-def test_hosts_list_parses_ordered_chain_with_cpu_flag(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_hosts_list_parses_ordered_chain_with_cpu_flag(monkeypatch, write_config):
+    _chain_config(write_config)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "mac")
     w = model_registry.resolve("whisper-large-v3-turbo")
     assert w.host_chain == ["gaming", "mac", "tower"]
@@ -93,8 +82,8 @@ def test_hosts_list_parses_ordered_chain_with_cpu_flag(tmp_path, monkeypatch):
     assert w.cpu_hosts == ["tower"]
 
 
-def test_hosts_wins_over_bare_host_and_dedups(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_hosts_wins_over_bare_host_and_dedups(monkeypatch, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {"pc": {"platform": "win32", "default": True, "enabled": ["m"]}},
         "models": {
@@ -102,20 +91,18 @@ def test_hosts_wins_over_bare_host_and_dedups(tmp_path, monkeypatch):
                   "host": "ignored", "hosts": ["a", "b", "a"]},
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
     m = model_registry.all_models()[0]
     assert m.host_chain == ["a", "b"]
     assert m.host == "a"
 
 
-def test_unowned_row_has_empty_chain(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_unowned_row_has_empty_chain(monkeypatch, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {"pc": {"platform": "win32", "default": True, "enabled": ["m"]}},
         "models": {"m": {"display_name": "m", "backend": "openai", "port": 8081}},
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
     m = model_registry.resolve("m")
     assert m.host is None
@@ -139,8 +126,8 @@ def test_cpu_offload_args_rewrites_per_engine():
     assert f(None, ["x"]) == ["x"]
 
 
-def test_cpu_flag_bakes_args_only_on_flagged_host(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_cpu_flag_bakes_args_only_on_flagged_host(monkeypatch, write_config):
+    _chain_config(write_config)
     # tower is the cpu-flagged last resort: its whisper args gain -ng.
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
     w = model_registry.resolve("whisper-large-v3-turbo")
@@ -154,8 +141,8 @@ def test_cpu_flag_bakes_args_only_on_flagged_host(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Chain membership: local_models + start guard
 # --------------------------------------------------------------------------- #
-def test_local_models_includes_every_chain_member(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_local_models_includes_every_chain_member(monkeypatch, write_config):
+    _chain_config(write_config)
     for host_id in ("gaming", "mac", "tower"):
         monkeypatch.setenv("LOCAL_LLM_HUB_HOST", host_id)
         ids = {m.id for m in model_registry.local_models()}
@@ -167,8 +154,8 @@ def test_local_models_includes_every_chain_member(tmp_path, monkeypatch):
     assert "qwen" in {m.id for m in model_registry.local_models()}
 
 
-def test_start_guard_allows_chain_members_and_refuses_outsiders(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_start_guard_allows_chain_members_and_refuses_outsiders(monkeypatch, write_config):
+    _chain_config(write_config)
     # tower is NOT in qwen's chain (bare host: mac) → refused.
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
     ok, msg = backend_process.start("qwen")
@@ -186,8 +173,8 @@ def test_start_guard_allows_chain_members_and_refuses_outsiders(tmp_path, monkey
 # --------------------------------------------------------------------------- #
 # effective_owner
 # --------------------------------------------------------------------------- #
-def test_single_host_model_never_consults_tracker(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_single_host_model_never_consults_tracker(monkeypatch, write_config):
+    _chain_config(write_config)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
 
     def _boom(model_id):
@@ -198,15 +185,15 @@ def test_single_host_model_never_consults_tracker(tmp_path, monkeypatch):
     assert model_failover.effective_owner(qwen) == "mac"
 
 
-def test_effective_owner_defaults_to_preferred_until_observed(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_effective_owner_defaults_to_preferred_until_observed(monkeypatch, write_config):
+    _chain_config(write_config)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
     w = model_registry.resolve("whisper-large-v3-turbo")
     assert model_failover.effective_owner(w) == "gaming"
 
 
-def test_eligible_chain_drops_unenabled_and_unknown_hosts(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_eligible_chain_drops_unenabled_and_unknown_hosts(monkeypatch, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "a": {"platform": "win32", "default": True, "enabled": ["m"]},
@@ -217,7 +204,6 @@ def test_eligible_chain_drops_unenabled_and_unknown_hosts(tmp_path, monkeypatch)
                   "hosts": ["a", "b", "ghost"]},                # ghost: no such host
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "a")
     m = model_registry.resolve("m")
     assert model_failover.eligible_chain(m) == ["a"]
@@ -354,14 +340,13 @@ def _run_pass(**kwargs):
     return asyncio.run(model_failover.failover_pass(**kwargs))
 
 
-def test_pass_noops_when_no_multi_host_chains(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_pass_noops_when_no_multi_host_chains(monkeypatch, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {"pc": {"platform": "win32", "default": True, "enabled": ["m"]}},
         "models": {"m": {"display_name": "m", "backend": "openai", "port": 8081,
                          "host": "pc"}},
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     async def _probe(host_id):  # pragma: no cover — must never be called
@@ -370,8 +355,8 @@ def test_pass_noops_when_no_multi_host_chains(tmp_path, monkeypatch):
     assert _run_pass(probe=_probe) == {}
 
 
-def test_pass_starts_model_locally_when_ownership_arrives(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_pass_starts_model_locally_when_ownership_arrives(monkeypatch, write_config):
+    _chain_config(write_config)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "mac")
     monkeypatch.setattr(backend_process, "is_running", lambda mid: False)
 
@@ -410,8 +395,8 @@ def test_pass_starts_model_locally_when_ownership_arrives(tmp_path, monkeypatch)
     assert "whisper" not in model_failover._ENGINE_STARTED
 
 
-def test_pass_never_stops_an_instance_it_did_not_start(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_pass_never_stops_an_instance_it_did_not_start(monkeypatch, write_config):
+    _chain_config(write_config)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "mac")
     # whisper is running locally (hand-started / autostarted) but NOT
     # engine-started; owner resolves to gaming → no stop may happen.
@@ -431,8 +416,8 @@ def test_pass_never_stops_an_instance_it_did_not_start(tmp_path, monkeypatch):
     assert stopped == []
 
 
-def test_pass_probe_error_reads_as_down(tmp_path, monkeypatch):
-    _patch_config_path(monkeypatch, _chain_config(tmp_path))
+def test_pass_probe_error_reads_as_down(monkeypatch, write_config):
+    _chain_config(write_config)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
     monkeypatch.setattr(backend_process, "is_running", lambda mid: True)
 
@@ -449,28 +434,26 @@ def test_pass_probe_error_reads_as_down(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Settings loader
 # --------------------------------------------------------------------------- #
-def test_load_settings_defaults_and_overrides(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_load_settings_defaults_and_overrides(tmp_path, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {"pc": {"platform": "win32", "default": True, "enabled": []}},
         "models": {},
         "failover": {"probe_interval_s": 5, "fail_after_s": 10,
                      "failback_after_s": 20, "policy": "sticky"},
     })
-    _patch_config_path(monkeypatch, cfg)
     s = model_failover.load_settings()
     assert (s.probe_interval_s, s.fail_after_s, s.failback_after_s, s.policy) == \
         (5.0, 10.0, 20.0, "sticky")
 
     d2 = tmp_path / "d2"
     d2.mkdir()
-    cfg2 = _write_config(d2, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {"pc": {"platform": "win32", "default": True, "enabled": []}},
         "models": {},
         "failover": {"policy": "bogus"},
-    })
-    _patch_config_path(monkeypatch, cfg2)
+    }, dirpath=d2)
     s = model_failover.load_settings()
     assert s.policy == "auto"                       # bogus policy falls back
     assert s.fail_after_s == 90.0                   # defaults fill the rest

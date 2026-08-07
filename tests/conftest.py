@@ -12,6 +12,7 @@ their own unit tests against the disabled-mode no-ops.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 # Disable the optional AgentsView integration (issue #280): empty base URL
@@ -20,6 +21,35 @@ os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 os.environ.setdefault("AGENTSVIEW_BASE_URL", "")
 
 import pytest  # noqa: E402
+import yaml  # noqa: E402
+
+
+@pytest.fixture
+def write_config(tmp_path, monkeypatch):
+    """Write a throwaway ``models.yaml`` and point the config readers at it.
+
+    Four test modules each carried their own ``_write_config`` /
+    ``_patch_config_path`` pair — two of them with a comment saying they
+    mirror ``test_model_registry.py``'s (#470). This is that pair, once:
+    dump ``content`` to a temp ``models.yaml``, repoint both modules'
+    ``CONFIG_PATH`` (each ``_load_config()`` reads the module attribute at
+    call time, so no reload is needed) and drop ``host_profile``'s parsed
+    cache so the next read actually re-parses the new file.
+
+    Pass ``dirpath`` to write a *second* config in the same test — the file
+    name is fixed, so a distinct directory is what makes it a distinct file.
+    """
+    from src import host_profile, model_registry
+
+    def _write(content: dict, *, dirpath=None) -> Path:
+        cfg = Path(dirpath or tmp_path) / "models.yaml"
+        cfg.write_text(yaml.safe_dump(content), encoding="utf-8")
+        monkeypatch.setattr(host_profile, "CONFIG_PATH", cfg)
+        monkeypatch.setattr(model_registry, "CONFIG_PATH", cfg, raising=False)
+        host_profile._CONFIG_CACHE.clear()
+        return cfg
+
+    return _write
 
 
 @pytest.fixture(autouse=True)

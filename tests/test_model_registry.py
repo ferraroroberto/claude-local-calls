@@ -2,26 +2,11 @@
 
 from __future__ import annotations
 
-import yaml
-
 from src import host_profile, model_registry
 
 
-def _write_config(tmp_path, content: dict):
-    cfg = tmp_path / "models.yaml"
-    cfg.write_text(yaml.safe_dump(content), encoding="utf-8")
-    return cfg
-
-
-def _patch_config_path(monkeypatch, cfg_path):
-    # _load_config in both modules reads module-level CONFIG_PATH at call time,
-    # so monkeypatching the attribute (no reload) is enough.
-    monkeypatch.setattr(host_profile, "CONFIG_PATH", cfg_path)
-    monkeypatch.setattr(model_registry, "CONFIG_PATH", cfg_path, raising=False)
-
-
-def test_resolves_hostname_match(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_resolves_hostname_match(monkeypatch, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc":  {"platform": "win32", "hostname": "TEST-PC", "enabled": ["qwen"]},
@@ -32,7 +17,6 @@ def test_resolves_hostname_match(tmp_path, monkeypatch):
             "claude": {"display_name": "claude-haiku-4-5", "backend": "claude"},
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.delenv("LOCAL_LLM_HUB_HOST", raising=False)
     monkeypatch.setattr("socket.gethostname", lambda: "test-pc")
 
@@ -44,8 +28,8 @@ def test_resolves_hostname_match(tmp_path, monkeypatch):
     assert "claude" in ids and "qwen" in ids
 
 
-def test_env_override_wins(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_env_override_wins(monkeypatch, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc":  {"platform": "win32", "default": True, "enabled": ["qwen", "glm"]},
@@ -57,7 +41,6 @@ def test_env_override_wins(tmp_path, monkeypatch):
             "claude": {"display_name": "claude-haiku-4-5", "backend": "claude"},
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "mac")
 
     prof = host_profile.resolve()
@@ -67,12 +50,12 @@ def test_env_override_wins(tmp_path, monkeypatch):
     assert "qwen" in ids
 
 
-def test_desired_model_ids_filters_to_launchable_eager_rows(tmp_path, monkeypatch):
+def test_desired_model_ids_filters_to_launchable_eager_rows(monkeypatch, write_config):
     """#430: the desired set derives from the registry — eager ∧ launchable.
     Virtual aliases, other-host rows, subscription backends, and unknown ids
     can never appear; an unowned eager row (empty chain = local everywhere)
     is included."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc": {"platform": "win32", "default": True,
@@ -94,20 +77,19 @@ def test_desired_model_ids_filters_to_launchable_eager_rows(tmp_path, monkeypatc
             "claude": {"display_name": "claude-haiku-4-5", "backend": "claude"},
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     # Order follows the YAML `models:` mapping — safe_dump sorts keys here.
     assert model_registry.desired_model_ids() == ["piper", "qwen"]
 
 
-def test_desired_model_ids_chain_and_cpu_tier_rules(tmp_path, monkeypatch):
+def test_desired_model_ids_chain_and_cpu_tier_rules(monkeypatch, write_config):
     """#430 chain rules: a model is desired only on its *preferred* chain host
     — the first member that exists and enables it. A chain head that names an
     unknown host or one that doesn't enable the row falls through to the next
     member (chain-fallback); a degraded ``cpu: true`` tier deeper in the chain
     is a candidate runner (launchable) but never desired there."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc":  {"platform": "win32", "default": True,
@@ -127,7 +109,6 @@ def test_desired_model_ids_chain_and_cpu_tier_rules(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
 
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
     # whisper is launchable on pc (chain member) but desired only on mac.
@@ -138,10 +119,10 @@ def test_desired_model_ids_chain_and_cpu_tier_rules(tmp_path, monkeypatch):
     assert model_registry.desired_model_ids() == ["whisper"]
 
 
-def test_desired_placement_aggregates_per_host(tmp_path, monkeypatch):
+def test_desired_placement_aggregates_per_host(monkeypatch, write_config):
     """#430: the fleet-wide map is desired_model_ids per declared host, with
     empty hosts omitted (no reason to probe or wake them)."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc":  {"platform": "win32", "default": True, "enabled": ["a", "b"]},
@@ -153,19 +134,18 @@ def test_desired_placement_aggregates_per_host(tmp_path, monkeypatch):
             "b": {"display_name": "b", "backend": "openai", "port": 8082, "host": "mac"},
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     assert model_registry.desired_placement() == {"pc": ["a"], "mac": ["b"]}
 
 
-def test_launchable_local_ids_excludes_remote_virtual_and_nonspawnable(tmp_path, monkeypatch):
+def test_launchable_local_ids_excludes_remote_virtual_and_nonspawnable(monkeypatch, write_config):
     """The bulk launchers (run_all.*) enumerate this. It must honour every
     rule run_backend enforces: only enabled rows, only spawnable backends
     (openai/whisper/tts — not claude/gemini), drop virtual aliases, and drop
     rows owned by another host (cross-enabled but proxied, not run here).
     """
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc":  {"platform": "win32", "default": True,
@@ -186,7 +166,6 @@ def test_launchable_local_ids_excludes_remote_virtual_and_nonspawnable(tmp_path,
             "claude": {"display_name": "claude-haiku-4-5", "backend": "claude"},
         },
     })
-    _patch_config_path(monkeypatch, cfg)
 
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
     ids = model_registry.launchable_local_ids()
@@ -198,8 +177,8 @@ def test_launchable_local_ids_excludes_remote_virtual_and_nonspawnable(tmp_path,
     assert model_registry.launchable_local_ids() == ["local_llm", "remote", "whisp"]
 
 
-def test_resolve_by_alias(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_resolve_by_alias(monkeypatch, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc": {"platform": "win32", "default": True, "enabled": ["qwen"]},
@@ -213,7 +192,6 @@ def test_resolve_by_alias(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     m = model_registry.resolve("qwen3.5")
@@ -222,9 +200,9 @@ def test_resolve_by_alias(tmp_path, monkeypatch):
     assert model_registry.resolve("nonexistent") is None
 
 
-def test_gemma_per_host_filtering(tmp_path, monkeypatch):
+def test_gemma_per_host_filtering(monkeypatch, write_config):
     """Both gemma4 rows must show on tower and stay hidden on mac-mini-m4."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "tower":     {"platform": "win32", "default": True, "enabled": ["qwen", "glm", "gemma4_e4b", "gemma4_26b"]},
@@ -237,7 +215,6 @@ def test_gemma_per_host_filtering(tmp_path, monkeypatch):
             "gemma4_26b": {"display_name": "gemma4-26b-a4b-it", "backend": "openai", "port": 8087},
         },
     })
-    _patch_config_path(monkeypatch, cfg)
 
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
     names_pc = {m.display_name for m in model_registry.enabled_models()}
@@ -253,9 +230,9 @@ def test_gemma_per_host_filtering(tmp_path, monkeypatch):
     assert model_registry.resolve("gemma4-26b-a4b-it") is None
 
 
-def test_whisper_entry(tmp_path, monkeypatch):
+def test_whisper_entry(monkeypatch, write_config):
     """Whisper is a distinct backend; runs on 8090, surfaces on tower only."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "tower":     {"platform": "win32", "default": True, "enabled": ["qwen", "whisper"]},
@@ -275,7 +252,6 @@ def test_whisper_entry(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
 
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
     m = model_registry.resolve("whisper-large-v3-turbo")
@@ -291,9 +267,9 @@ def test_whisper_entry(tmp_path, monkeypatch):
     assert model_registry.resolve("whisper-large-v3-turbo") is None
 
 
-def test_whisper_translate_lazy_entry(tmp_path, monkeypatch):
+def test_whisper_translate_lazy_entry(monkeypatch, write_config):
     """Lazy translate slot lives next to turbo: same backend, different engine + port."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "tower": {"platform": "win32", "default": True,
@@ -321,7 +297,6 @@ def test_whisper_translate_lazy_entry(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
 
     # Both whisper rows surface side-by-side on the same host.
@@ -345,9 +320,9 @@ def test_whisper_translate_lazy_entry(tmp_path, monkeypatch):
     assert lazy.url == "http://127.0.0.1:8091/v1"
 
 
-def test_tts_entry(tmp_path, monkeypatch):
+def test_tts_entry(monkeypatch, write_config):
     """TTS is a distinct backend (engine tts-server); two engines side by side."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "tower":     {"platform": "win32", "default": True,
@@ -397,7 +372,6 @@ def test_tts_entry(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "tower")
 
     ids = {m.id for m in model_registry.enabled_models()}
@@ -440,14 +414,14 @@ def test_tts_entry(tmp_path, monkeypatch):
     assert model_registry.resolve("audio_speech") is None
 
 
-def test_resolve_by_registry_id(tmp_path, monkeypatch):
+def test_resolve_by_registry_id(monkeypatch, write_config):
     """Regression: the SPA Playground dropdown sends ``m.id`` (the YAML
     key), not ``display_name``. resolve() must accept it — otherwise
     rows whose id is not also listed under aliases (qwen35_4b,
     gemma4_e4b, gemma4_26b, gemini_flash_lite in the real registry)
     400 on the Playground.
     """
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc": {"platform": "win32", "default": True,
@@ -475,7 +449,6 @@ def test_resolve_by_registry_id(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     # Resolve via every channel: id, display_name, alias — all three
@@ -499,13 +472,13 @@ def test_resolve_by_registry_id(tmp_path, monkeypatch):
     assert "agentic_light" in qwen.all_names
 
 
-def test_virtual_nothink_alias_shares_backend(tmp_path, monkeypatch):
+def test_virtual_nothink_alias_shares_backend(monkeypatch, write_config):
     """The no-think alias (#161) is a virtual model: it shares qwen's :8088
     backend URL, carries an inject_extra overlay, and is flagged virtual so the
     admin UI never treats it as a startable process. Plain qwen35_4b stays a
     real, non-virtual, no-overlay row.
     """
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc": {"platform": "win32", "default": True,
@@ -528,7 +501,6 @@ def test_virtual_nothink_alias_shares_backend(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     # Resolves via id, display_name, and role alias — all to the same row,
@@ -550,26 +522,25 @@ def test_virtual_nothink_alias_shares_backend(tmp_path, monkeypatch):
     assert plain.url == by_id.url                    # same single backend
 
 
-def test_model_url_from_port(tmp_path, monkeypatch):
-    cfg = _write_config(tmp_path, {
+def test_model_url_from_port(monkeypatch, write_config):
+    write_config({
         "hub": {"port": 8000},
         "hosts": {"pc": {"platform": "win32", "default": True, "enabled": ["qwen"]}},
         "models": {
             "qwen": {"display_name": "qwen3.5-9b", "backend": "openai", "port": 8081},
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     m = model_registry.resolve("qwen3.5-9b")
     assert m.url == "http://127.0.0.1:8081/v1"
 
 
-def test_startup_and_idle_unload_fields(tmp_path, monkeypatch):
+def test_startup_and_idle_unload_fields(monkeypatch, write_config):
     """#422 schema: `startup: on_demand` + `idle_unload_minutes` parse; the
     default is eager; an unknown startup value normalizes to eager (a typo
     must degrade to always-on, never to a model that refuses to start)."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc": {"platform": "win32", "default": True,
@@ -587,7 +558,6 @@ def test_startup_and_idle_unload_fields(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     gemma = model_registry.resolve("gemma4-26b-a4b-it")
@@ -602,11 +572,11 @@ def test_startup_and_idle_unload_fields(tmp_path, monkeypatch):
     assert typo.startup == model_registry.STARTUP_EAGER
 
 
-def test_desired_model_ids_excludes_on_demand_rows(tmp_path, monkeypatch):
+def test_desired_model_ids_excludes_on_demand_rows(monkeypatch, write_config):
     """#422/#430: an on_demand row is never in the desired set — not hub
     autostart, not the reconcile loop's derived placement. The first request
     loads it (src/on_demand.py owns that lifecycle)."""
-    cfg = _write_config(tmp_path, {
+    write_config({
         "hub": {"port": 8000},
         "hosts": {
             "pc": {"platform": "win32", "default": True, "enabled": ["qwen", "gemma"]},
@@ -619,7 +589,6 @@ def test_desired_model_ids_excludes_on_demand_rows(tmp_path, monkeypatch):
             },
         },
     })
-    _patch_config_path(monkeypatch, cfg)
     monkeypatch.setenv("LOCAL_LLM_HUB_HOST", "pc")
 
     assert model_registry.desired_model_ids() == ["qwen"]

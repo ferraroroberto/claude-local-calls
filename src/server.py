@@ -530,9 +530,7 @@ def _stream_openai_passthrough(
     # not be idle-unloaded while a stream is in flight — pair the start here
     # with the finish in the generator's ``finally`` (which also runs on a
     # client disconnect, via GeneratorExit).
-    track_on_demand = remote is None and _on_demand.is_on_demand(model)
-    if track_on_demand:
-        _on_demand.request_started(model.id)
+    track = _on_demand.tracking(model, remote).start()
 
     if start_ns is None:
         start_ns = time.monotonic_ns()
@@ -622,8 +620,7 @@ def _stream_openai_passthrough(
             yield "data: " + _json.dumps(err) + "\n\n"
             yield "data: [DONE]\n\n"
         finally:
-            if track_on_demand:
-                _on_demand.request_finished(model.id)
+            track.finish()
             record_genai_metrics(
                 model=req.model, backend=model.backend,
                 route="/v1/chat/completions", client_id=client_id,
@@ -742,25 +739,20 @@ def chat_completions(req: ChatCompletionRequest, request: Request) -> Response:
                 raise HTTPException(status_code=500, detail="model has no url")
             extra = _build_openai_extra(model, req)
             # On-demand idle tracking (#422) — see _stream_openai_passthrough.
-            track_on_demand = remote is None and _on_demand.is_on_demand(model)
-            if track_on_demand:
-                _on_demand.request_started(model.id)
             try:
-                raw = call_openai_chat(
-                    base_url,
-                    model=model.id if remote else model.display_name,
-                    messages=req.messages,
-                    max_tokens=req.max_tokens,
-                    temperature=req.temperature,
-                    extra=extra or None,
-                    headers=_remote_headers(model) if remote else None,
-                )
+                with _on_demand.tracking(model, remote):
+                    raw = call_openai_chat(
+                        base_url,
+                        model=model.id if remote else model.display_name,
+                        messages=req.messages,
+                        max_tokens=req.max_tokens,
+                        temperature=req.temperature,
+                        extra=extra or None,
+                        headers=_remote_headers(model) if remote else None,
+                    )
             except UpstreamError as e:
                 error_type = "upstream_http_error"
                 raise HTTPException(status_code=502, detail=str(e))
-            finally:
-                if track_on_demand:
-                    _on_demand.request_finished(model.id)
             cleaned = clean_openai_response(raw)
             usage = cleaned.get("usage") or {}
             in_t = int(usage.get("prompt_tokens", 0) or 0)

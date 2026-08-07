@@ -72,6 +72,7 @@ flowchart TB
     MACHINECON["machine_console.py\nMachines-tab console (#309): host inventory\n+ per-machine card assembly + RDP gen"]
     REMOTESTATS["remote_stats.py\nTCP liveness (is the box on?) + general-SSH\nCPU/RAM/GPU/disk/uptime snapshot (#309)"]
     SSHTERM["ssh_terminal.py\nin-browser SSH terminal (#309): drives\napp-launcher's session-host over loopback"]
+    SSHEXEC["ssh_exec.py (#470)\nthe one `ssh <user>@<host> <cmd>` builder:\nBatchMode + ConnectTimeout + accept-new,\nNO_WINDOW spawn; callers adapt the result shape"]
     DIAG["diagnostics/ (issue #315)\nsampler (in-hub asyncio task, no resident proc) ·\nattribution (process -> fleet app + ports, per-OS) ·\nrules (health verdict) · coverage (measured vs blind, #322) ·\nreport (summary/drift/md) · store (SQLite) ·\ningest (foreign portable capture, #316)"]
     PARAKEETSRV["parakeet_server.py\nOpenAI-shape ASR shim ->\nFluidAudio Parakeet CoreML worker"]
     FLEETREC["fleet_reconcile.py (issues #353, #430)\nadditive convergence: wake offline can-ssh\nsatellite -> start desired-but-not-running models\n(desired state derived from the registry:\nmodel_registry.desired_placement)"]
@@ -102,6 +103,8 @@ flowchart TB
   WROUT -->|machines: SSH terminal WS proxy| SSHTERM
   MACHINECON --> REMOTEBOOT
   MACHINECON --> REMOTESTATS
+  REMOTEBOOT -->|one-shot ssh| SSHEXEC
+  REMOTESTATS -->|one-shot ssh| SSHEXEC
   WROUT -->|machines: diagnostics modal| DIAG
   WROUT -->|POST diagnostics/ingest| DIAG
   LIFECYCLE -->|close orphan runs + arm scheduled snapshot| DIAG

@@ -39,6 +39,7 @@ from collections import deque
 from pathlib import Path
 from typing import Deque, Optional
 
+from .host_profile import hub_bind_host, hub_port
 from .http_client import get_sync_client
 from .no_window import NO_WINDOW
 from .process_supervisor import ProcessSupervisor, SpawnSpec
@@ -48,9 +49,9 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Uvicorn binds on all interfaces so other machines on the LAN can reach
 # the server. Health checks + the canonical "self" URL still use loopback.
-BIND_HOST = "0.0.0.0"
+BIND_HOST = hub_bind_host()
 LOCAL_HOST = "127.0.0.1"
-PORT = 8000
+PORT = hub_port()
 BASE_URL = f"http://{LOCAL_HOST}:{PORT}"
 RING_MAX = 1000
 

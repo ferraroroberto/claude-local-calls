@@ -7,3 +7,60 @@ icon        = "🧠"
 port        = ":8000"
 description = "Shared LLM gateway — routes to local models or claude -p."
 chips       = ["claude -p", "agy gemini", "qwen35-4b :8088", "gemma-26b :8087", "voice → gaming+mac", "tts :8092+"]
+
+# Diff-proportionate e2e routing (project-scaffolding docs/e2e-routing.md).
+# Rules are evaluated top-to-bottom; first match wins. Unmatched paths fall
+# through to `full` by design — see the doc before narrowing this table.
+[e2e]
+static_pytest_target = "tests/e2e/test_smoke.py"
+static_browsers       = ["chromium"]
+full_pytest_target    = "tests/e2e"
+
+[[e2e.rule]]              # inert assets under the admin SPA's static tree -> static
+tier       = "static"
+prefix     = "app_web/static/"
+extensions = ["svg", "png", "jpg", "webp", "ico", "woff2", "webmanifest"]
+
+[[e2e.rule]]              # vendored HTML fragments are inert markup -> static
+tier       = "static"    # (their .css/.js siblings are NOT here -> fall to full)
+prefix     = "app_web/static/_vendored/"
+extensions = ["html"]
+
+[[e2e.rule]]             # the admin PWA (routers + static CSS/JS/HTML) -> full
+tier   = "full"
+prefix = "app_web/"
+
+[[e2e.rule]]             # backend python -> no browser impact -> none
+tier       = "none"
+prefix     = "src/"
+extensions = ["py"]
+
+[[e2e.rule]]             # tray launcher -> no browser impact -> none
+tier       = "none"
+prefix     = "tray/"
+extensions = ["py"]
+
+[[e2e.rule]]             # the e2e suite itself + its boot conftest -> full
+tier       = "full"
+prefix     = "tests/e2e/"
+
+[[e2e.rule]]             # unit/integration tests (not the e2e suite itself) -> none
+tier       = "none"
+prefix     = "tests/"
+extensions = ["py"]
+
+[[e2e.rule]]             # tooling scripts (incl. this classifier) -> none
+tier       = "none"
+prefix     = "scripts/"
+
+[[e2e.rule]]             # docs -> none
+tier       = "none"
+prefix     = "docs/"
+
+[[e2e.rule]]             # markdown anywhere -> none
+tier       = "none"
+extensions = ["md"]
+
+[[e2e.rule]]             # this file itself -> none
+tier = "none"
+path = ".fleet.toml"

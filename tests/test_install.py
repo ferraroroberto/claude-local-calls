@@ -172,6 +172,33 @@ def test_use_cache_false_always_runs_fresh(monkeypatch):
     assert calls["n"] == 2  # no caching applied on the default path
 
 
+def test_port_in_use_detects_wildcard_bind_listener():
+    """A listener bound to 0.0.0.0 (as the hub / llama-server / whisper-server
+    all do) must be detected — a 127.0.0.1-only bind probe misses it on
+    Windows (#482)."""
+    import socket as socket_mod
+
+    server = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+    try:
+        server.bind(("0.0.0.0", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        assert install_mod._port_in_use(port) is True
+    finally:
+        server.close()
+
+
+def test_port_in_use_false_when_nothing_listening():
+    import socket as socket_mod
+
+    probe = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    free_port = probe.getsockname()[1]
+    probe.close()
+
+    assert install_mod._port_in_use(free_port) is False
+
+
 def test_run_all_checks_always_refreshes_the_cache_for_later_use_cache_calls(monkeypatch):
     _reset_cache(monkeypatch)
     calls = _counting_venv_check(monkeypatch)

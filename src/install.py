@@ -420,13 +420,13 @@ def _check_tts() -> Check:
 
 
 def _port_in_use(port: int) -> bool:
+    # Bind-probing 127.0.0.1 misses listeners bound to the wildcard address
+    # (0.0.0.0) — Windows lets a loopback bind succeed alongside one, so the
+    # hub/llama-server/whisper-server (all bind 0.0.0.0) went undetected
+    # (#482). Connecting is proof something is actually listening.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
-        try:
-            s.bind(("127.0.0.1", port))
-            return False
-        except OSError:
-            return True
+        return s.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _check_ports() -> List[Check]:

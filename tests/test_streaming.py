@@ -22,6 +22,7 @@ from typing import Iterator, List
 
 os.environ.setdefault("LOCAL_LLM_HUB_HOST", "tower")
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src import openai_upstream as upstream_mod
@@ -447,9 +448,16 @@ def _capture_call(captured: dict):
     return fake_call
 
 
-def test_nothink_alias_injects_chat_template_kwargs(monkeypatch):
-    """model=qwen3.5-4b-nothink folds enable_thinking:false into the upstream
-    payload AND routes to qwen's :8088 backend — no second process."""
+@pytest.mark.parametrize("model", ["qwen3.5-4b-nothink", "agentic_light_nothink"])
+def test_nothink_alias_injects_chat_template_kwargs(monkeypatch, model):
+    """Both names for the no-think row fold enable_thinking:false into the
+    upstream payload AND route to qwen's :8088 backend — no second process.
+
+    `agentic_light_nothink` is covered explicitly because it is the string
+    Home Assistant's extended_openai_conversation sends; #489 moved the bare
+    `agentic_light` alias onto this same row but deliberately RETAINED this
+    name, so a regression here breaks a live consumer silently.
+    """
     captured: dict = {}
     monkeypatch.setattr(server_mod, "call_openai_chat", _capture_call(captured))
 
@@ -457,7 +465,7 @@ def test_nothink_alias_injects_chat_template_kwargs(monkeypatch):
     r = client.post(
         "/v1/chat/completions",
         json={
-            "model": "qwen3.5-4b-nothink",
+            "model": model,
             "messages": [{"role": "user", "content": "hi"}],
         },
     )
@@ -466,8 +474,15 @@ def test_nothink_alias_injects_chat_template_kwargs(monkeypatch):
     assert captured["base_url"] == "http://127.0.0.1:8088/v1"   # shares qwen
 
 
-def test_plain_agentic_light_does_not_inject(monkeypatch):
-    """Plain agentic_light (qwen3.5-4b) stays thinking-capable — no overlay."""
+def test_agentic_light_defaults_to_nothink(monkeypatch):
+    """`agentic_light` is the NO-THINK lane by default (#489).
+
+    Inverts the pre-#489 contract, where the bare role alias was
+    thinking-capable. The role is OpenClaw's fast lane — latency-sensitive,
+    short-output work — and on #486's prompt set the thinking row ran ~3x
+    slower and truncated on 17/23 at a 1024-token budget. Reasoning did not
+    disappear; it moved one alias away (see the test below).
+    """
     captured: dict = {}
     monkeypatch.setattr(server_mod, "call_openai_chat", _capture_call(captured))
 
@@ -476,6 +491,28 @@ def test_plain_agentic_light_does_not_inject(monkeypatch):
         "/v1/chat/completions",
         json={
             "model": "agentic_light",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert captured["extra"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert captured["base_url"] == "http://127.0.0.1:8088/v1"
+
+
+def test_agentic_light_think_stays_thinking_capable(monkeypatch):
+    """`agentic_light_think` is the escape hatch that keeps #489 revertible.
+
+    A consumer that genuinely wants reasoning changes one string and nothing
+    else — same backend, same port, no overlay.
+    """
+    captured: dict = {}
+    monkeypatch.setattr(server_mod, "call_openai_chat", _capture_call(captured))
+
+    client = TestClient(server_mod.app)
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "agentic_light_think",
             "messages": [{"role": "user", "content": "hi"}],
         },
     )

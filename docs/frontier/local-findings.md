@@ -88,3 +88,85 @@ re-tested, update its **Status** line instead of deleting history.
   Parakeet checkpoint/architecture exposing such a hook — then re-measure
   on the same #138/#343 corpus before any verdict upgrade.
 - **Status:** unresolved (verdict stays `watch`).
+
+---
+
+## 2026-08-10 — Nemotron 3 Nano 4B for `agentic_light` — DISPROVEN (quality)
+
+- **Candidate:** NVIDIA Nemotron 3 Nano 4B, `nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF`
+  → `NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf` (2.84 GB, the only quant NVIDIA
+  publishes). Hybrid Mamba-2 + MoE, 4 attention layers, 260 K native context,
+  **NVIDIA Open Model License** (vs Qwen's Apache 2.0). Ran on `:8089`,
+  `--jinja -ngl 99 -c 65536 --flash-attn on --reasoning-format none`.
+- **Verdict it disproves:** the standing `keep` reason for `agentic_light`
+  carried by four consecutive frontier runs — *"no new 4B-class entrant in
+  this window"*. There **was** an entrant; it had simply never been sourced.
+  Nemotron appears in zero of the 2026-05-10 / 07-12 / 07-24 / 08-06 runs.
+- **Why it was tested here:** a spike on the sibling `local-llm-hub-lite`
+  (work PC, Quadro P1000 4 GB) measured Nemotron as faster than Qwen with
+  quality "comparable on classification, extraction, policy JSON, bullets,
+  rewriting and restart steps". That prompt set covers roughly the
+  agentic + polish half of this project's weighting and **no multilingual at
+  all** — 25% of the composite, and precisely where the model fails.
+
+- **Measured (RTX 5060 Ti, one arm at a time, 23 role-shaped prompts weighted
+  to the skill's fixed 0.35 / 0.25 / 0.25 / 0.15, `max_tokens=1024`):**
+
+  | arm | composite | agentic | polish | multiling | long ctx | total_s | ttft_s | tok/s | out_tok | trunc |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | `qwen35_4b_nothink` | **92.4** | 92.5 | 83.3 | **96.7** | 100.0 | 0.85 | 0.38 | 103.0 | 42 | 0/23 |
+  | `nemotron4b` | 80.8 | 90.0 | 86.7 | 66.7 | 73.3 | 2.06 | 1.72 | 120.1 | 177 | 0/23 |
+  | `nemotron4b_nothink` | 72.6 | 85.0 | 70.0 | 53.3 | 80.0 | **0.77** | 0.42 | **121.3** | 38 | 0/23 |
+  | `qwen35_4b` (thinking) | n/a | — | — | — | — | 2.42 | 1.46 | 95.0 | 192 | **17/23** |
+
+  **Nemotron is genuinely faster** — ~17% higher tok/s on both lanes and the
+  fastest wall-clock of any arm — and its reasoning is far more economical
+  (peak 564 tokens; Qwen's thinking arm exhausted 1024 on 17/23 prompts and
+  needed ≥4096 to complete). **It still loses the role on quality by 11.6–19.8
+  composite points, an order of magnitude outside the skill's ~3% tie band.**
+
+- **Where it fails — Catalan, systematically.** Both Nemotron arms
+  independently produced the same false friend, reading Catalan
+  `si arriba el paquet` ("if the package *arrives*") as "if the package is
+  **above**" — Spanish `arriba` bleeding into Catalan — and both emitted
+  non-Catalan words (`conflicts`, `stress`, `Favoritza`, `reducint`).
+  `qwen35_4b_nothink` scored 5/5 on both Catalan items. Two further failures:
+  `nemotron4b_nothink` answered an ops question with `rm your_module.py` plus a
+  fabricated `fastapi build` command, and on the buried-directive long-context
+  test both Nemotron arms obeyed the directive then stopped without answering,
+  where Qwen obeyed *and* answered.
+
+- **Sampling ruled out.** The primary run used vendor-recommended sampling
+  (NVIDIA 1.0/1.0, Qwen 0.6/0.95). Because the result went against the
+  candidate, a matched-temperature control (0.6/0.95) was run on the decisive
+  multilingual category: Spanish improves (`nemotron4b_nothink` 53.3% → 70.0%;
+  the `las pesos` gender error and a unit-vs-total price error both resolve)
+  but **Catalan does not move** — the same false friend reproduces at both
+  temperatures. Best Nemotron multilingual at matched temp is 70.0% vs 96.7%.
+  The gap is a model property, not a sampling artifact.
+
+- **Positive results worth keeping.** Thinking suppression works: llama.cpp's
+  `chat_template_kwargs {"enable_thinking": false}` genuinely suppresses
+  Nemotron's `<think>` block (49 → 3 tokens on the same prompt), delivered
+  through the hub's existing `inject_extra` with **no code change** — so
+  ggml-org/llama.cpp#20182 does not affect this template, and an
+  `agentic_light_nothink` equivalent was never the blocker. Nemotron also tied
+  Qwen on tool calling (4/4 correct selections, correct refusal when no tool
+  matched) and beat it on `polish_summarise`.
+
+- **Record:** [issue #486](https://github.com/ferraroroberto/local-llm-hub/issues/486).
+  Harness committed as `scripts/bench_agentic.py` + `scripts/bench_agentic_prompts.json`
+  (reusable for any future `agentic_*` swap; targets any hub by `--base-url`).
+  Candidate rows were removed after the run per the latest-only policy; restore
+  them from #486's PR diff to re-test.
+
+- **Re-open trigger:** a Nemotron 3 Nano release (or a community fine-tune)
+  with demonstrated Catalan competence, **or** a decision to drop multilingual
+  from `agentic_light`'s job — the role's own `notes:` currently cover ES/CA
+  work. Absent either, re-measure only the multilingual category first: it is
+  the whole gap, and it is cheap to re-check with
+  `--category multilingual`.
+
+- **Status:** resolved — `agentic_light` stays `qwen35_4b`. Future runs should
+  still **source** Nemotron as a candidate (the sourcing gap was real) but can
+  cite this entry rather than re-measuring the full set.

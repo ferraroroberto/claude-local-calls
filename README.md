@@ -52,16 +52,30 @@ regardless (see [Multi-host: the Mac Mini](#multi-host-the-mac-mini)):
   on `127.0.0.1:8088` (4 B hybrid Gated DeltaNet + sparse MoE, full
   GPU offload, Apache 2.0, 262 k native context). Fills the
   `agentic_light` role: OpenClaw fast lane, classification, edge.
-  Also addressable as `model="agentic_light"` — clients that hit the
-  role alias survive future `/swap-model` rotations unchanged.
-  A **virtual no-think alias** `qwen3.5-4b-nothink` (role alias
-  `agentic_light_nothink`) shares this same `:8088` backend — no second
-  process, no extra VRAM — and makes the hub inject
-  `chat_template_kwargs={enable_thinking:false}` into every request, so
-  clients that can't send that field themselves (e.g. Home Assistant's
-  `extended_openai_conversation`) still reach Qwen's fast, no-reasoning
-  path. Plain `qwen3.5-4b` / `agentic_light` stay thinking-capable; a
-  caller that sends its own `chat_template_kwargs` always wins.
+  A **virtual no-think alias** `qwen3.5-4b-nothink` shares this same
+  `:8088` backend — no second process, no extra VRAM — and makes the hub
+  inject `chat_template_kwargs={enable_thinking:false}` into every
+  request, so clients that can't send that field themselves (e.g. Home
+  Assistant's `extended_openai_conversation`) still reach Qwen's fast,
+  no-reasoning path. A caller that sends its own `chat_template_kwargs`
+  always wins.
+
+  **Since #489 the no-think path is the default.** Three aliases, one
+  `:8088` process:
+
+  | address as | thinking | use for |
+  |---|---|---|
+  | `agentic_light` | **off** | the default fast lane — classification, routing, extraction |
+  | `agentic_light_nothink` | off | same row; the name Home Assistant sends |
+  | `agentic_light_think` | on | when you actually want reasoning |
+
+  Why the flip: on the [#486](https://github.com/ferraroroberto/local-llm-hub/issues/486)
+  benchmark the thinking row ran 2.42 s median at 192 output tokens and
+  **truncated on 17 of 23 prompts** at a 1024-token budget, while the
+  no-think row ran 0.85 s at 42 tokens with zero truncations. This was a
+  latency-and-reliability decision, not a measured quality win — the
+  thinking arm has no valid quality score precisely because it truncated.
+  Reasoning did not go away; it moved one alias across.
 - **`gemma4-26b-a4b-it`** — local `llama-server` running
   [unsloth/gemma-4-26B-A4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF)
   on `127.0.0.1:8087` (25 B / 3.8 B-active MoE, IQ4_XS i-matrix quant
@@ -262,7 +276,7 @@ The four active local roles live in `config/models.yaml` → `roles:`:
 
 | Role | Model | Why |
 |---|---|---|
-| `agentic_light` | `qwen35_4b` | OpenClaw fast lane / classify / edge |
+| `agentic_light` | `qwen35_4b_nothink` | OpenClaw fast lane / classify / edge — no-think by default (#489); reasoning via `agentic_light_think` |
 | `agentic_heavy` | `gemma4_26b` | Deep agentic, transcripts, docs, ES↔EN↔CA |
 | `audio_transcribe` | `whisper` | EN/ES audio → text |
 | `audio_translate` | `whisper_translate` | ES audio → English (eager CPU sibling) |

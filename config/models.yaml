@@ -422,11 +422,22 @@ models:
   # See docs/frontier/runs/2026-05-10/report.md §5 (Tier A) and §10.
   qwen35_4b:
     display_name: qwen3.5-4b
-    # `agentic_light` is the role alias — clients (e.g. voice-transcriber)
-    # address the role, not this specific model id. When swap-model flips
-    # roles.agentic_light.model_id to a successor, this alias must move
-    # to the successor's row so the contract stays stable.
-    aliases: ["agentic_light"]
+    # THE THINKING LANE. `agentic_light` itself moved to the no-think sibling
+    # below in #489 — this row keeps the explicit `agentic_light_think` alias
+    # so reasoning stays one word away, and so the flip is a one-line revert.
+    #
+    # Why the default moved: on #486's 23 role-shaped prompts this row ran
+    # 2.42 s median at 192 output tokens and **truncated on 17 of 23** at a
+    # 1024-token budget, while the no-think sibling ran 0.85 s at 42 tokens
+    # with zero truncations. `agentic_light`'s job (OpenClaw fast lane,
+    # classification, edge) is latency-sensitive short-output work, which the
+    # thinking overlay actively fights. Note this was NOT a measured quality
+    # win — the thinking arm has no valid composite precisely because it
+    # truncated; the case is latency + reliability.
+    #
+    # Still the REAL row: `startup: eager`, owns the :8088 process the virtual
+    # no-think sibling borrows. Moving an alias never moves the backend.
+    aliases: ["agentic_light_think"]
     backend: openai
     host: tower  # owning host (#178) — cross-enabled on mac-mini-m4 below
     engine: llama-server
@@ -479,9 +490,15 @@ models:
   # still wins). Plain `qwen3.5-4b` / `agentic_light` stay thinking-capable.
   qwen35_4b_nothink:
     display_name: qwen3.5-4b-nothink
-    # Role-style alias, parallel to agentic_light — clients that want the
-    # no-think fast lane address the role, not the concrete id.
-    aliases: ["agentic_light_nothink"]
+    # THE DEFAULT FAST LANE since #489: `agentic_light` resolves here, so every
+    # client addressing the role gets the no-think path without asking for it.
+    #
+    # `agentic_light_nothink` is RETAINED alongside it, not renamed — Home
+    # Assistant's extended_openai_conversation addresses that name directly
+    # (it cannot send chat_template_kwargs itself, which is why this row
+    # exists at all). Both names hit the same row; dropping either would
+    # break a live consumer.
+    aliases: ["agentic_light", "agentic_light_nothink"]
     backend: openai
     host: tower  # owning host (#178) — cross-enabled on mac-mini-m4 below
     port: 8088                       # shared with qwen35_4b (virtual alias)
@@ -912,8 +929,8 @@ models:
 # touched by the swap logic.
 roles:
   agentic_light:
-    model_id: qwen35_4b
-    notes: "OpenClaw fast lane, classification, edge"
+    model_id: qwen35_4b_nothink
+    notes: "OpenClaw fast lane, classification, edge — no-think by default (#489); reasoning via agentic_light_think"
   agentic_heavy:
     model_id: gemma4_26b
     notes: "OpenClaw deep lane, transcripts, documents, translation, disfluency removal"

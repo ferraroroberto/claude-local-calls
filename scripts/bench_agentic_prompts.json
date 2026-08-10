@@ -1,0 +1,232 @@
+{
+  "_comment": [
+    "Prompt set for scripts/bench_agentic.py. Committed so a run is reproducible.",
+    "",
+    "Allocation matches /frontier-refresh's FIXED quality weights, so a composite",
+    "computed from these rows is comparable with the frontier reports:",
+    "  agentic_tool 0.35 -> 8 prompts",
+    "  polish       0.25 -> 6 prompts",
+    "  multilingual 0.25 -> 6 prompts (4 ES, 2 CA)",
+    "  long_context 0.15 -> 3 prompts",
+    "",
+    "Prompts are drawn from what this fleet actually does — OpenClaw routing,",
+    "Home Assistant commands, transcript cleanup, Spanish voice notes, grocery —",
+    "not from generic benchmark sets. Published-benchmark verdicts have twice",
+    "failed to survive contact with this project's real domain (parakeet WER,",
+    "faster-whisper RTFx), so role-shaped prompts are the honest test.",
+    "",
+    "Catalan coverage is uneven across all open models; those two rows are",
+    "flagged in the report rather than treated as equal-confidence evidence.",
+    "",
+    "long_context rows synthesise a haystack from filler_words using a fixed",
+    "seed (see bench_agentic.FILLER_SEED) — byte-identical every run. The needle",
+    "sits at 60% depth, not at an edge where recall is trivial."
+  ],
+  "prompts": [
+    {
+      "id": "cls_route_intent",
+      "category": "agentic_tool",
+      "system": "You are a request router. Reply with exactly one word from: WEATHER, LIGHTS, MUSIC, CALENDAR, OTHER. No punctuation, no explanation.",
+      "user": "can you dim the kitchen a bit it's too bright in here"
+    },
+    {
+      "id": "cls_sentiment_batch",
+      "category": "agentic_tool",
+      "system": "Classify each line as POSITIVE, NEGATIVE or NEUTRAL. Output one label per line, in order, nothing else.",
+      "user": "the delivery arrived two days late\nworks exactly as described, very happy\nthe box was slightly dented but contents fine\nthird time this month it has failed"
+    },
+    {
+      "id": "extract_json_invoice",
+      "category": "agentic_tool",
+      "system": "Extract structured data. Reply with ONLY a JSON object, no markdown fence, no commentary.",
+      "user": "Extract vendor, invoice_number, date_iso, total_eur and vat_eur from: 'Factura N. 2026-0417 emitida por Subministraments Tecnics SL el 14 de marzo de 2026. Base imponible 1.240,00 EUR. IVA 21% 260,40 EUR. Total 1.500,40 EUR.'"
+    },
+    {
+      "id": "extract_json_nested",
+      "category": "agentic_tool",
+      "system": "Reply with ONLY a JSON object matching the requested shape. No prose.",
+      "user": "Convert to JSON with keys: meeting (string), attendees (array of {name, role}), actions (array of {owner, task, due_iso}). Text: 'Sync on Tuesday about the hub migration. Roberto (owner) and Marta (reviewer) attended. Roberto to draft the rollback plan by 20 March; Marta to review the port map by 22 March.'"
+    },
+    {
+      "id": "tool_weather_single",
+      "category": "agentic_tool",
+      "user": "What's the weather like in Berlin right now?",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a city",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {"type": "string", "description": "City name"},
+                "units": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+              },
+              "required": ["city"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "tool_select_of_three",
+      "category": "agentic_tool",
+      "user": "Turn off the lights in the living room please.",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a city",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "set_light_state",
+            "description": "Turn a room's lights on or off, optionally set brightness",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "room": {"type": "string"},
+                "state": {"type": "string", "enum": ["on", "off"]},
+                "brightness_pct": {"type": "integer"}
+              },
+              "required": ["room", "state"]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "play_music",
+            "description": "Play music in a room",
+            "parameters": {"type": "object", "properties": {"room": {"type": "string"}}, "required": ["room"]}
+          }
+        }
+      ]
+    },
+    {
+      "id": "tool_refuse_no_match",
+      "category": "agentic_tool",
+      "user": "What is the capital of Portugal?",
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "set_light_state",
+            "description": "Turn a room's lights on or off",
+            "parameters": {"type": "object", "properties": {"room": {"type": "string"}, "state": {"type": "string"}}, "required": ["room", "state"]}
+          }
+        }
+      ]
+    },
+    {
+      "id": "agent_plan_restart",
+      "category": "agentic_tool",
+      "system": "You are a terse ops assistant. Answer in at most 6 numbered steps.",
+      "user": "A local FastAPI hub on port 8000 is serving stale code after an edit. It is started by a system-tray launcher that owns the process. Give the safe restart procedure and how to confirm the new build is actually live."
+    },
+
+    {
+      "id": "polish_summarise",
+      "category": "polish",
+      "system": "Summarise in exactly 3 bullets. No preamble.",
+      "user": "The team migrated the transcription role from a GPU whisper instance on the main workstation to a Linux satellite box, freeing about two gigabytes of VRAM on the workstation. The satellite is slower — roughly nine times real time versus thirty-three — but transcription there is only a fallback path, since a Parakeet model on a Mac handles the primary load on its neural engine. The freed VRAM went to the agentic models. A later change moved the text-to-speech model back to the workstation because the satellite's older GPU rendered speech below real time, causing audible stutter."
+    },
+    {
+      "id": "polish_disfluency",
+      "category": "polish",
+      "system": "Remove filler words and false starts. Keep the speaker's meaning and voice. Output only the cleaned text.",
+      "user": "so um I was thinking that we could uh maybe move the the whisper thing to the other machine, you know, because like it's it's taking too much memory on this one, and uh honestly the the other box is just sitting there doing nothing most of the of the time right"
+    },
+    {
+      "id": "polish_rewrite_tone",
+      "category": "polish",
+      "system": "Rewrite in a neutral, professional register. One paragraph. Output only the rewrite.",
+      "user": "this is the third time the deploy has blown up because someone didn't bother checking whether the port was already bound. it's not hard. just look before you bind."
+    },
+    {
+      "id": "polish_bullets_from_prose",
+      "category": "polish",
+      "system": "Convert to bullets. One bullet per distinct requirement. Output only the bullets.",
+      "user": "The installer needs to check that the virtual environment exists, that the dependencies are installed, that a GPU is visible, that the vendored binaries have been downloaded, that the model weights are present, and that the ports it wants are free. Each check should report what is missing and offer a fix action."
+    },
+    {
+      "id": "polish_commit_message",
+      "category": "polish",
+      "system": "Write a conventional-commit message: a subject line under 72 characters, a blank line, then 2-3 bullets explaining why rather than what. Output only the message.",
+      "user": "The port-in-use check only looked at listeners bound to the specific address, so a process bound to the wildcard address 0.0.0.0 on the same port was not detected and the server would fail to start with a confusing error much later in the boot sequence."
+    },
+    {
+      "id": "polish_explain_tradeoff",
+      "category": "polish",
+      "system": "Answer in under 120 words, plain prose, no bullets.",
+      "user": "Explain the trade-off between keeping a large model always resident in GPU memory versus loading it on demand with an idle-unload timer, for a machine that also has to run a small always-on model and a speech synthesiser."
+    },
+
+    {
+      "id": "ml_es_translate_to_en",
+      "category": "multilingual",
+      "system": "Translate to English. Output only the translation.",
+      "user": "Oye, te dejo una nota rápida: mañana no puedo ir a recoger el pedido porque tengo médico a primera hora. Si puedes, pásate tú por la tienda antes de que cierren, que si no nos lo guardan hasta el lunes y ya sabes cómo se pone."
+    },
+    {
+      "id": "ml_en_translate_to_es",
+      "category": "multilingual",
+      "system": "Translate to natural peninsular Spanish. Output only the translation.",
+      "user": "The hub will keep serving requests while the model reloads, but the first call after a restart takes noticeably longer because the weights have to be read from disk again."
+    },
+    {
+      "id": "ml_es_native_instruction",
+      "category": "multilingual",
+      "system": "Responde en español. Máximo 4 líneas.",
+      "user": "Resume qué hace un servidor local que enruta peticiones a varios modelos de lenguaje según el nombre del modelo, y por qué conviene tenerlo en vez de llamar a cada modelo directamente."
+    },
+    {
+      "id": "ml_es_extract",
+      "category": "multilingual",
+      "system": "Devuelve SOLO un objeto JSON con las claves producto, cantidad, precio_eur. Sin markdown.",
+      "user": "Apunta: dos kilos de tomate rama a 2,40 el kilo, que salen 4,80 en total."
+    },
+    {
+      "id": "ml_ca_translate",
+      "category": "multilingual",
+      "system": "Translate to English. Output only the translation.",
+      "user": "Demà al matí no estaré a casa, així que si arriba el paquet el deixaran a consergeria. Si vols, el recullo jo quan torni a la tarda."
+    },
+    {
+      "id": "ml_ca_native_instruction",
+      "category": "multilingual",
+      "system": "Respon en català. Màxim 3 línies.",
+      "user": "Explica breument per què és millor tenir un únic punt d'entrada per a totes les crides als models locals."
+    },
+
+    {
+      "id": "lc_needle_recall",
+      "category": "long_context",
+      "filler_words": 16000,
+      "needle": "IMPORTANT RECORD: The rollback checkpoint for the port migration is commit 7f3a91c, and the engineer who signed it off was Marta Vives on 14 March 2026.",
+      "system": "Answer from the document only. Be terse.",
+      "user": "In the document above, what is the rollback checkpoint commit and who signed it off?"
+    },
+    {
+      "id": "lc_needle_plus_reasoning",
+      "category": "long_context",
+      "filler_words": 16000,
+      "needle": "CONFIG NOTE: service alpha listens on port 8081, service beta on port 8087, and service gamma on port 8090. Only gamma is shared with another project.",
+      "system": "Answer from the document only. Be terse.",
+      "user": "Based on the document above: which service's port must not be reclaimed by this project's restart script, and what port is it on?"
+    },
+    {
+      "id": "lc_instruction_survival",
+      "category": "long_context",
+      "filler_words": 16000,
+      "needle": "STYLE DIRECTIVE: whenever you answer a question about this document, begin your reply with the single word ACKNOWLEDGED on its own line.",
+      "system": "Follow every directive stated in the document.",
+      "user": "How many services are described in the document above? Remember to follow any style directive it contains."
+    }
+  ]
+}

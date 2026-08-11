@@ -17,6 +17,7 @@ Checks:
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import httpx
@@ -29,11 +30,41 @@ PHONE_VIEWPORT = {"width": 390, "height": 844}
 # Pane-switch DOM/CSS transition can overrun a tight budget under runner
 # contention (issue #177) — give it the same headroom as the button wait.
 PANE_TIMEOUT = 10000
-# The summary endpoint cold-scans every vendor's full session history on
-# first call (no mtime cache yet); on a dev machine with a large Claude/Codex
-# history this measured ~5.5s even before Copilot added a 4th vendor scan —
-# 10s cut it close under host contention (same class of flake as #177).
+# The summary endpoint cold-scans every vendor's full session history on the
+# hub's first call (no mtime cache yet — each e2e session boots a fresh hub
+# subprocess, so every run pays this once). Measured ~19.7s for period=all,
+# vendor=all on this box's ~300k-record Claude history (#491) — right at the
+# old 20s budget, so it tipped over under host contention. The
+# ``_warm_code_usage_cache`` fixture below now pays that cost once, up front,
+# before any assertion races it; every call below runs against a warm mtime
+# cache, so 20s stays a comfortable margin rather than a bet against the
+# cold-scan clock.
 API_TIMEOUT = 20.0
+# Generous ceiling for the one-off cold scan itself — not a race, just a
+# backstop against a genuinely hung hub.
+_WARMUP_TIMEOUT = 90.0
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _warm_code_usage_cache(admin_url):
+    """Pay the cold-scan cost once, before any test assertion depends on it.
+
+    ``get_summary`` builds every vendor's mtime cache from scratch on the
+    hub's first call (#491) — cheap once warm, but ~20s cold on this box's
+    transcript volume. Firing the most expensive combination
+    (``period=all&vendor=all``) here means every test below — including the
+    SPA's own polling in ``test_code_usage_tab_loads`` /
+    ``test_code_usage_tab_phone_screenshot`` — runs against an already-warm
+    cache instead of racing the scan under its own fixed timeout. Duration is
+    logged (not just swallowed) so a growing cold-scan cost stays visible
+    over time rather than silently hidden behind ever-larger budgets.
+    """
+    base = admin_url.rstrip("/") + "/api/code/usage/summary"
+    t0 = time.monotonic()
+    r = httpx.get(base, params={"period": "all", "vendor": "all"}, timeout=_WARMUP_TIMEOUT)
+    elapsed = time.monotonic() - t0
+    print(f"\n[code-usage] cold-scan warm-up: {elapsed:.2f}s (status {r.status_code})")
+    assert r.status_code == 200, f"warm-up call failed: {r.text}"
 
 
 @pytest.fixture(autouse=True)

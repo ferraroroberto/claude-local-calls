@@ -176,9 +176,11 @@ def build_flux2_workflow(
 ) -> tuple[Dict[str, Any], GraphHandles]:
     """Build the FLUX.2 txt2img graph — a *split-loader* graph, unlike FLUX.1.
 
-    FLUX.2 ships the transformer, the Mistral-Small text encoder and the VAE as
-    three separate files, so there is no ``CheckpointLoaderSimple`` to yield
-    all three edges. It also needs FLUX.2-specific nodes, confirmed against a
+    FLUX.2 ships the transformer, its text encoder and the VAE as three
+    separate files, so there is no ``CheckpointLoaderSimple`` to yield all
+    three edges. Which encoder depends on the variant — Mistral-Small-24B for
+    [dev], Qwen3-4B for [klein] — and they are **not** interchangeable; the
+    caller supplies the right one via ``clip_name``. It also needs FLUX.2-specific nodes, confirmed against a
     live ``/object_info`` rather than assumed:
 
     * ``EmptyFlux2LatentImage`` — its own latent shape.
@@ -590,7 +592,9 @@ class ModelSpec:
     workflow: str = "flux1"
     ckpt_name: Optional[str] = None          # flux1: the all-in-one checkpoint
     unet_name: Optional[str] = None          # flux2: the transformer
-    clip_name: Optional[str] = None          # flux2: the Mistral text encoder
+    # flux2: the text encoder — Mistral-Small for dev, Qwen3-4B for klein.
+    # Not interchangeable; see the note in config/models.yaml.
+    clip_name: Optional[str] = None
     vae_name: Optional[str] = None           # flux2
     gguf: bool = False                       # flux2: quantized transformer
     steps: Optional[int] = None

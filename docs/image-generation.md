@@ -333,6 +333,17 @@ Sharing them means the second instance loses the SQLite race and starts degraded
 with *"Could not acquire lock on database … Another ComfyUI process may already
 be using it"*.
 
+**Two image models resident at once can fail a generation.** These rows are the
+first thing in the repo that can put two ComfyUI processes on the GPU
+simultaneously, and between them they can want more than 16 GB. The hub's VRAM
+policy is deliberately *advisory* — `on_demand.py` logs an overcommit warning and
+proceeds, because "eviction arbitration is explicitly out of scope" (#375/#422) —
+so the failure surfaces as a 502 from the losing request, e.g.
+`KSampler raised RuntimeError: HostBuffer.read_file_slice failed`. It is not a
+corrupted state and needs no cleanup: stop the other image model (admin Models
+tab) or wait out its 15-minute idle unload, and the request succeeds. Requesting
+one image model at a time is the supported pattern.
+
 ### Install
 
 `scripts/install_comfyui.py` also provisions **city96's ComfyUI-GGUF** custom

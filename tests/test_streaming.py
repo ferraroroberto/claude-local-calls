@@ -47,6 +47,23 @@ def test_strip_think_blocks_multiline():
     assert strip_think_blocks(src) == "xy"
 
 
+def test_strip_think_blocks_unterminated_drops_tail():
+    # Truncated mid-thought (e.g. max_tokens cut it off): no close tag
+    # to match, so the naive regex would leave the raw block in place.
+    src = "answer is...<think>still thinking when stream died"
+    assert strip_think_blocks(src) == "answer is..."
+
+
+def test_strip_think_blocks_unterminated_only_think():
+    src = "<think>never got to an answer"
+    assert strip_think_blocks(src) == ""
+
+
+def test_strip_think_blocks_well_formed_then_unterminated():
+    src = "<think>done</think>Final answer<think>more thinking cut off"
+    assert strip_think_blocks(src) == "Final answer"
+
+
 def test_think_stripper_split_open_tag():
     s = ThinkStripper()
     out1 = s.feed("hello <thi")
@@ -109,6 +126,16 @@ def test_clean_openai_response_prefers_content_when_present():
     clean_openai_response(r)
     # Don't clobber a real content field with reasoning.
     assert r["choices"][0]["message"]["content"] == "Direct answer"
+
+
+def test_clean_openai_response_drops_unterminated_think_on_truncation():
+    r = _resp(content="<think>never finished reasoning")
+    r["choices"][0]["finish_reason"] = "length"
+    clean_openai_response(r)
+    # A truncated response should degrade to empty content, not leak
+    # raw <think> internals to the caller.
+    assert r["choices"][0]["message"]["content"] == ""
+    assert r["choices"][0]["finish_reason"] == "length"
 
 
 # ---- iter_cleaned_sse pipeline ----

@@ -123,12 +123,58 @@ Anthropic translation hops on both paths — for Claude the hub wraps
 the envelope into OpenAI shape; for the local llama-server backends
 (qwen35_4b/qwen/glm/gemma4-e4b/gemma4-26b-a4b) it's near-passthrough.
 
+### Local image backend (model=flux1_local, issue #492)
+
+The only lifecycle here that can **start its own backend mid-request**: the row
+is `startup: on_demand`, so a cold request spawns ComfyUI and blocks on
+readiness before any work is submitted. Note also that the job is asynchronous
+on ComfyUI's side — the hub submits, then polls, rather than holding one long
+request open.
+
+```mermaid
+sequenceDiagram
+    participant C as Client (OpenAI SDK / curl)
+    participant F as FastAPI hub (src/server_images.py)
+    participant O as on_demand.ensure_ready
+    participant B as backend_process
+    participant K as comfyui_client
+    participant X as ComfyUI :8188 (loopback, vendor/comfyui)
+
+    C->>F: POST /v1/images/generations<br/>{model:"flux1_local", prompt, ...}
+    F->>F: resolve + guard (image_gen ∧ backend ∈ {gemini, comfyui})
+    F->>O: ensure_ready(model)
+    alt backend cold
+        O->>B: start("flux1_local")
+        B->>X: spawn python main.py --listen 127.0.0.1 --port 8188
+        O->>X: poll GET /system_stats until 200 (~40 s)
+    end
+    F->>K: generate_image(prompt, base_url, ckpt_name)
+    K->>K: build_flux_workflow()<br/>(EmptySD3LatentImage · FluxGuidance · cfg=1.0)
+    K->>X: POST /prompt {prompt: graph, client_id}
+    X-->>K: {prompt_id}
+    loop until complete or 600 s
+        K->>X: GET /history/{prompt_id}
+        X-->>K: {} while queued/running
+    end
+    X-->>K: record {outputs, status}
+    K->>X: GET /view?filename=…&type=temp
+    X-->>K: PNG bytes
+    K-->>F: {image_bytes, media_type, result_text}
+    F-->>C: 200 JSON {created, data[0].b64_json}
+```
+
+After `idle_unload_minutes` without a request, `on_demand`'s watchdog stops the
+backend again — which also clears ComfyUI's `temp` directory, where the
+`PreviewImage` node writes generations. Editing (`/v1/images/edits`) does not
+use this path; it stays on the gemini backend.
+
 ## Key facts for LLM context
 
 - **Purpose.** Single local HTTP endpoint that speaks both Anthropic
   and OpenAI shapes and routes by model name to several backends:
   Claude subscription (via the `claude -p` CLI), Gemini subscription (via
-  the `agy` Antigravity CLI, plus Imagen at `/v1/images/*`), Qwen 3.5 4B
+  the `agy` Antigravity CLI, plus Imagen at `/v1/images/*`), FLUX.1 [dev]
+  image generation on the local GPU via ComfyUI (#492), Qwen 3.5 4B
   (agentic_light) and Gemma 4 26B-A4B IT MoE (agentic_heavy) on
   llama-server, ASR at `/v1/audio/transcriptions|translations` (the
   whisper.cpp trio — turbo transcribe, medium translate, glossary-free

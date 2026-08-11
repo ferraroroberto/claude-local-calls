@@ -42,7 +42,7 @@ import pystray
 import yaml
 
 from src.host_profile import CONFIG_PATH, hub_port
-from src.model_registry import Model, local_models
+from src.model_registry import SPAWNABLE_BACKENDS, Model, local_models
 from src.no_window import NO_WINDOW
 from src.server_process import WIN_NEW_GROUP
 from src.webapp_config import append_auth_token, ensure_auth_token, load_webapp_config
@@ -224,7 +224,7 @@ class TrayApp:
         # this machine; use the admin webapp's Models tab to control a
         # remote host's backend (it proxies there automatically).
         self._models: List[Model] = [
-            m for m in local_models() if m.backend in ("openai", "whisper", "tts")
+            m for m in local_models() if m.backend in SPAWNABLE_BACKENDS
         ]
         # The webapp config holds the bearer token we append to copied URLs.
         # Generate one on first boot so we never have an unprotected non-

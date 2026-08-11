@@ -315,8 +315,16 @@ def local_models(host: Optional[HostProfile] = None) -> List[Model]:
 # Backends that own a spawnable local process. `claude` / `gemini` are
 # subscription/CLI paths with nothing to launch; a `virtual` row shares
 # another model's process. Everything a `run_backend <id>` can actually
-# start is one of these three engines and non-virtual.
-_SPAWNABLE_BACKENDS = ("openai", "whisper", "tts")
+# start is one of these engines and non-virtual.
+#
+# Public because this set is the definition of "the hub can start/stop/inherit
+# this row", and a dozen call sites across the process manager, installer,
+# admin Models tab, tray and downloader need exactly it. They each used to
+# hand-repeat the literal, so adding `comfyui` (#492) would have left the new
+# backend half-registered — startable but never inherited after a hub restart,
+# invisible to the VRAM accounting, uncontrollable from the admin UI. Import
+# this instead of retyping the tuple.
+SPAWNABLE_BACKENDS = ("openai", "whisper", "tts", "comfyui")
 
 
 def launchable_local_ids(host: Optional[HostProfile] = None) -> List[str]:
@@ -330,7 +338,7 @@ def launchable_local_ids(host: Optional[HostProfile] = None) -> List[str]:
     """
     return [
         m.id for m in local_models(host)
-        if m.backend in _SPAWNABLE_BACKENDS and not m.virtual
+        if m.backend in SPAWNABLE_BACKENDS and not m.virtual
     ]
 
 

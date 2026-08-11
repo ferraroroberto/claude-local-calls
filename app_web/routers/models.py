@@ -17,6 +17,7 @@ from src import services as svc
 from src.host_profile import all_hosts, get_host, resolve as resolve_host
 from src.model_failover import effective_owner
 from src.model_registry import (
+    SPAWNABLE_BACKENDS,
     Model,
     cpu_resident_map,
     enabled_models,
@@ -54,7 +55,7 @@ def _offline_remote_row(m: Model, host_id: str) -> Dict[str, Any]:
         "port": m.port,
         "url": None,
         "aliases": list(m.aliases or []),
-        "controllable": m.backend in ("openai", "whisper", "tts") and not m.virtual,
+        "controllable": m.backend in SPAWNABLE_BACKENDS and not m.virtual,
         "ownership": OWNERSHIP_NONE,
         "pid": None,
         "reachable": False,
@@ -250,7 +251,7 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
     for m, reachable, device in zip(local_models, reach_results, device_results):
         # Virtual aliases share an existing backend's port and own no process,
         # so they're reachable but never independently start/stop-able.
-        controllable = m.backend in ("openai", "whisper", "tts") and not m.virtual
+        controllable = m.backend in SPAWNABLE_BACKENDS and not m.virtual
         own = OWNERSHIP_NONE
         pid: Any = None
         if controllable:
@@ -379,7 +380,7 @@ async def model_start(model_id: str) -> Dict[str, Any]:
             status_code=400,
             detail=f"model {model_id!r} is a virtual alias of another backend — nothing to start",
         )
-    if not (target.backend in ("openai", "whisper", "tts")):
+    if not (target.backend in SPAWNABLE_BACKENDS):
         raise HTTPException(
             status_code=400,
             detail=f"backend {target.backend!r} has no managed process (subscription-backed)",
@@ -433,7 +434,7 @@ async def model_log(model_id: str, limit: int = 400) -> Dict[str, Any]:
     target = _require_model(model_id)
     if remote_base_url(target):
         return await _forward_admin_call(target, "GET", "/log", params={"limit": limit})
-    if not (target.backend in ("openai", "whisper", "tts")):
+    if not (target.backend in SPAWNABLE_BACKENDS):
         raise HTTPException(
             status_code=400,
             detail=f"backend {target.backend!r} has no managed process (subscription-backed)",

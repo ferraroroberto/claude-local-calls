@@ -34,7 +34,13 @@ import httpx
 
 from .host_profile import resolve as resolve_host
 from .http_client import get_sync_client
-from .model_registry import Model, enabled_models, local_models, resolve as resolve_model
+from .model_registry import (
+    SPAWNABLE_BACKENDS,
+    Model,
+    enabled_models,
+    local_models,
+    resolve as resolve_model,
+)
 from .process_supervisor import ProcessSupervisor, SpawnSpec
 from .server_process import (
     OWNERSHIP_NONE,
@@ -47,6 +53,7 @@ from .server_process import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VENDOR_LLAMA = PROJECT_ROOT / "vendor" / "llama.cpp"
 VENDOR_WHISPER = PROJECT_ROOT / "vendor" / "whisper.cpp"
+VENDOR_COMFYUI = PROJECT_ROOT / "vendor" / "comfyui"
 LOG_DIR = PROJECT_ROOT / "data" / "logs"
 # Tail size returned by ``log_lines`` — replaces the old 1000-line ring.
 LOG_TAIL_LINES = 400
@@ -87,6 +94,18 @@ def whisper_server_binary() -> Path:
     return VENDOR_WHISPER / name
 
 
+def comfyui_python() -> Path:
+    """ComfyUI's own venv interpreter (#492).
+
+    ComfyUI is a Python app, not a prebuilt binary, and gets an isolated venv
+    so its wide dependency pin set can't resolve into the hub's — see
+    ``scripts/install_comfyui.py``.
+    """
+    if sys.platform == "win32":
+        return VENDOR_COMFYUI / ".venv" / "Scripts" / "python.exe"
+    return VENDOR_COMFYUI / ".venv" / "bin" / "python"
+
+
 def _is_whisper(model: Model) -> bool:
     return (
         model.engine == "whisper-server"
@@ -99,7 +118,13 @@ def _is_lazy_whisper(model: Model) -> bool:
     return model.engine == "whisper-server-lazy"
 
 
+def _is_comfyui(model: Model) -> bool:
+    return model.engine == "comfyui-server" or model.backend == "comfyui"
+
+
 def vendor_dir_for(model: Model) -> Path:
+    if _is_comfyui(model):
+        return VENDOR_COMFYUI
     return VENDOR_WHISPER if _is_whisper(model) else VENDOR_LLAMA
 
 
@@ -236,6 +261,11 @@ def is_reachable(model: Model, timeout: float = 1.5) -> bool:
     # takes a set of chars, so `"...:8091/v1".rstrip("/v1")` eats the port's
     # trailing "1" too and yields ":809" — a dead port. removesuffix is exact.
     base = model.url.removesuffix("/v1").rstrip("/")
+    if _is_comfyui(model):
+        # ComfyUI serves neither /health nor /v1/models — the two endpoints the
+        # fallthrough below tries. Its own readiness signal is /system_stats.
+        from .comfyui_client import is_reachable as comfyui_reachable
+        return comfyui_reachable(base, timeout=timeout)
     if model.engine in ("whisper-server", "whisper-server-lazy"):
         # whisper.cpp server has no /health; GET / returns 200 once loaded.
         # Engine-specific, not `_is_whisper` (backend == "whisper") — a
@@ -353,6 +383,39 @@ def build_command(model: Model) -> list[str]:
     if not model.model_path:
         raise RuntimeError(f"model {model.id} has no model_path")
     model_path = (PROJECT_ROOT / model.model_path).resolve()
+
+    # ComfyUI (#492) — the local image-generation engine. Unlike every other
+    # engine here the checkpoint is *not* a command-line argument: ComfyUI
+    # discovers weights through the `extra_model_paths.yaml` the installer
+    # generates, and the workflow graph names the checkpoint by filename (see
+    # src/comfyui_client.checkpoint_name_for). The model_path resolved above is
+    # still checked so a missing 17 GB download fails here with an actionable
+    # message rather than as an opaque node error mid-generation.
+    if _is_comfyui(model):
+        py = comfyui_python()
+        if not py.exists():
+            raise RuntimeError(
+                f"ComfyUI venv not found at {py} - run scripts/install_comfyui.py"
+            )
+        if not model_path.exists():
+            raise RuntimeError(
+                f"checkpoint not found at {model_path} - run "
+                f"scripts/download_models.py --only {model.id}"
+            )
+        cmd = [
+            str(py), str(VENDOR_COMFYUI / "main.py"),
+            # Loopback only, unlike the llama/whisper backends' 0.0.0.0. ComfyUI
+            # serves an unauthenticated web UI that can read and write the
+            # filesystem; the hub is its only client and peer hosts reach image
+            # generation through this hub's own API, never ComfyUI's port.
+            "--listen", "127.0.0.1",
+            "--port", str(model.port),
+            # Without this ComfyUI opens a browser tab on every spawn — and this
+            # backend is spawned on demand, from a windowless hub process.
+            "--disable-auto-launch",
+        ]
+        cmd.extend(model.args or [])
+        return cmd
 
     if _is_lazy_whisper(model):
         # The proxy itself doesn't need the model on disk to start — it
@@ -533,7 +596,7 @@ def inherit_running_backends() -> int:
     listening = snapshot_listening_pids()
     count = 0
     for m in local_models():
-        if m.backend not in ("openai", "whisper", "tts"):
+        if m.backend not in SPAWNABLE_BACKENDS:
             continue
         if not m.port:
             continue
@@ -546,9 +609,13 @@ def inherit_running_backends() -> int:
         try:
             proc = psutil.Process(candidate)
             exe = (proc.exe() or "").lower()
+            try:
+                cmdline = list(proc.cmdline() or [])
+            except (psutil.AccessDenied, OSError):
+                cmdline = []
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             continue
-        if _looks_like_backend_binary(exe, m):
+        if _looks_like_backend_binary(exe, m, cmdline):
             state = _state_for(m.id)
             state.inherited_pid = candidate
             count += 1
@@ -560,11 +627,33 @@ def inherit_running_backends() -> int:
     return count
 
 
-def _looks_like_backend_binary(exe: str, model: "Model") -> bool:
-    """Heuristic: does this executable look like the binary we'd spawn for ``model``?"""
+def _looks_like_backend_binary(
+    exe: str, model: "Model", cmdline: Optional[list[str]] = None,
+) -> bool:
+    """Heuristic: does this process look like the one we'd spawn for ``model``?
+
+    ``cmdline`` is needed because ``exe`` alone is not enough for the
+    Python-hosted engines on Windows: a venv's ``Scripts/python.exe`` is a
+    *redirector*, so ``psutil.Process.exe()`` reports the base interpreter
+    (``…/pythoncore-3.14-64/python.exe``) while only ``cmdline()[0]`` carries
+    the venv path. Matching on ``exe`` alone therefore never fires, the backend
+    is never inherited across a hub restart, and — because ``stop()`` can only
+    stop what it owns or inherited — its idle-unload watchdog can never
+    reclaim the VRAM.
+    """
     exe = (exe or "").lower()
     if model.engine in ("whisper-server", "whisper-server-lazy") or model.backend == "whisper":
         return "whisper-server" in exe or exe.endswith("whisper-server.exe")
+    if _is_comfyui(model):
+        # ComfyUI runs as a plain python.exe, so the generic "python" test below
+        # would adopt *any* python process squatting the port. Scope it to this
+        # repo's own vendored install by looking for that path on the command
+        # line (see the redirector note above for why not `exe`).
+        joined = " ".join(cmdline or []).lower()
+        return (
+            str(VENDOR_COMFYUI).lower() in joined
+            or exe == str(comfyui_python()).lower()
+        )
     # Default: llama.cpp's llama-server. The lazy-whisper proxy runs as
     # ``python -m src.whisper_translate_proxy`` — recognise pythonw too.
     return (
@@ -609,7 +698,7 @@ def running_backends() -> Dict[str, Model]:
     """Return {model_id: Model} for each local backend whose process is alive."""
     out: Dict[str, Model] = {}
     for m in local_models():
-        if m.backend in ("openai", "whisper", "tts") and is_running(m.id):
+        if m.backend in SPAWNABLE_BACKENDS and is_running(m.id):
             out[m.id] = m
     return out
 

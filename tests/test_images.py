@@ -1,17 +1,20 @@
-"""Unit tests for POST /v1/images/generations — `agy` is mocked.
+"""Unit tests for POST /v1/images/generations — both backends are mocked.
 
-We monkeypatch `call_gemini_image` so no real Antigravity CLI / Imagen call
-happens; the tests assert the OpenAI-shape contract and the routing guards.
+We monkeypatch `call_gemini_image` (no real Antigravity CLI / Imagen call) and
+`generate_image` (no ComfyUI process, no 17 GB checkpoint); the tests assert the
+OpenAI-shape contract, the per-backend dispatch, and the routing guards.
 """
 
 from __future__ import annotations
 
 import base64
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src import server as server_mod
 from src import server_images as images_mod
+from src.comfyui_client import ComfyUIError
 from src.gemini_cli import GeminiCLIError
 
 # A 1x1 PNG — enough to round-trip through base64 in the response.
@@ -126,6 +129,143 @@ def test_list_models_includes_gemini_image():
     r = client.get("/v1/models")
     ids = {m["id"] for m in r.json()["data"]}
     assert "gemini_image" in ids
+
+
+# --- ComfyUI / FLUX backend (#492) ---------------------------------------
+# The second image backend. No ComfyUI process is spawned and no checkpoint is
+# read: `generate_image` and the on-demand loader are both patched out.
+
+@pytest.fixture
+def flux_backend(monkeypatch):
+    """Patch out the ComfyUI call + its on-demand spawn, recording both.
+
+    ``ensure_ready`` is what would otherwise try to launch a real ComfyUI, so
+    stubbing it is what keeps these tests hermetic — and asserting it was
+    called is how we prove the route loads a cold backend before dispatching.
+    """
+    seen = {"ready": [], "prompt": None, "base_url": None, "ckpt": None}
+
+    monkeypatch.setattr(images_mod, "remote_base_url", lambda m: None)
+    monkeypatch.setattr(
+        images_mod.on_demand, "ensure_ready",
+        lambda model, *a, **k: seen["ready"].append(model.id),
+    )
+
+    def fake_generate(prompt, *, base_url, ckpt_name, **kwargs):
+        seen["prompt"] = prompt
+        seen["base_url"] = base_url
+        seen["ckpt"] = ckpt_name
+        return {"image_bytes": _PNG_BYTES, "media_type": "image/png",
+                "result_text": "comfyui prompt pid-1 in 4.2s"}
+
+    monkeypatch.setattr(images_mod, "generate_image", fake_generate)
+    return seen
+
+
+def test_flux_generation_returns_b64(flux_backend):
+    client = TestClient(server_mod.app)
+    r = client.post(
+        "/v1/images/generations",
+        json={"model": "flux1_local", "prompt": "a red apple on white"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert base64.b64decode(body["data"][0]["b64_json"]) == _PNG_BYTES
+    assert flux_backend["prompt"] == "a red apple on white"
+
+
+def test_flux_generation_loads_backend_on_demand_first(flux_backend):
+    """A cold ComfyUI must be spawned and waited for before the workflow is
+    submitted — otherwise the first request after an idle unload 502s."""
+    client = TestClient(server_mod.app)
+    r = client.post(
+        "/v1/images/generations", json={"model": "flux1_local", "prompt": "x"},
+    )
+    assert r.status_code == 200
+    assert flux_backend["ready"] == ["flux1_local"]
+
+
+def test_flux_generation_targets_the_rows_port_and_checkpoint(flux_backend):
+    """The registry row is the single source of truth for both the port the
+    client dials and the checkpoint name the workflow graph references."""
+    client = TestClient(server_mod.app)
+    client.post("/v1/images/generations",
+                json={"model": "flux1_local", "prompt": "x"})
+    assert flux_backend["base_url"] == "http://127.0.0.1:8188"
+    assert flux_backend["ckpt"] == "flux1-dev-fp8.safetensors"
+
+
+def test_flux_alias_routes_to_the_same_backend(flux_backend):
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux", "prompt": "x"})
+    assert r.status_code == 200
+    assert flux_backend["ready"] == ["flux1_local"]
+
+
+def test_flux_generation_error_returns_502(monkeypatch):
+    monkeypatch.setattr(images_mod, "remote_base_url", lambda m: None)
+    monkeypatch.setattr(images_mod.on_demand, "ensure_ready", lambda *a, **k: None)
+
+    def boom(*a, **k):
+        raise ComfyUIError("ComfyUI workflow failed: KSampler raised OOM")
+
+    monkeypatch.setattr(images_mod, "generate_image", boom)
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x"})
+    assert r.status_code == 502
+    assert "KSampler" in r.json()["detail"]
+
+
+def test_flux_backend_that_never_comes_up_returns_503(monkeypatch):
+    """A failed on-demand load is a distinct condition from a failed
+    generation, and must not be reported as a 502 backend error."""
+    from src.on_demand import OnDemandNotReady
+
+    monkeypatch.setattr(images_mod, "remote_base_url", lambda m: None)
+
+    def never_ready(model, *a, **k):
+        raise OnDemandNotReady("flux1_local did not become ready within 180s")
+
+    monkeypatch.setattr(images_mod.on_demand, "ensure_ready", never_ready)
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x"})
+    assert r.status_code == 503
+    assert "did not become ready" in r.json()["detail"]
+
+
+def test_flux_owned_by_another_host_returns_503(monkeypatch):
+    """Image generation isn't proxied between hubs — say so, rather than
+    dialling a loopback port nothing is listening on."""
+    monkeypatch.setattr(images_mod, "remote_base_url", lambda m: "http://tower:8000")
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x"})
+    assert r.status_code == 503
+    assert "not proxied" in r.json()["detail"]
+
+
+def test_flux_rejects_edits_with_a_capability_message():
+    """flux1_local *is* an image model, so the generic 'not an
+    image-generation model' rejection would be actively misleading."""
+    client = TestClient(server_mod.app)
+    r = client.post(
+        "/v1/images/edits",
+        data={"model": "flux1_local", "prompt": "make it blue"},
+        files={"image": ("duck.png", _PNG_BYTES, "image/png")},
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "not edit them" in detail and "gemini_image" in detail
+
+
+def test_list_models_includes_flux1_local():
+    client = TestClient(server_mod.app)
+    r = client.get("/v1/models")
+    ids = {m["id"] for m in r.json()["data"]}
+    assert "flux1_local" in ids
 
 
 def test_collect_artifact_identifies_by_content_not_extension(tmp_path):

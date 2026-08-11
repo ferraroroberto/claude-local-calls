@@ -30,7 +30,7 @@ from .backend_process import (
     vendor_dir_for,
 )
 from .host_profile import resolve as resolve_host
-from .model_registry import enabled_models, launchable_local_ids
+from .model_registry import SPAWNABLE_BACKENDS, enabled_models, launchable_local_ids
 from .server_process import (
     BASE_URL as HUB_BASE_URL,
     external_pid as hub_external_pid,
@@ -62,7 +62,7 @@ def _run_backend(model_id: str) -> int:
         known = [m.id for m in enabled_models()]
         log.error("model %r not enabled on host %s. known: %s", model_id, host.id, known)
         return 2
-    if model.backend not in ("openai", "whisper", "tts"):
+    if model.backend not in SPAWNABLE_BACKENDS:
         log.error("model %r is backend=%s; nothing to spawn", model_id, model.backend)
         return 2
     if model.host_chain and host.id not in model.host_chain:

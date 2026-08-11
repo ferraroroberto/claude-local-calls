@@ -126,12 +126,26 @@ def _download_extra_weights(model: Model) -> List[Path]:
         got = Path(hf_hub_download(repo_id=repo, filename=pattern,
                                    local_dir=str(target.parent)))
         # Repos that nest under split_files/ land in a subtree; flatten to the
-        # search-path root ComfyUI actually scans.
+        # search-path root ComfyUI actually scans, then prune the emptied
+        # subtree so it doesn't sit in the models tree looking meaningful.
         if got != target:
             target.unlink(missing_ok=True)
             got.replace(target)
+            _prune_empty_dirs(got.parent, stop_at=target.parent)
         out.append(target)
     return out
+
+
+def _prune_empty_dirs(leaf: Path, *, stop_at: Path) -> None:
+    """Remove now-empty directories from ``leaf`` up to (not including)
+    ``stop_at``. Best-effort: a non-empty or busy directory just stops it."""
+    current = leaf
+    while current != stop_at and stop_at in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent
 
 
 def main(argv: List[str] | None = None) -> int:

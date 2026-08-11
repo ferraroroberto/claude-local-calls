@@ -266,11 +266,9 @@ def test_upscaler_filename_matches_what_the_installer_provisions():
     two drifted, the 4K path failed on a fresh machine with a bare
     'value not in list' node error while working fine where the file had been
     placed by hand."""
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import install_comfyui  # type: ignore
+    # Same import form src/install.py uses, so this is the module the rest of
+    # the app actually sees rather than a second copy of the same file.
+    from scripts import install_comfyui  # type: ignore
 
     assert cc.DEFAULT_UPSCALE_MODEL == install_comfyui.UPSCALE_MODEL_FILE
 

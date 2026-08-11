@@ -396,7 +396,10 @@ models:
   # than EmptySD3LatentImage/KSampler. Node names verified against a live
   # ComfyUI /object_info, not assumed.
   #
-  # Both rows share the same Mistral-Small text encoder and FLUX.2 VAE.
+  # The two rows share the FLUX.2 VAE but NOT the text encoder: dev pairs with
+  # Mistral-Small-3.2-24B, klein with Qwen3-4B. Do not "simplify" them onto one
+  # encoder — the mismatch is not caught at load, it fails deep in sampling with
+  # `mat1 and mat2 shapes cannot be multiplied (512x15360 and 7680x3072)`.
   flux2_local:
     display_name: flux2-dev
     backend: comfyui

@@ -155,6 +155,32 @@ def verify_cuda() -> str:
     return info["version"]
 
 
+def installed_gguf_node_sha() -> Optional[str]:
+    """The commit the vendored ComfyUI-GGUF node is checked out at (#498).
+
+    Reads ``.git/HEAD`` directly rather than shelling out to ``git``: this is
+    called from ``src/install.py``'s report, which the admin SPA polls, and that
+    report has already been bitten once by a health check that spawned a
+    subprocess. The installer leaves a detached HEAD, so the file normally holds
+    the raw SHA; the ``ref:`` branch is handled for a hand-modified clone.
+
+    ``None`` means *not installed or unreadable* — the caller must surface that
+    as its own state rather than folding it into a pass.
+    """
+    head = GGUF_NODE_DIR / ".git" / "HEAD"
+    try:
+        raw = head.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if raw.startswith("ref:"):
+        ref = raw.split(" ", 1)[1].strip()
+        try:
+            return (GGUF_NODE_DIR / ".git" / ref).read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+    return raw or None
+
+
 def write_marker(info: Dict[str, Any]) -> None:
     """Persist a passing :func:`verify_cuda` result for cheap health checks."""
     try:
@@ -163,6 +189,7 @@ def write_marker(info: Dict[str, Any]) -> None:
             "torch_version": info["version"],
             "cuda": info["cuda"],
             "device": info["device"],
+            "gguf_node_pin": GGUF_NODE_PIN,
         }, indent=2), encoding="utf-8")
     except OSError as exc:  # noqa: BLE001 — best-effort; never fails an install
         log.warning("could not write %s: %s", MARKER_PATH, exc)

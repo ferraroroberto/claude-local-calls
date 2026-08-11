@@ -85,6 +85,27 @@ _LATENT = "empty_latent"
 _SAMPLER = "sampler"
 _DECODE = "vae_decode"
 _OUTPUT = "output"
+# Upscale / refine tail (#497), only present for above-native sizes.
+_UPSCALE_MODEL = "upscale_model"
+_UPSCALE = "upscale"
+_RESIZE = "resize_exact"
+_REFINE_ENCODE = "refine_encode"
+_REFINE_SAMPLER = "refine_sampler"
+_REFINE_DECODE = "refine_decode"
+
+# ESRGAN-family 4x upscaler, provisioned into models/comfyui/upscale_models/ by
+# scripts/install_comfyui.py (it is an engine asset, not a models.yaml row, so
+# scripts/download_models.py does not know about it). 4x overshoots every preset
+# we offer, so the ImageScale after it is always a *downsample* — the good
+# direction.
+DEFAULT_UPSCALE_MODEL = "4x-UltraSharp.pth"
+# Second-pass denoise for the optional refine step. Low on purpose: this is
+# meant to add real detail to interpolated pixels, and much above ~0.35 the
+# model starts reinventing the composition it was handed.
+DEFAULT_REFINE_DENOISE = 0.25
+# Refine runs fewer steps than the base sample — it is finishing an image, not
+# building one from noise.
+DEFAULT_REFINE_STEPS = 10
 
 
 def build_flux_workflow(
@@ -156,6 +177,86 @@ def build_flux_workflow(
             "inputs": {"images": [_DECODE, 0]},
         },
     }
+
+
+def add_upscale_tail(
+    workflow: Dict[str, Any],
+    target_width: int,
+    target_height: int,
+    *,
+    refine: bool = False,
+    refine_denoise: float = DEFAULT_REFINE_DENOISE,
+    refine_steps: int = DEFAULT_REFINE_STEPS,
+    seed: Optional[int] = None,
+    upscale_model: str = DEFAULT_UPSCALE_MODEL,
+) -> Dict[str, Any]:
+    """Extend a base txt2img graph to reach an above-native target size (#497).
+
+    Mutates and returns ``workflow``. The base graph must already sample at a
+    native-safe size (see ``image_sizes.native_source_size``); this bolts on:
+
+    ``upscale model -> 4x upscale -> scale to exact target [-> refine pass]``
+
+    then re-points the output node at the end of that chain. The ``ImageScale``
+    after the 4x pass is always a downsample, because 4x overshoots every size
+    we offer — going down from a larger image is what keeps it sharp.
+
+    ``refine`` adds a second low-denoise sampling pass over the upscaled image.
+    Without it an upscale is interpolation: more pixels, no more detail. With
+    it the model actually redraws at the higher resolution — roughly doubling
+    generation time, which is why the caller opts in.
+    """
+    workflow[_UPSCALE_MODEL] = {
+        "class_type": "UpscaleModelLoader",
+        "inputs": {"model_name": upscale_model},
+    }
+    workflow[_UPSCALE] = {
+        "class_type": "ImageUpscaleWithModel",
+        "inputs": {"upscale_model": [_UPSCALE_MODEL, 0], "image": [_DECODE, 0]},
+    }
+    workflow[_RESIZE] = {
+        "class_type": "ImageScale",
+        "inputs": {
+            "image": [_UPSCALE, 0],
+            "width": target_width,
+            "height": target_height,
+            "upscale_method": "lanczos",
+            "crop": "disabled",
+        },
+    }
+    tail = _RESIZE
+
+    if refine:
+        workflow[_REFINE_ENCODE] = {
+            "class_type": "VAEEncode",
+            "inputs": {"pixels": [_RESIZE, 0], "vae": [_CKPT, 2]},
+        }
+        workflow[_REFINE_SAMPLER] = {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": [_CKPT, 0],
+                "positive": [_GUIDANCE, 0],
+                "negative": [_NEGATIVE, 0],
+                "latent_image": [_REFINE_ENCODE, 0],
+                # A *different* seed from the base pass on purpose: reusing it
+                # would re-apply the same noise pattern the image already
+                # carries and bias the refinement toward the original grain.
+                "seed": (seed + 1) if seed is not None else random.getrandbits(63),
+                "steps": refine_steps,
+                "cfg": 1.0,
+                "sampler_name": DEFAULT_SAMPLER,
+                "scheduler": DEFAULT_SCHEDULER,
+                "denoise": refine_denoise,
+            },
+        }
+        workflow[_REFINE_DECODE] = {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": [_REFINE_SAMPLER, 0], "vae": [_CKPT, 2]},
+        }
+        tail = _REFINE_DECODE
+
+    workflow[_OUTPUT]["inputs"]["images"] = [tail, 0]
+    return workflow
 
 
 def checkpoint_name_for(model_path: Optional[str]) -> str:
@@ -297,29 +398,59 @@ def generate_image(
     steps: int = DEFAULT_STEPS,
     guidance: float = DEFAULT_GUIDANCE,
     seed: Optional[int] = None,
+    refine: bool = False,
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> Dict[str, Any]:
     """Generate one image with FLUX on a running ComfyUI.
 
-    Returns ``{"image_bytes", "media_type", "result_text"}`` — the same shape
-    ``gemini_cli.call_gemini_image`` returns, so ``server_images`` handles both
-    backends' results identically. Raises :class:`ComfyUIError` on any failure.
+    ``width``/``height`` are the *requested* output size. Anything above the
+    native sampling ceiling (``image_sizes.NATIVE_MAX_PIXELS``) is sampled at
+    the largest native-safe size of the same aspect ratio and then upscaled to
+    the exact target — the caller asks for 4K and gets 4K back, with the
+    two-stage work staying inside this function rather than leaking a two-call
+    protocol into the API. ``refine`` adds a second low-denoise pass over the
+    upscaled image; it is ignored for native-size requests, which have nothing
+    to refine.
+
+    Returns ``{"image_bytes", "media_type", "result_text", "width", "height"}``
+    — a superset of what ``gemini_cli.call_gemini_image`` returns, so
+    ``server_images`` still handles both backends' results identically.
+    Raises :class:`ComfyUIError` on any failure.
 
     The caller is responsible for making sure the backend is up
     (``on_demand.ensure_ready``); this function does not spawn anything.
     """
+    from .image_sizes import native_source_size, needs_upscale
+
     base = base_url.rstrip("/")
+    upscaling = needs_upscale(width, height)
+    src_w, src_h = native_source_size(width, height)
+    if seed is None:
+        seed = random.getrandbits(63)
+
     workflow = build_flux_workflow(
-        prompt, ckpt_name, width=width, height=height,
+        prompt, ckpt_name, width=src_w, height=src_h,
         steps=steps, guidance=guidance, seed=seed,
     )
+    if upscaling:
+        add_upscale_tail(
+            workflow, width, height, refine=refine, seed=seed,
+        )
 
     started = time.monotonic()
     prompt_id = _post_prompt(base, workflow)
-    logger.info(
-        "comfyui: queued prompt %s (%dx%d, %d steps, guidance %.1f)",
-        prompt_id, width, height, steps, guidance,
-    )
+    if upscaling:
+        logger.info(
+            "comfyui: queued prompt %s (%dx%d sampled -> %dx%d upscaled%s, "
+            "%d steps, guidance %.1f)",
+            prompt_id, src_w, src_h, width, height,
+            " + refine" if refine else "", steps, guidance,
+        )
+    else:
+        logger.info(
+            "comfyui: queued prompt %s (%dx%d, %d steps, guidance %.1f)",
+            prompt_id, width, height, steps, guidance,
+        )
 
     record = _await_history(base, prompt_id, timeout_s)
     error = _execution_error(record)
@@ -335,6 +466,8 @@ def generate_image(
     return {
         "image_bytes": image_bytes,
         "media_type": media_type,
+        "width": width,
+        "height": height,
         "result_text": f"comfyui prompt {prompt_id} in {elapsed:.1f}s",
     }
 

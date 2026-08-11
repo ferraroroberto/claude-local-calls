@@ -143,7 +143,8 @@ def flux_backend(monkeypatch):
     stubbing it is what keeps these tests hermetic — and asserting it was
     called is how we prove the route loads a cold backend before dispatching.
     """
-    seen = {"ready": [], "prompt": None, "base_url": None, "ckpt": None}
+    seen = {"ready": [], "prompt": None, "base_url": None, "ckpt": None,
+            "width": None, "height": None, "refine": None}
 
     monkeypatch.setattr(images_mod, "remote_base_url", lambda m: None)
     monkeypatch.setattr(
@@ -151,11 +152,16 @@ def flux_backend(monkeypatch):
         lambda model, *a, **k: seen["ready"].append(model.id),
     )
 
-    def fake_generate(prompt, *, base_url, ckpt_name, **kwargs):
+    def fake_generate(prompt, *, base_url, ckpt_name, width=None, height=None,
+                      refine=False, **kwargs):
         seen["prompt"] = prompt
         seen["base_url"] = base_url
         seen["ckpt"] = ckpt_name
+        seen["width"] = width
+        seen["height"] = height
+        seen["refine"] = refine
         return {"image_bytes": _PNG_BYTES, "media_type": "image/png",
+                "width": width, "height": height,
                 "result_text": "comfyui prompt pid-1 in 4.2s"}
 
     monkeypatch.setattr(images_mod, "generate_image", fake_generate)
@@ -259,6 +265,108 @@ def test_flux_rejects_edits_with_a_capability_message():
     assert r.status_code == 400
     detail = r.json()["detail"]
     assert "not edit them" in detail and "gemini_image" in detail
+
+
+# --- size + refine (#497) -------------------------------------------------
+
+def test_flux_size_preset_is_passed_through(flux_backend):
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x", "size": "widescreen"})
+    assert r.status_code == 200
+    assert (flux_backend["width"], flux_backend["height"]) == (1344, 768)
+
+
+def test_flux_explicit_size_is_passed_through(flux_backend):
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x", "size": "1216x832"})
+    assert r.status_code == 200
+    assert (flux_backend["width"], flux_backend["height"]) == (1216, 832)
+
+
+def test_flux_defaults_to_1024_square_when_size_omitted(flux_backend):
+    client = TestClient(server_mod.app)
+    client.post("/v1/images/generations", json={"model": "flux1_local", "prompt": "x"})
+    assert (flux_backend["width"], flux_backend["height"]) == (1024, 1024)
+
+
+def test_flux_refine_flag_is_forwarded(flux_backend):
+    client = TestClient(server_mod.app)
+    client.post("/v1/images/generations",
+                json={"model": "flux1_local", "prompt": "x", "size": "4k", "refine": True})
+    assert flux_backend["refine"] is True
+    assert (flux_backend["width"], flux_backend["height"]) == (3840, 2160)
+
+
+def test_off_grid_size_returns_400_with_a_suggestion(flux_backend):
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x", "size": "1000x1000"})
+    assert r.status_code == 400
+    assert "multiple of 16" in r.json()["detail"]
+
+
+def test_1920x1080_is_rejected_pointing_at_1088(flux_backend):
+    """The most likely thing a user types. Returning 1088 silently would be
+    handing back something they didn't ask for."""
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x", "size": "1920x1080"})
+    assert r.status_code == 400
+    assert "1088" in r.json()["detail"]
+
+
+def test_unknown_preset_returns_400(flux_backend):
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x", "size": "enormous"})
+    assert r.status_code == 400
+
+
+def test_response_reports_the_size_produced(flux_backend):
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "flux1_local", "prompt": "x", "size": "portrait"})
+    assert r.json()["size"] == "832x1216"
+
+
+@pytest.fixture
+def gemini_backend(monkeypatch):
+    seen = {}
+
+    def fake_call(prompt, *, reference_image=None, timeout=None):
+        seen["called"] = True
+        return {"image_bytes": _PNG_BYTES, "media_type": "image/png",
+                "result_text": "SAVED"}
+
+    monkeypatch.setattr(images_mod, "call_gemini_image", fake_call)
+    return seen
+
+
+def test_gemini_accepts_size_and_ignores_it(gemini_backend):
+    """OpenAI clients send `size` routinely — 400-ing on it would break every
+    existing Imagen caller. Imagen picks its own dimensions regardless."""
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "gemini_image", "prompt": "x", "size": "4k"})
+    assert r.status_code == 200
+    assert gemini_backend["called"] is True
+    # No size echoed back: Imagen never reports its own dimensions, and
+    # guessing would be worse than omitting the field.
+    assert "size" not in r.json()
+
+
+def test_gemini_ignores_a_size_it_could_never_honour(gemini_backend):
+    """A size that FLUX would reject must NOT 400 on Imagen: the 16-pixel grid
+    is a FLUX constraint, and rejecting an Imagen request with a message about
+    FLUX would be explaining a rule that doesn't apply to the model called.
+    A field that is ignored must ignore malformed values too."""
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": "gemini_image", "prompt": "x", "size": "1920x1080"})
+    assert r.status_code == 200
+    assert gemini_backend["called"] is True
 
 
 def test_list_models_includes_flux1_local():

@@ -413,11 +413,25 @@
         <div class="opt-stack">
           <label for="imageModel">Model</label>
           <select id="imageModel" aria-label="Image model"></select>
+          <p id="imageModelNote" class="muted small" style="margin: 4px 0 0;"></p>
         </div>
 
         <div class="opt-stack">
           <label for="imagePrompt">Prompt</label>
           <textarea id="imagePrompt" rows="4" placeholder="a red apple on a white background"></textarea>
+        </div>
+
+        <div class="opt-stack">
+          <label for="imageSize">Size</label>
+          <select id="imageSize" aria-label="Image size"></select>
+          <p id="imageSizeNote" class="muted small" style="margin: 4px 0 0;"></p>
+        </div>
+
+        <div class="opt-stack" id="imageRefineRow" hidden>
+          <div class="opt-switch-row">
+            <span>Refine after upscaling <span class="muted small">(second low-detail pass adds real detail instead of interpolated pixels — roughly doubles the time)</span></span>
+            <button type="button" id="imageRefine" class="toggle" role="switch" aria-checked="false" aria-label="Refine after upscaling"><span class="knob"></span><span class="toggle-label">OFF</span></button>
+          </div>
         </div>
 
         <div class="opt-stack">
@@ -427,7 +441,7 @@
             <span id="imageAttachmentName" class="file-name muted small">No file selected</span>
             <input id="imageAttachment" type="file" accept="image/*" hidden aria-label="Reference image to edit (optional)">
           </div>
-          <p class="muted small" style="margin: 4px 0 0;">Tip: dimensions are model-controlled — ask for an aspect ratio in the prompt (e.g. “16:9”).</p>
+          <p id="imageEditNote" class="muted small" style="margin: 4px 0 0;"></p>
         </div>
 
         <div class="playground-send-row">

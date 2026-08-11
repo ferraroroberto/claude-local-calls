@@ -49,7 +49,9 @@ Subscription-backed cloud routes (no GPU, no API keys, no Cloud project):
   against the always-on agentic/voice rotation. Not fast: measured ~55 s cold
   and ~40 s warm at 1024x1024 / 20 steps (ComfyUI re-streams weights from
   system RAM each run, so warm barely beats cold), for a measured ~5.7 GB peak
-  on the GPU. Generation only; editing stays on `gemini_image`. Install with
+  on the GPU. Unlike Imagen it **honours `size`** — presets from `square` up to
+  `4k`, where anything above ~2 MP is sampled at a native-safe size and then
+  upscaled (#497). Generation only; editing stays on `gemini_image`. Install with
   `scripts/install_comfyui.py` — see
   [docs/image-generation.md](docs/image-generation.md).
 
@@ -1050,6 +1052,7 @@ local-llm-hub/
 │   ├── audio_proxy.py        # shared multipart bridging for the whisper translate-proxy paths
 │   ├── server_images.py      # /v1/images/* handlers (generations, edits)
 │   ├── comfyui_client.py     # ComfyUI prompt API client — local FLUX.1 [dev] (#492)
+│   ├── image_sizes.py        # size presets + native/upscale split, one source for API + UI (#497)
 │   ├── claude_cli.py         # subprocess wrapper around `claude -p`
 │   ├── gemini_cli.py         # Antigravity CLI (`agy`) wrapper via ConPTY (Google AI Pro)
 │   ├── openai_upstream.py    # httpx client + SSE think-strip pipeline
@@ -1691,7 +1694,9 @@ does, and the same idle watchdog unloads it afterwards.
 
 Generate an image — OpenAI Images shape, returns `data[].b64_json`. Swap
 `model` for `flux1_local` to run it locally on the GPU (FLUX.1 [dev]) instead
-of Google Imagen; the request and response shapes are identical:
+of Google Imagen; the request and response shapes are identical. On the local
+model you can also pass `size` — a preset (`square`, `widescreen`, `hd`, `4k`,
+…) or `"WIDTHxHEIGHT"` on a 16-pixel grid; Imagen ignores it:
 
 ```python
 import base64

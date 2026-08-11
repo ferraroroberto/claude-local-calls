@@ -54,7 +54,8 @@ flowchart TB
     OAIUP["openai_upstream.py\nhttpx -> llama-server /v1"]
     AUDIOR["server_audio_asr.py + server_audio_tts.py\n/v1/audio/* proxy (#451 split)"]
     IMAGESR["server_images.py\n/v1/images/* proxy — dispatches on backend:\ngemini (Imagen) | comfyui (FLUX, #492)"]
-    COMFYCLI["comfyui_client.py (#492)\nhttpx -> ComfyUI prompt API:\nPOST /prompt (FLUX workflow graph) ->\npoll /history -> GET /view"]
+    COMFYCLI["comfyui_client.py (#492)\nhttpx -> ComfyUI prompt API:\nPOST /prompt (FLUX workflow graph) ->\npoll /history -> GET /view;\n>2 MP: sample native -> 4x upscale\n-> optional refine pass (#497)"]
+    IMGSIZE["image_sizes.py (#497)\nsize presets + 16px-grid validation +\nnative-vs-upscale split — one source\nfor the API and the Playground dropdown"]
   end
   CHATT -->|backend=claude| CLAUDECLI
   CHATT -->|backend=gemini| GEMINICLI
@@ -68,6 +69,9 @@ flowchart TB
   IMAGESR -->|backend=gemini: call_gemini_image| GEMINICLI
   IMAGESR -->|backend=comfyui: generate_image| COMFYCLI
   IMAGESR -->|ensure_ready before generating (#492)| ONDEMAND
+  IMAGESR -->|parse/validate size| IMGSIZE
+  COMFYCLI -->|native-vs-upscale decision| IMGSIZE
+  WROUT -->|playground image card: presets| IMGSIZE
 
   subgraph multihost["Multi-host (Mac Mini + gaming peers, issue #181/#372)"]
     REMOTEPROXY["remote_proxy.py\nresolve owning host's own base_url\nfor a model this host doesn't own"]

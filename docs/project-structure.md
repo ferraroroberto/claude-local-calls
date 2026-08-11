@@ -140,16 +140,20 @@ sequenceDiagram
     participant K as comfyui_client
     participant X as ComfyUI :8188 (loopback, vendor/comfyui)
 
-    C->>F: POST /v1/images/generations<br/>{model:"flux1_local", prompt, ...}
+    C->>F: POST /v1/images/generations<br/>{model:"flux1_local", prompt, size, refine}
     F->>F: resolve + guard (image_gen ∧ backend ∈ {gemini, comfyui})
+    F->>F: image_sizes.parse_size() — preset or WxH,<br/>16px grid or 400 (#497)
     F->>O: ensure_ready(model)
     alt backend cold
         O->>B: start("flux1_local")
         B->>X: spawn python main.py --listen 127.0.0.1 --port 8188
         O->>X: poll GET /system_stats until 200 (~40 s)
     end
-    F->>K: generate_image(prompt, base_url, ckpt_name)
+    F->>K: generate_image(prompt, base_url, ckpt_name, size, refine)
     K->>K: build_flux_workflow()<br/>(EmptySD3LatentImage · FluxGuidance · cfg=1.0)
+    alt requested size > ~2 MP (#497)
+        K->>K: sample at native-safe size of same ratio,<br/>then add_upscale_tail(): 4x upscale -> exact scale<br/>[-> low-denoise refine pass]
+    end
     K->>X: POST /prompt {prompt: graph, client_id}
     X-->>K: {prompt_id}
     loop until complete or 600 s

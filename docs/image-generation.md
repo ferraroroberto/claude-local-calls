@@ -12,7 +12,7 @@ there's real usage to judge by (#492).
 | Model id | Backend | Where it runs | Editing | Typical latency |
 |---|---|---|---|---|
 | `gemini_image` | Google Imagen via the `agy` CLI | Google's servers, on the AI Pro/Ultra subscription | yes (procedural, slow) | seconds |
-| `flux1_local` (alias `flux`) | FLUX.1 [dev] fp8 via ComfyUI | tower's RTX 5060 Ti, fully local | no | ~55 s cold, ~40 s warm |
+| `flux1_local` (alias `flux`) | FLUX.1 [dev] fp8 via ComfyUI | tower's RTX 5060 Ti, fully local | no | ~40 s at 1024², ~96 s at 4K |
 
 The rest of this note covers the Imagen path first (it came first, and its
 constraints are the surprising ones), then the local FLUX path.
@@ -158,16 +158,94 @@ often resolves an older CUDA build with no sm_120 kernels and falls back to CPU
 `verify_cuda()` fails loudly on that instead, and can be re-run on its own with
 `python scripts/install_comfyui.py --verify`.
 
+### Sizes (#497)
+
+`size` accepts a preset name or an explicit `"WIDTHxHEIGHT"` string, and the
+presets live in one place — `src/image_sizes.py` — which is also what the
+Playground dropdown renders, so the UI can't offer a size the API rejects.
+
+| Preset | Pixels | Ratio | |
+|---|---|---|---|
+| `square` | 1024×1024 | 1:1 | native |
+| `portrait` | 832×1216 | 2:3 | native |
+| `landscape` | 1216×832 | 3:2 | native |
+| `widescreen` | 1344×768 | 16:9 | native |
+| `tall` | 768×1344 | 9:16 | native |
+| `ultrawide` | 1536×640 | 21:9 | native |
+| `square_hd` | 1440×1440 | 1:1 | native |
+| `hd` | 1920×1088 | 16:9 | native |
+| `square_2k` | 2048×2048 | 1:1 | upscaled |
+| `4k` | 3840×2160 | 16:9 | upscaled |
+
+Two rules explain most of the behaviour:
+
+**Dimensions must be multiples of 16.** FLUX's VAE downsamples by 8 and the
+transformer patchifies by a further 2; off-grid dimensions get padded and come
+back with smeared edges. An off-grid request is **rejected with the nearest
+valid pair**, not silently snapped — returning something other than what was
+asked for, with no warning, is worse than a clear error. The visible
+consequence: *there is no 1920×1080*, because 1080 isn't a multiple of 16. The
+16:9 HD size is **1920×1088**, and asking for 1080 says so.
+
+**Above ~2 MP the image is upscaled, not sampled natively.** FLUX.1 [dev] is
+trained around 1 MP. Sampling natively at 4K (8.3 MP) is a *quality* cliff
+before it is a speed one — attention cost grows with the square of the token
+count and composition degrades into duplicated subjects. So a `4k` request is
+sampled at the largest native-safe size of the same aspect ratio (1920×1088),
+then upscaled with `4x-UltraSharp` and scaled to exactly 3840×2160. Preserving
+the *aspect ratio* is what carries the composition through; the scale factor is
+free. This is entirely internal — callers ask for `4k` and get 4K back.
+
+`refine: true` adds a second low-denoise (0.25) pass over the upscaled image, so
+it gains real detail rather than interpolated pixels. It is meaningful only for
+upscaled sizes and is ignored for native ones. It is **expensive** — see below.
+
+### Measured cost of each size
+
+Measured on tower (RTX 5060 Ti, FLUX.1 [dev] fp8, 20 steps, warm backend,
+quiet box). These are wall-clock through `POST /v1/images/generations`:
+
+| Request | Sampled at | Time | Output |
+|---|---|--:|--:|
+| `square` 1024×1024 | 1024×1024 | **42 s** | 2.0 MB |
+| `hd` 1920×1088 | 1920×1088 | **82 s** | 3.5 MB |
+| `4k` 3840×2160 | 1920×1088 + upscale | **96 s** | 13.9 MB |
+| `4k` + `refine` | 1920×1088 + upscale + 10-step refine | **384 s** | 13.3 MB |
+
+So refining a 4K image costs about **4x** the un-refined one — the refine pass
+samples at the full 8.3 MP, which is exactly the expensive thing the upscale
+path exists to avoid doing for the *base* image. It buys real detail: an A/B at
+a fixed seed (identical base image, differing only by the refine pass) measured
+a mean absolute channel difference of 5.3/255 with peaks of 219/255, and the
+map lettering in the test image goes from smudged to legible.
+
+Two caveats worth knowing before turning it on:
+
+- It is the only path here that can produce **visible artifacts**. In one of the
+  samples taken during development, a large flat sky gradient came back with a
+  faint vertical band — the high-resolution sampling cliff reappearing inside
+  the refine pass. It did not recur on a detailed subject. Treat refine as
+  "usually better, occasionally worse", not a free upgrade.
+- **Beware benchmark caching.** ComfyUI caches node outputs, so timing two runs
+  that share prompt + seed + sampled size measures only the second one's
+  *upscale*. The first pass of these numbers reported 4K at 16 s for exactly
+  that reason. Vary the seed when measuring.
+
+`size` is accepted and **ignored** by `gemini_image`, deliberately: Imagen picks
+its own dimensions, and 400-ing on a field every OpenAI client sends would break
+existing callers. It is ignored *completely* — including values FLUX would
+reject, such as `1920x1080`. Validating a field the backend then ignores would
+mean rejecting an Imagen request with a message about FLUX's 16-pixel grid, a
+rule that does not apply to the model being called. The Playground disables the
+size control and says so when an Imagen model is selected rather than presenting
+a control that does nothing.
+
 ### Limitations of the local path
 
 - **No editing.** `POST /v1/images/edits` is gemini-only; img2img/inpainting
   needs a different workflow graph and was out of #492's scope. Asking for an
   edit with `flux1_local` returns a 400 that says exactly that, rather than the
   misleading "not an image-generation model".
-- **No `size`.** Same contract as `gemini_image` (see below) — generations are
-  1024x1024. Unlike Imagen this is a real limitation rather than an ignored
-  hint, since FLUX does honour dimensions; wiring a `size` field through is a
-  natural follow-up.
 - **It is not fast, warm or cold.** Measured on tower at 1024x1024 / 20 steps:
   **~55 s** for the first request after an idle unload (ComfyUI takes ~40 s to
   boot and accept work) and **~40 s** warm. Warm is not much better than cold

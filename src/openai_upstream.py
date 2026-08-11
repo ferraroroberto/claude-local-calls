@@ -166,10 +166,20 @@ def strip_think_blocks(text: str) -> str:
     Used for non-streaming responses where we have the full content in
     one shot. For streaming, use :class:`ThinkStripper` instead — it
     keeps a buffer so a tag split across SSE chunks still gets stripped.
+
+    An ``<think>`` left open with no matching close (the upstream was
+    truncated mid-thought, e.g. ``max_tokens`` cut it off) has no pair
+    for ``_THINK_RE`` to match. Drop from that open tag to the end
+    rather than leaking raw reasoning into ``content`` — mirrors
+    :meth:`ThinkStripper.flush`'s truncated-stream handling.
     """
     if not text:
         return text
-    return _THINK_RE.sub("", text)
+    text = _THINK_RE.sub("", text)
+    m = _THINK_OPEN_RE.search(text)
+    if m is not None:
+        text = text[: m.start()]
+    return text
 
 
 class ThinkStripper:

@@ -140,17 +140,26 @@ def native_source_size(width: int, height: int) -> Tuple[int, int]:
     """
     if not needs_upscale(width, height):
         return width, height
+
+    # Walk on-grid widths downward, deriving each height from the *target's*
+    # ratio, and take the first pair that fits. This returns the largest
+    # native-safe size rather than merely a fitting one — 4K samples at
+    # 1920x1088 (exactly the `hd` preset), not 1920x1072.
+    #
+    # Two earlier attempts were worse, both fixed here:
+    #   * stepping one edge down to fit skewed the ratio (a 1:1 target came out
+    #     1440x1456, a ~1% stretch applied at the final ImageScale);
+    #   * shrinking the scale by a fixed factor overshot downward, throwing
+    #     away resolution that would have fitted.
     scale = math.sqrt(NATIVE_MAX_PIXELS / (width * height))
+    ratio = height / width
     src_w = _nearest_valid(width * scale)
-    src_h = _nearest_valid(height * scale)
-    # Snapping each edge independently can nudge back over the ceiling; step
-    # down one grid unit on the longer edge until it fits.
-    while src_w * src_h > NATIVE_MAX_PIXELS:
-        if src_w >= src_h:
-            src_w -= DIMENSION_MULTIPLE
-        else:
-            src_h -= DIMENSION_MULTIPLE
-    return src_w, src_h
+    while src_w >= MIN_DIMENSION:
+        src_h = _nearest_valid(src_w * ratio)
+        if src_w * src_h <= NATIVE_MAX_PIXELS:
+            return src_w, src_h
+        src_w -= DIMENSION_MULTIPLE
+    return MIN_DIMENSION, _nearest_valid(MIN_DIMENSION * ratio)
 
 
 def preset_payload() -> List[Dict[str, object]]:

@@ -118,6 +118,25 @@ def test_native_source_preserves_aspect_ratio():
         assert abs((src_w / src_h) - (w / h)) < 0.02, (w, h, src_w, src_h)
 
 
+def test_native_source_is_the_largest_that_fits_not_merely_one_that_fits():
+    """Resolution thrown away here is resolution the upscaler has to invent.
+    4K must sample at 1920x1088 — exactly the `hd` preset, the largest 16:9
+    pair under the ceiling — not at some smaller pair that also happens to fit.
+    """
+    assert sz.native_source_size(3840, 2160) == (1920, 1088)
+    # And that really is the largest: one grid step up must not fit.
+    assert (1936 * 1088) > sz.NATIVE_MAX_PIXELS
+
+
+def test_square_targets_get_square_sources():
+    """Regression: stepping a single edge down to fit the ceiling skewed the
+    ratio — a 1:1 target sampled at 1440x1456, a ~1% stretch applied at the
+    final ImageScale. Both edges must come from the same scale factor."""
+    for edge in (2048, 3072, 4096):
+        src_w, src_h = sz.native_source_size(edge, edge)
+        assert src_w == src_h, (edge, src_w, src_h)
+
+
 def test_native_source_stays_on_the_16_grid():
     for w, h in [(3840, 2160), (4096, 4096), (2560, 1440)]:
         src_w, src_h = sz.native_source_size(w, h)

@@ -181,6 +181,39 @@ def read_marker() -> Optional[Dict[str, Any]]:
         return None
 
 
+# 4x ESRGAN upscaler backing the >2 MP / 4K path (#497). Provisioned here
+# rather than by scripts/download_models.py because that script only fetches
+# `hf_repo` rows from config/models.yaml, and this is an *engine asset* shared
+# by every image model rather than a model in its own right. Without it the
+# upscale path fails at UpscaleModelLoader with a bare "value not in list".
+UPSCALE_MODEL_REPO = "lokCX/4x-Ultrasharp"
+UPSCALE_MODEL_FILE = "4x-UltraSharp.pth"
+
+
+def ensure_upscale_model() -> Path:
+    """Download the 4x upscaler into ``models/comfyui/upscale_models/``.
+
+    Idempotent and cheap when already present — a plain existence check, no
+    network call — so it is safe on the already-installed path.
+    """
+    target_dir = MODELS_DIR / "upscale_models"
+    target = target_dir / UPSCALE_MODEL_FILE
+    if target.exists():
+        return target
+    target_dir.mkdir(parents=True, exist_ok=True)
+    log.info("fetching %s (%s) ...", UPSCALE_MODEL_FILE, UPSCALE_MODEL_REPO)
+    from huggingface_hub import hf_hub_download  # local: keeps import cost off
+
+    got = Path(hf_hub_download(
+        repo_id=UPSCALE_MODEL_REPO, filename=UPSCALE_MODEL_FILE,
+        local_dir=str(target_dir),
+    ))
+    if got != target:
+        shutil.move(str(got), str(target))
+    log.info("  -> %s (%.1f MB)", target, target.stat().st_size / 1e6)
+    return target
+
+
 def write_extra_model_paths() -> Path:
     """Point ComfyUI at the repo's ``models/comfyui/`` tree.
 
@@ -260,6 +293,7 @@ def install() -> None:
                 "diffusion_models", "upscale_models"):
         (MODELS_DIR / sub).mkdir(parents=True, exist_ok=True)
     write_extra_model_paths()
+    ensure_upscale_model()
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -282,6 +316,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif already_installed():
         log.info("ComfyUI already installed at %s", VENDOR_DIR)
         write_extra_model_paths()  # cheap; keeps the path file in sync
+        # Also backfills an install that predates the upscaler (#497).
+        ensure_upscale_model()
         verify_cuda()
         return 0
 

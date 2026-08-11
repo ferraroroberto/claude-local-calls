@@ -261,6 +261,20 @@ def _classes(wf):
     return {n["class_type"] for n in wf.values()}
 
 
+def test_upscaler_filename_matches_what_the_installer_provisions():
+    """The client names the upscaler; the installer downloads it. When those
+    two drifted, the 4K path failed on a fresh machine with a bare
+    'value not in list' node error while working fine where the file had been
+    placed by hand."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import install_comfyui  # type: ignore
+
+    assert cc.DEFAULT_UPSCALE_MODEL == install_comfyui.UPSCALE_MODEL_FILE
+
+
 def test_upscale_tail_adds_the_chain_and_repoints_output():
     wf = cc.build_flux_workflow("x", _CKPT, width=1920, height=1088)
     cc.add_upscale_tail(wf, 3840, 2160)

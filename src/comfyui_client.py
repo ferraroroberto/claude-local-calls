@@ -93,9 +93,11 @@ _REFINE_ENCODE = "refine_encode"
 _REFINE_SAMPLER = "refine_sampler"
 _REFINE_DECODE = "refine_decode"
 
-# ESRGAN-family 4x upscaler, fetched into models/comfyui/upscale_models/ by
-# scripts/download_models.py. 4x overshoots every preset we offer, so the
-# ImageScale after it is always a *downsample* — which is the good direction.
+# ESRGAN-family 4x upscaler, provisioned into models/comfyui/upscale_models/ by
+# scripts/install_comfyui.py (it is an engine asset, not a models.yaml row, so
+# scripts/download_models.py does not know about it). 4x overshoots every preset
+# we offer, so the ImageScale after it is always a *downsample* — the good
+# direction.
 DEFAULT_UPSCALE_MODEL = "4x-UltraSharp.pth"
 # Second-pass denoise for the optional refine step. Low on purpose: this is
 # meant to add real detail to interpolated pixels, and much above ~0.35 the

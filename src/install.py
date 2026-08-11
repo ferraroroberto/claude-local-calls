@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 
 from .backend_process import llama_server_binary, whisper_server_binary
 from .host_profile import hub_port, resolve as resolve_host
-from .model_registry import Model, local_models
+from .model_registry import SPAWNABLE_BACKENDS, Model, local_models
 from .no_window import NO_WINDOW
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -231,7 +231,7 @@ def _check_llama_cpp() -> Check:
 def _check_models() -> List[Check]:
     rows: List[Check] = []
     for m in local_models():
-        if m.backend not in ("openai", "whisper", "tts") or not m.model_path:
+        if m.backend not in SPAWNABLE_BACKENDS or not m.model_path:
             continue
         path = (PROJECT_ROOT / m.model_path).resolve()
         label = f"Model present: {m.display_name}"
@@ -419,6 +419,48 @@ def _check_tts() -> Check:
                  "torch + chatterbox-tts + snac + kokoro-onnx importable; Piper assets present")
 
 
+def _comfyui_enabled() -> bool:
+    return any(m.backend == "comfyui" or m.engine == "comfyui-server"
+               for m in local_models())
+
+
+def _check_comfyui() -> Check:
+    """Is the vendored ComfyUI image engine installed and CUDA-verified? (#492)
+
+    Gated on a ``comfyui-server`` row being enabled.
+
+    Deliberately **filesystem-only**. The meaningful question — can this venv's
+    torch actually drive the GPU, or did it resolve a build with no sm_120 and
+    fall back to CPU? — can only be answered by importing torch in a
+    subprocess, which costs ~4.5 s (28x the next-slowest probe here). This
+    report is polled by the admin SPA, so paying that live made every status
+    call 4.5 s slower. ``install_comfyui.verify_cuda`` therefore *records* its
+    result at install time and this reads the marker.
+
+    Three distinct states, three distinct messages — a never-verified install
+    is reported as its own "unknown", never folded into ``ok``.
+    """
+    label = "ComfyUI installed (local image generation)"
+    fix_label = "scripts/install_comfyui.py (clone + isolated venv + torch cu130)"
+    from scripts import install_comfyui  # type: ignore
+
+    if not (install_comfyui.venv_python().exists() and install_comfyui.main_script().exists()):
+        return Check("comfyui", label, "missing",
+                     f"no ComfyUI install at {install_comfyui.VENDOR_DIR}",
+                     fix_id="comfyui", fix_label=fix_label)
+
+    marker = install_comfyui.read_marker()
+    if marker is None:
+        return Check("comfyui", label, "warn",
+                     "installed, but its CUDA capability was never verified — "
+                     "run `python scripts/install_comfyui.py --verify`",
+                     fix_id="comfyui", fix_label=fix_label)
+    return Check("comfyui", label, "ok",
+                 f"ComfyUI {marker.get('comfyui_tag', '?')}, "
+                 f"torch {marker.get('torch_version', '?')} "
+                 f"(CUDA {marker.get('cuda', '?')} verified)")
+
+
 def _port_in_use(port: int) -> bool:
     # Bind-probing 127.0.0.1 misses listeners bound to the wildcard address
     # (0.0.0.0) — Windows lets a loopback bind succeed alongside one, so the
@@ -434,7 +476,7 @@ def _check_ports() -> List[Check]:
     for label, port in [("hub", hub_port())] + [
         (m.display_name, m.port)
         for m in local_models()
-        if m.backend in ("openai", "whisper", "tts") and m.port and not m.virtual
+        if m.backend in SPAWNABLE_BACKENDS and m.port and not m.virtual
     ]:
         if _port_in_use(port):
             rows.append(Check(
@@ -492,6 +534,8 @@ def run_all_checks(*, use_cache: bool = False) -> Report:
         checks.append(_check_tts())
     if _parakeet_enabled():
         checks.append(_check_parakeet_worker())
+    if _comfyui_enabled():
+        checks.append(_check_comfyui())
     checks.extend(_check_models())
     checks.extend(_check_ports())
     report = Report(checks=checks)
@@ -519,6 +563,11 @@ def _fix_llama_cpp() -> None:
 def _fix_whisper_cpp() -> None:
     from scripts import install_whisper_cpp  # type: ignore
     install_whisper_cpp.main()
+
+
+def _fix_comfyui() -> None:
+    from scripts import install_comfyui  # type: ignore
+    install_comfyui.main([])
 
 
 def _fix_tts() -> None:
@@ -629,6 +678,8 @@ def fix_fn_for(check: Check) -> Optional[FixFn]:
         return _fix_llama_cpp
     if check.fix_id == "whisper_cpp":
         return _fix_whisper_cpp
+    if check.fix_id == "comfyui":
+        return _fix_comfyui
     if check.fix_id == "tts":
         return _fix_tts
     if check.fix_id == "parakeet_worker":

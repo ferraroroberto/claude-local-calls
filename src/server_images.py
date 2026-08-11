@@ -1,9 +1,22 @@
 """Image generation + edit routes (OpenAI ``/v1/images/*`` shape).
 
-Split out of ``server.py`` so the routing/chat core stays readable. The only
-image backend the hub can reach is Google's Imagen, exposed as an agentic tool
-inside ``agy`` (there is no Nano Banana picker model — issue #114), so both
-routes guard on a gemini row flagged ``image_gen`` and 400 everything else.
+Split out of ``server.py`` so the routing/chat core stays readable. Both routes
+guard on a row flagged ``image_gen`` and 400 everything else.
+
+Two image backends exist, and ``/v1/images/generations`` dispatches on
+``model.backend``:
+
+* ``gemini`` — Google's Imagen, driven through the Antigravity CLI's agentic
+  tool harness (there is no Nano Banana picker model — issue #114). A
+  subscription path with no local process.
+* ``comfyui`` — FLUX.1 [dev] on this host's own GPU (#492). An ordinary
+  ``models.yaml`` backend process, so it goes through the on-demand lifecycle
+  (#422): the first request spawns ComfyUI and waits for it, and the idle
+  watchdog unloads it again.
+
+``/v1/images/edits`` stays **gemini-only** — editing on the ComfyUI path needs a
+different workflow graph (img2img/inpaint) and is deliberately out of #492's
+scope.
 
 The routes are collected on a module-level :class:`fastapi.APIRouter` and
 mounted onto the parent hub app by ``server.py`` via ``include_router``.
@@ -22,8 +35,12 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from . import on_demand
+from .comfyui_client import ComfyUIError, checkpoint_name_for, generate_image
 from .gemini_cli import GeminiCLIError, call_gemini_image
+from .model_registry import Model
 from .observability import record_genai_metrics, set_genai_request_attrs
+from .remote_proxy import remote_base_url
 from .server_common import (
     client_id_from,
     current_otel_span,
@@ -34,6 +51,42 @@ from .server_common import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Backends that can serve POST /v1/images/generations.
+IMAGE_BACKENDS = ("gemini", "comfyui")
+
+
+def _generate_via_comfyui(model: Model, prompt: str) -> dict:
+    """Run one generation on the local ComfyUI backend, loading it if cold.
+
+    ``ensure_ready`` spawns the process and blocks until it answers — safe here
+    because FastAPI runs this ``def`` route in a worker thread. The tracking
+    context keeps the idle watchdog from unloading the backend mid-generation,
+    which matters more than usual here: a cold load plus a 20-step sample can
+    outlast a short idle window on its own.
+    """
+    if remote_base_url(model) is not None:
+        # Owned by another host. Unlike the chat paths there is no image proxy,
+        # so say so precisely instead of failing later on a dead loopback port.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"model {model.id!r} is owned by host {model.host!r} and image "
+                "generation is not proxied between hubs — call that host's hub "
+                "directly."
+            ),
+        )
+    try:
+        on_demand.ensure_ready(model)
+    except on_demand.OnDemandNotReady as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    with on_demand.tracking(model):
+        return generate_image(
+            prompt,
+            base_url=f"http://127.0.0.1:{model.port}",
+            ckpt_name=checkpoint_name_for(model.model_path),
+        )
 
 
 class ImagesGenerationRequest(BaseModel):
@@ -47,17 +100,19 @@ class ImagesGenerationRequest(BaseModel):
 def images_generations(req: ImagesGenerationRequest, request: Request) -> JSONResponse:
     """Generate an image and return it OpenAI-shape (``data[].b64_json``).
 
-    Routes exclusively to gemini rows flagged ``image_gen``; every other
-    backend is text-only and 400s. The call lands in the observability ring
-    like other hub traffic.
+    Routes to any row flagged ``image_gen`` on an image-capable backend —
+    ``gemini`` (Imagen, subscription) or ``comfyui`` (FLUX, local GPU). Every
+    other backend is text/audio-only and 400s. The call lands in the
+    observability ring like other hub traffic.
     """
     model = resolve_model_or_400(req.model)
-    if not (model.backend == "gemini" and model.image_gen):
+    if not (model.backend in IMAGE_BACKENDS and model.image_gen):
         raise HTTPException(
             status_code=400,
             detail=(
                 f"model {req.model!r} ({model.display_name}) is not an "
-                "image-generation model. Use 'gemini_image' instead."
+                "image-generation model. Use 'gemini_image' (Imagen) or "
+                "'flux1_local' (local FLUX) instead."
             ),
         )
     if req.n != 1:
@@ -89,15 +144,30 @@ def images_generations(req: ImagesGenerationRequest, request: Request) -> JSONRe
 
     start_ns = time.monotonic_ns()
     try:
-        out = call_gemini_image(req.prompt)
-    except GeminiCLIError as e:
+        if model.backend == "comfyui":
+            out = _generate_via_comfyui(model, req.prompt)
+        else:
+            out = call_gemini_image(req.prompt)
+    except (GeminiCLIError, ComfyUIError) as e:
         record_genai_metrics(
             model=req.model, backend=model.backend,
             route="/v1/images/generations", client_id=client_id,
             duration_ms=(time.monotonic_ns() - start_ns) / 1e6,
-            error_type="gemini_cli_error",
+            error_type=("comfyui_error" if isinstance(e, ComfyUIError)
+                        else "gemini_cli_error"),
         )
         raise HTTPException(status_code=502, detail=str(e))
+    except HTTPException as e:
+        # _generate_via_comfyui's own 503s (remote-owned row, backend never
+        # became ready) — record them before they propagate so a failed
+        # on-demand load is visible in the ring rather than silently absent.
+        record_genai_metrics(
+            model=req.model, backend=model.backend,
+            route="/v1/images/generations", client_id=client_id,
+            duration_ms=(time.monotonic_ns() - start_ns) / 1e6,
+            error_type=f"http_{e.status_code}",
+        )
+        raise
 
     b64 = base64.b64encode(out["image_bytes"]).decode("ascii")
     record_genai_metrics(
@@ -133,13 +203,21 @@ async def images_edits(
     """
     resolved = resolve_model_or_400(model)
     if not (resolved.backend == "gemini" and resolved.image_gen):
-        raise HTTPException(
-            status_code=400,
-            detail=(
+        # Two distinct conditions, two distinct messages: a text model here is
+        # a category error, whereas an image model on a non-gemini backend is
+        # simply an unimplemented capability (#492 scoped edits to gemini).
+        if resolved.image_gen:
+            detail = (
+                f"model {model!r} ({resolved.display_name}) can generate images "
+                "but not edit them — editing is only implemented on the gemini "
+                "backend. Use 'gemini_image' for edits."
+            )
+        else:
+            detail = (
                 f"model {model!r} ({resolved.display_name}) is not an "
                 "image-generation model. Use 'gemini_image' instead."
-            ),
-        )
+            )
+        raise HTTPException(status_code=400, detail=detail)
     if n != 1:
         raise HTTPException(status_code=400, detail="only n=1 is supported")
     if response_format != "b64_json":

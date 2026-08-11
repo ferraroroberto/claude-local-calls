@@ -87,7 +87,7 @@ hosts:
     # spawning it locally. install.py's local_models() filter (only rows
     # this host actually owns) keeps this from triggering a download/port
     # check for a model tower will never run itself.
-    enabled: [qwen35_4b, qwen35_4b_nothink, gemma4_e4b, gemma4_26b, whisper, whisper_translate, whisper_vanilla, piper, chatterbox, orpheus, kokoro, qwen, parakeet]
+    enabled: [qwen35_4b, qwen35_4b_nothink, gemma4_e4b, gemma4_26b, whisper, whisper_translate, whisper_vanilla, piper, chatterbox, orpheus, kokoro, qwen, parakeet, flux1_local]
 
   mac-mini-m4:
     platform: darwin
@@ -336,6 +336,56 @@ models:
     backend: gemini
     image_gen: true
     aliases: ["gemini_image"]
+
+  # --- Image generation (FLUX.1 [dev] via ComfyUI, fully local) --- (#492)
+  # The second `image_gen: true` row, and the first that runs on this box's own
+  # GPU rather than a subscription. Additive, not a replacement: `gemini_image`
+  # stays, and which one wins long-term is a call to make once there's real
+  # usage to judge by. POST /v1/images/generations routes here by backend.
+  #
+  # Model choice — #492 originally specified FLUX.2 [dev] "at FP16 without
+  # quantization" on this 16 GB card. That premise doesn't hold: FLUX.2 [dev] is
+  # a 32B transformer (~64 GB at bf16) paired with a Mistral-Small-3.2-24B text
+  # encoder, so 16 GB needs aggressive quantization *and* offload. FLUX.1 [dev]
+  # (12B) at fp8 is the honest fit for this GPU and proves the ComfyUI plumbing;
+  # adding a quantized FLUX.2 row later is a config change, not a rewrite.
+  #
+  # The fp8 build is an all-in-one checkpoint — transformer + CLIP-L + T5-XXL +
+  # VAE in one 17.25 GB file — so the workflow needs a single loader node and
+  # there are no separate text_encoders/vae downloads to keep in sync.
+  flux1_local:
+    display_name: flux1-dev
+    backend: comfyui
+    engine: comfyui-server
+    host: tower  # the only host with a CUDA GPU big enough
+    image_gen: true
+    aliases: ["flux1_local", "flux"]
+    # ComfyUI's own conventional port, deliberately outside the 808x/809x
+    # llama/whisper block. Bound to loopback only (see backend_process's
+    # comfyui branch) — it serves an unauthenticated, filesystem-capable UI.
+    port: 8188
+    # On-demand for the same reason as gemma4_26b above: a few-times-a-day
+    # backend shouldn't hold GPU memory (and ~5 GB of resident RSS) against the
+    # always-on agentic/voice rotation. First request pays the cold load
+    # (17.25 GB checkpoint off NVMe, ~40 s to accept work); 15 idle minutes hand
+    # it back. The unload also clears ComfyUI's `temp` directory on next start,
+    # which is where generated images land.
+    startup: on_demand
+    idle_unload_minutes: 15
+    # MEASURED on tower 2026-08-11, not estimated: total board usage sampled
+    # once per second through a 1024x1024 / 20-step run, differenced against a
+    # 7014 MB baseline with this row stopped — ~4700 MB steady through
+    # sampling, 5741 MB peak. Well under the fp8 checkpoint's 17.25 GB on disk
+    # because ComfyUI's RAM-pressure cache keeps weights in system RAM and
+    # streams them per run (which is also why a warm generation still takes
+    # ~40 s rather than seconds).
+    est_vram_mb: 5700
+    hf_repo: "Comfy-Org/flux1-dev"
+    hf_pattern: "flux1-dev-fp8.safetensors"
+    # Under models/comfyui/ — the tree scripts/install_comfyui.py points
+    # ComfyUI at via its generated extra_model_paths.yaml, so `--force`
+    # reinstalling the engine never re-downloads the weights.
+    model_path: "models/comfyui/checkpoints/flux1-dev-fp8.safetensors"
 
   # --- Local Qwen3.5-9B via llama.cpp ---
   qwen:

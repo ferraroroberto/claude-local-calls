@@ -53,7 +53,8 @@ flowchart TB
     GEMINICLI["gemini_cli.py\nConPTY (pywinpty) -> agy"]
     OAIUP["openai_upstream.py\nhttpx -> llama-server /v1"]
     AUDIOR["server_audio_asr.py + server_audio_tts.py\n/v1/audio/* proxy (#451 split)"]
-    IMAGESR["server_images.py\n/v1/images/* proxy"]
+    IMAGESR["server_images.py\n/v1/images/* proxy — dispatches on backend:\ngemini (Imagen) | comfyui (FLUX, #492)"]
+    COMFYCLI["comfyui_client.py (#492)\nhttpx -> ComfyUI prompt API:\nPOST /prompt (FLUX workflow graph) ->\npoll /history -> GET /view"]
   end
   CHATT -->|backend=claude| CLAUDECLI
   CHATT -->|backend=gemini| GEMINICLI
@@ -64,7 +65,9 @@ flowchart TB
   SRV --> AUDIOR
   SRV --> IMAGESR
   SRV --> OTELRECV
-  IMAGESR -->|call_gemini_image| GEMINICLI
+  IMAGESR -->|backend=gemini: call_gemini_image| GEMINICLI
+  IMAGESR -->|backend=comfyui: generate_image| COMFYCLI
+  IMAGESR -->|ensure_ready before generating (#492)| ONDEMAND
 
   subgraph multihost["Multi-host (Mac Mini + gaming peers, issue #181/#372)"]
     REMOTEPROXY["remote_proxy.py\nresolve owning host's own base_url\nfor a model this host doesn't own"]
@@ -123,7 +126,7 @@ flowchart TB
   subgraph procmgr["Process managers"]
     SUPERVISOR["process_supervisor.py\nshared subprocess start/stop workflow"]
     SERVPROC["server_process.py\nhub's own Popen + kill-port"]
-    BACKPROC["backend_process.py\nper-model Popen: llama-server ·\nwhisper-server · tts_server shim ·\nparakeet_server"]
+    BACKPROC["backend_process.py\nper-model Popen: llama-server ·\nwhisper-server · tts_server shim ·\nparakeet_server · comfyui-server (#492)"]
     ONDEMAND["on_demand.py (issue #422)\nstartup: on_demand lifecycle:\nspawn-on-first-request (request waits for\nreadiness) + idle-unload watchdog +\nVRAM overcommit warning (#375 math)"]
     WATCHDOG["_respawn_watchdog.py\ndetached: wait for parent PID to die,\nthen relaunch (stdlib-only, issue #198)"]
   end
@@ -142,6 +145,7 @@ flowchart TB
     AGYBIN["agy Antigravity CLI\n(Google AI Pro/Ultra subscription)"]
     LLAMA["llama-server (vendor/llama.cpp)\nQwen3.5-4B :8088 · Gemma4-26B-A4B :8087\n+ ad-hoc :8081/:8082/:8086"]
     TTS["tts_engines/ (piper · kokoro · chatterbox · orpheus)\nvia tts_server.py shim :8092/:8093/:8095/:8096\n(orpheus back on tower, gaming = fallback, #422)"]
+    COMFY["ComfyUI (vendor/comfyui, own .venv) :8188\nFLUX.1 [dev] fp8 on tower's RTX 5060 Ti (#492)\nloopback-bound · startup: on_demand"]
     CCHOST["Any host Claude Code CLI session\n(incl. sub-agents — CLAUDE_CODE_ENABLE_TELEMETRY)"]
     MACMINI["Mac Mini (mac-mini-m4, 192.168.0.14)\npeer local-llm-hub install :8000\nowns qwen3.5-9b · parakeet-tdt-0.6b-v3"]
     PARAKEETWORKER["mac/parakeet-worker/ (Swift, ANE)\nFluidAudio Parakeet TDT 0.6B v3\nvia CoreML"]
@@ -156,6 +160,8 @@ flowchart TB
   AUDIOR --> TTS
   BACKPROC -.spawns.-> LLAMA
   BACKPROC -.spawns.-> TTS
+  BACKPROC -.spawns.-> COMFY
+  COMFYCLI --> COMFY
   CCHOST -->|OTLP/HTTP :8000/v1/metrics| OTELRECV
   REMOTEPROXY -->|forwards verbatim to owning :8000| MACMINI
   REMOTEPROXY -->|all whisper.cpp STT to owning :8000| GAMING
@@ -198,7 +204,7 @@ flowchart TB
     WEBCFG[("config/webapp_config.json\nauth token + allowlist")]
     GLOSSARY[("config/transcription_glossary.json\nASR post-processing rules")]
     STARTUPCFG[("config/startup_profile.json (gitignored; .example committed)\ndocker/langfuse/agentsview — each host's own service autostart\n(issues #265, #304; models list retired #430)")]
-    MODELSDIR["models/ (gitignored)\nGGUF + whisper weights"]
+    MODELSDIR["models/ (gitignored)\nGGUF + whisper weights +\ncomfyui/checkpoints FLUX fp8 (#492)"]
     USAGEHIST[("data/code_usage_history.json\ndaily usage rollups — outlive\ntranscript pruning (issue #280)")]
     DIAGCFG[("config/diagnostics_apps.json + _rules.json (committed)\nprocess->app attribution + health thresholds;\nconfig/diagnostics_settings.json (gitignored)\nretention + scheduled snapshot (issue #315)")]
     DIAGDB[("data/diagnostics.db (gitignored)\nSQLite capture store: runs · samples ·\nprocess_samples · ports · verdicts (issue #315)")]

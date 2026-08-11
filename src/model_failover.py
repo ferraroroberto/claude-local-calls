@@ -59,7 +59,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .host_profile import _load_config
-from .model_registry import Model
+from .model_registry import SPAWNABLE_BACKENDS, Model
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +351,7 @@ async def _ensure_running_local(
     ``backend_process.start`` adopts a live port and no-ops when running)."""
     from . import backend_process as bp
 
-    if model.virtual or model.backend not in ("openai", "whisper", "tts"):
+    if model.virtual or model.backend not in SPAWNABLE_BACKENDS:
         return None
     # ``startup: on_demand`` (#422): ownership can move here, but nothing
     # spawns the model until a request does — an idle-unloaded on-demand

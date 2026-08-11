@@ -56,21 +56,64 @@ async def playground_models() -> Dict[str, Any]:
     return {"models": rows}
 
 
+# Per-backend capability + expectation copy for the image card (#497). The
+# card used to say nothing about what a model is or what it costs, so picking
+# one was guesswork and a 40 s wait looked like a hang. Keyed by backend
+# because that — not the model id — is what determines the capabilities.
+_IMAGE_BACKEND_INFO = {
+    "gemini": {
+        "where": "Google (subscription)",
+        "supports_size": False,
+        "supports_edit": True,
+        "note": "Imagen picks its own dimensions — steer aspect ratio from the "
+                "prompt. Seconds per image. Can also edit an uploaded image.",
+    },
+    "comfyui": {
+        "where": "local GPU",
+        "supports_size": True,
+        "supports_edit": False,
+        "note": "Runs entirely on this machine. Sizes are honoured exactly. "
+                "First image after an idle period loads the model (~1 min). "
+                "Measured warm: ~40 s at 1024×1024, ~82 s at HD, ~96 s at 4K, "
+                "~6 min at 4K with refine. Generation only — no editing.",
+    },
+}
+
+
 @router.get("/api/playground/image_models")
 async def playground_image_models() -> Dict[str, Any]:
-    """List enabled image-generation models for the Playground image card."""
+    """Image-generation models plus the size presets, for the image card.
+
+    Returns the presets alongside the models so the dropdown and the API
+    validator cannot drift — ``src.image_sizes`` is the single source and the
+    UI never hardcodes a dimension.
+    """
+    from src.image_sizes import DEFAULT_SIZE, preset_payload
+
     rows: List[Dict[str, Any]] = []
     for m in enabled_models():
         if getattr(m, "image_gen", False):
+            info = _IMAGE_BACKEND_INFO.get(m.backend, {})
             rows.append(
                 {
                     "id": m.id,
                     "display_name": m.display_name,
                     "backend": m.backend,
                     "aliases": list(m.aliases or []),
+                    "where": info.get("where", m.backend),
+                    "supports_size": info.get("supports_size", False),
+                    "supports_edit": info.get("supports_edit", False),
+                    "note": info.get("note", ""),
                 }
             )
-    return {"models": rows}
+    # Local-first: the default selection should be the one that costs nothing
+    # and honours the controls this card exposes.
+    rows.sort(key=lambda r: (not r["supports_size"], r["id"]))
+    return {
+        "models": rows,
+        "sizes": preset_payload(),
+        "default_size": DEFAULT_SIZE,
+    }
 
 
 @router.get("/api/playground/tts_models")
@@ -288,6 +331,8 @@ async def playground_generate_image(
     model: str = Form("gemini_image"),
     prompt: str = Form(...),
     image: Optional[UploadFile] = File(None),
+    size: Optional[str] = Form(None),
+    refine: bool = Form(False),
 ) -> Response:
     """Generate (or edit) an image through the hub's own image endpoints.
 
@@ -322,10 +367,19 @@ async def playground_generate_image(
             r = await client.post(
                 base + "/v1/images/edits", files=files, data=data, timeout=900.0)
         else:
+            payload: Dict[str, Any] = {"model": model, "prompt": prompt}
+            # Only forward when set, so the hub's own default stays the single
+            # place the default size is defined.
+            if size:
+                payload["size"] = size
+            if refine:
+                payload["refine"] = True
             r = await client.post(
                 base + "/v1/images/generations",
-                json={"model": model, "prompt": prompt},
-                timeout=900.0,
+                json=payload,
+                # An upscale + refine pass at 4K is the longest job this card
+                # can start; it must not be cut off by the proxy's own clock.
+                timeout=1800.0,
             )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"upstream error: {exc}")

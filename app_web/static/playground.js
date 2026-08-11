@@ -25,10 +25,15 @@ export async function fetchPlaygroundModels() {
   } catch (_) { /* ignore */ }
 }
 
+let imageModels = [];
+let imageSizes = [];
+
 export async function fetchImageModels() {
   try {
     const body = await jsonApi('/admin/api/playground/image_models');
     const models = body.models || [];
+    imageModels = models;
+    imageSizes = body.sizes || [];
     if (!els.imageModel) return;
     // No image-generation backend on this host → hide the whole card.
     if (els.imageCard) els.imageCard.hidden = models.length === 0;
@@ -36,10 +41,80 @@ export async function fetchImageModels() {
     models.forEach(function (m) {
       const opt = document.createElement('option');
       opt.value = m.id;
-      opt.textContent = m.display_name + ' (' + m.backend + ')';
+      opt.textContent = m.display_name + ' — ' + m.where;
       els.imageModel.appendChild(opt);
     });
+    // The API returns size-capable (local) models first, so the first entry is
+    // already the local-by-default choice; select it explicitly rather than
+    // relying on the browser's implicit first-option behaviour.
+    if (models.length) els.imageModel.value = models[0].id;
+
+    if (els.imageSize) {
+      els.imageSize.innerHTML = '';
+      imageSizes.forEach(function (s) {
+        const opt = document.createElement('option');
+        opt.value = s.name;
+        opt.textContent = s.label + ' · ' + s.width + '×' + s.height +
+          ' (' + s.ratio + ')' + (s.upscaled ? ' — upscaled' : '');
+        opt.dataset.upscaled = s.upscaled ? '1' : '';
+        els.imageSize.appendChild(opt);
+      });
+      if (body.default_size) {
+        const match = imageSizes.find(function (s) {
+          return s.name === body.default_size ||
+            (s.width + 'x' + s.height) === body.default_size;
+        });
+        if (match) els.imageSize.value = match.name;
+      }
+    }
+    _syncImageCapabilities();
   } catch (_) { /* ignore */ }
+}
+
+function _selectedImageModel() {
+  if (!els.imageModel) return null;
+  return imageModels.find(function (m) { return m.id === els.imageModel.value; }) || null;
+}
+
+function _selectedImageSize() {
+  if (!els.imageSize) return null;
+  return imageSizes.find(function (s) { return s.name === els.imageSize.value; }) || null;
+}
+
+// Keep the controls honest about what the chosen model can actually do: a
+// backend that ignores size must not present a size control that looks live,
+// and refine only means anything on an upscaled size.
+function _syncImageCapabilities() {
+  const model = _selectedImageModel();
+  const size = _selectedImageSize();
+  const supportsSize = !!(model && model.supports_size);
+
+  if (els.imageModelNote) els.imageModelNote.textContent = model ? model.note : '';
+
+  if (els.imageSize) els.imageSize.disabled = !supportsSize;
+  if (els.imageSizeNote) {
+    if (!supportsSize) {
+      els.imageSizeNote.textContent =
+        'This model picks its own dimensions — ask for an aspect ratio in the prompt instead (e.g. “16:9”).';
+    } else if (size && size.upscaled) {
+      els.imageSizeNote.textContent =
+        'Above the model’s native resolution: generated at a native size, then upscaled to ' +
+        size.width + '×' + size.height + '. Slower.';
+    } else if (size) {
+      els.imageSizeNote.textContent = size.megapixels + ' MP, generated natively.';
+    } else {
+      els.imageSizeNote.textContent = '';
+    }
+  }
+
+  const canRefine = supportsSize && !!(size && size.upscaled);
+  if (els.imageRefineRow) els.imageRefineRow.hidden = !canRefine;
+
+  if (els.imageEditNote) {
+    els.imageEditNote.textContent = (model && model.supports_edit)
+      ? 'Editing is supported on this model, but is procedural and slow — minutes, not seconds.'
+      : 'Editing is not supported on this model — attach a reference image only with an Imagen model.';
+  }
 }
 
 export async function fetchTtsModels() {
@@ -397,6 +472,19 @@ async function speakStream(text) {
 
 function wireImage() {
   if (els.imageGenBtn) els.imageGenBtn.addEventListener('click', generateImage);
+  if (els.imageModel) els.imageModel.addEventListener('change', _syncImageCapabilities);
+  if (els.imageSize) els.imageSize.addEventListener('change', _syncImageCapabilities);
+  // Same vendored fleet switch as the TTS Stream control — state lives in
+  // aria-checked, not a checkbox.
+  if (els.imageRefine) {
+    els.imageRefine.addEventListener('click', function () {
+      const on = els.imageRefine.getAttribute('aria-checked') !== 'true';
+      els.imageRefine.setAttribute('aria-checked', on ? 'true' : 'false');
+      els.imageRefine.classList.toggle('on', on);
+      const label = els.imageRefine.querySelector('.toggle-label');
+      if (label) label.textContent = on ? 'ON' : 'OFF';
+    });
+  }
   if (els.imageClearBtn) {
     els.imageClearBtn.addEventListener('click', function () {
       if (els.imagePreview) {
@@ -422,15 +510,30 @@ async function generateImage() {
   }
   const editing = !!(els.imageAttachment && els.imageAttachment.files && els.imageAttachment.files[0]);
 
+  const model = _selectedImageModel();
+  const size = _selectedImageSize();
+  const refining = !!(els.imageRefine &&
+    els.imageRefine.getAttribute('aria-checked') === 'true' &&
+    size && size.upscaled);
+
   const fd = new FormData();
   fd.append('model', els.imageModel.value);
   fd.append('prompt', prompt);
   if (editing) fd.append('image', els.imageAttachment.files[0]);
+  // Only send size to a backend that honours it — the hub accepts and ignores
+  // it elsewhere, but sending it would imply a control that did nothing.
+  if (!editing && size && model && model.supports_size) {
+    fd.append('size', size.name);
+    if (refining) fd.append('refine', 'true');
+  }
 
   els.imageGenBtn.disabled = true;
   els.imageLatency.textContent = editing
     ? 'editing… (procedural — can take minutes)'
-    : 'generating…';
+    : (size && size.upscaled)
+      ? 'generating then upscaling to ' + size.width + '×' + size.height +
+        (refining ? ' + refining' : '') + '… (slow)'
+      : 'generating…';
 
   const t0 = performance.now();
   try {
@@ -444,12 +547,26 @@ async function generateImage() {
     }
     const blob = await res.blob();
     const elapsed = (performance.now() - t0).toFixed(0);
-    els.imageLatency.textContent = elapsed + ' ms · ' + Math.round(blob.size / 1024) + ' KB';
+    const seconds = (elapsed / 1000).toFixed(1);
+    els.imageLatency.textContent = seconds + ' s · ' + Math.round(blob.size / 1024) + ' KB';
     if (els.imagePreview.dataset.url) URL.revokeObjectURL(els.imagePreview.dataset.url);
     const url = URL.createObjectURL(blob);
     els.imagePreview.dataset.url = url;
     els.imagePreview.src = url;
     els.imagePreview.hidden = false;
+    // Report the dimensions actually delivered, read off the decoded image
+    // rather than echoing what was requested — that way a snapped, upscaled or
+    // backend-chosen size is visible instead of surprising. Works for both
+    // backends, including Imagen, which never reports its own size.
+    els.imagePreview.addEventListener('load', function onLoad() {
+      els.imagePreview.removeEventListener('load', onLoad);
+      const w = els.imagePreview.naturalWidth;
+      const h = els.imagePreview.naturalHeight;
+      if (w && h) {
+        els.imageLatency.textContent =
+          seconds + ' s · ' + w + '×' + h + ' · ' + Math.round(blob.size / 1024) + ' KB';
+      }
+    });
     if (els.imageDownload) {
       const ext = (blob.type && blob.type.indexOf('jpeg') >= 0) ? 'jpg'
         : (blob.type && blob.type.indexOf('webp') >= 0) ? 'webp' : 'png';

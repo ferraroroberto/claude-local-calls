@@ -200,7 +200,11 @@ def write_extra_model_paths() -> Path:
         "  vae: vae\n"
         "  loras: loras\n"
         "  text_encoders: text_encoders\n"
-        "  diffusion_models: diffusion_models\n",
+        "  diffusion_models: diffusion_models\n"
+        # Without this ComfyUI cannot find 4x-UltraSharp and the >2 MP /
+        # 4K path fails at UpscaleModelLoader with a bare "value not in
+        # list" node error (#497).
+        "  upscale_models: upscale_models\n",
         encoding="utf-8",
     )
     log.info("wrote %s -> %s", path, base)
@@ -252,7 +256,8 @@ def install() -> None:
     log.info("installing ComfyUI requirements ...")
     _run(pip + ["install", "-r", str(VENDOR_DIR / "requirements.txt")], timeout=3600)
 
-    for sub in ("checkpoints", "vae", "loras", "text_encoders", "diffusion_models"):
+    for sub in ("checkpoints", "vae", "loras", "text_encoders",
+                "diffusion_models", "upscale_models"):
         (MODELS_DIR / sub).mkdir(parents=True, exist_ok=True)
     write_extra_model_paths()
 

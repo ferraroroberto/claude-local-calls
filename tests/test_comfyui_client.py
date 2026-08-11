@@ -255,6 +255,95 @@ def test_view_failure_raises(monkeypatch):
         cc.generate_image("x", base_url=_BASE, ckpt_name=_CKPT)
 
 
+# --- upscale + refine tail (#497) ----------------------------------------
+
+def _classes(wf):
+    return {n["class_type"] for n in wf.values()}
+
+
+def test_upscale_tail_adds_the_chain_and_repoints_output():
+    wf = cc.build_flux_workflow("x", _CKPT, width=1920, height=1088)
+    cc.add_upscale_tail(wf, 3840, 2160)
+    assert {"UpscaleModelLoader", "ImageUpscaleWithModel", "ImageScale"} <= _classes(wf)
+    # The output node must show the END of the chain, not the raw decode.
+    assert wf[cc._OUTPUT]["inputs"]["images"] == [cc._RESIZE, 0]
+    assert wf[cc._UPSCALE]["inputs"]["image"] == [cc._DECODE, 0]
+
+
+def test_upscale_tail_scales_to_the_exact_requested_size():
+    wf = cc.build_flux_workflow("x", _CKPT, width=1920, height=1088)
+    cc.add_upscale_tail(wf, 3840, 2160)
+    resize = wf[cc._RESIZE]["inputs"]
+    assert (resize["width"], resize["height"]) == (3840, 2160)
+
+
+def test_refine_appends_a_second_pass_and_repoints_output():
+    wf = cc.build_flux_workflow("x", _CKPT, width=1920, height=1088)
+    cc.add_upscale_tail(wf, 3840, 2160, refine=True)
+    assert {"VAEEncode"} <= _classes(wf)
+    # Refine encodes the RESIZED image, not the original latent.
+    assert wf[cc._REFINE_ENCODE]["inputs"]["pixels"] == [cc._RESIZE, 0]
+    assert wf[cc._OUTPUT]["inputs"]["images"] == [cc._REFINE_DECODE, 0]
+
+
+def test_refine_uses_low_denoise():
+    """A high denoise would let the second pass reinvent the composition it
+    was handed rather than add detail to it."""
+    wf = cc.build_flux_workflow("x", _CKPT, width=1920, height=1088)
+    cc.add_upscale_tail(wf, 3840, 2160, refine=True)
+    assert 0 < wf[cc._REFINE_SAMPLER]["inputs"]["denoise"] <= 0.35
+
+
+def test_refine_seed_differs_from_the_base_pass():
+    """Reusing the base seed re-applies the noise pattern the image already
+    carries, biasing the refinement toward the original grain."""
+    wf = cc.build_flux_workflow("x", _CKPT, width=1920, height=1088, seed=42)
+    cc.add_upscale_tail(wf, 3840, 2160, refine=True, seed=42)
+    assert wf[cc._REFINE_SAMPLER]["inputs"]["seed"] != 42
+
+
+def test_no_refine_leaves_no_second_sampler():
+    wf = cc.build_flux_workflow("x", _CKPT, width=1920, height=1088)
+    cc.add_upscale_tail(wf, 3840, 2160, refine=False)
+    assert cc._REFINE_SAMPLER not in wf
+    assert cc._REFINE_ENCODE not in wf
+
+
+def test_generate_samples_natively_then_upscales_for_4k(monkeypatch):
+    """The whole point of the two-stage path: 4K must NOT be sampled natively.
+    Sampling at 8.3 MP is a quality cliff, not just a slow one."""
+    client = _install(monkeypatch, _FakeClient(history_sequence=[_done_record()]))
+    out = cc.generate_image("x", base_url=_BASE, ckpt_name=_CKPT,
+                            width=3840, height=2160)
+    posted = client.calls[0][2]["json"]["prompt"]
+    latent = posted[cc._LATENT]["inputs"]
+    assert latent["width"] * latent["height"] <= 2_100_000
+    assert (latent["width"], latent["height"]) != (3840, 2160)
+    assert posted[cc._RESIZE]["inputs"]["width"] == 3840
+    # The caller asked for 4K and is told it got 4K.
+    assert (out["width"], out["height"]) == (3840, 2160)
+
+
+def test_generate_keeps_native_sizes_single_stage(monkeypatch):
+    client = _install(monkeypatch, _FakeClient(history_sequence=[_done_record()]))
+    out = cc.generate_image("x", base_url=_BASE, ckpt_name=_CKPT,
+                            width=1024, height=1024)
+    posted = client.calls[0][2]["json"]["prompt"]
+    assert cc._UPSCALE not in posted
+    assert posted[cc._LATENT]["inputs"]["width"] == 1024
+    assert (out["width"], out["height"]) == (1024, 1024)
+
+
+def test_refine_is_ignored_for_a_native_size(monkeypatch):
+    """Nothing to refine without an upscale — the flag must not silently add
+    a second sampling pass and double the cost of an ordinary request."""
+    client = _install(monkeypatch, _FakeClient(history_sequence=[_done_record()]))
+    cc.generate_image("x", base_url=_BASE, ckpt_name=_CKPT,
+                      width=1024, height=1024, refine=True)
+    posted = client.calls[0][2]["json"]["prompt"]
+    assert cc._REFINE_SAMPLER not in posted
+
+
 # --- liveness -------------------------------------------------------------
 
 def test_is_reachable_uses_system_stats(monkeypatch):

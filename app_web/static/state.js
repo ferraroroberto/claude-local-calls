@@ -205,7 +205,14 @@ export const els = {
   // Playground — image generation / editing tester (issue #114)
   imageCard: document.getElementById('imageCard'),
   imageModel: document.getElementById('imageModel'),
+  imageModelNote: document.getElementById('imageModelNote'),
   imagePrompt: document.getElementById('imagePrompt'),
+  // Size presets + upscale refine (issue #497)
+  imageSize: document.getElementById('imageSize'),
+  imageSizeNote: document.getElementById('imageSizeNote'),
+  imageRefine: document.getElementById('imageRefine'),
+  imageRefineRow: document.getElementById('imageRefineRow'),
+  imageEditNote: document.getElementById('imageEditNote'),
   imageAttachment: document.getElementById('imageAttachment'),
   imageAttachmentBtn: document.getElementById('imageAttachmentBtn'),
   imageAttachmentName: document.getElementById('imageAttachmentName'),

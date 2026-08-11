@@ -38,6 +38,7 @@ from pydantic import BaseModel
 from . import on_demand
 from .comfyui_client import ComfyUIError, checkpoint_name_for, generate_image
 from .gemini_cli import GeminiCLIError, call_gemini_image
+from .image_sizes import DEFAULT_SIZE, ImageSizeError, parse_size
 from .model_registry import Model
 from .observability import record_genai_metrics, set_genai_request_attrs
 from .remote_proxy import remote_base_url
@@ -56,7 +57,9 @@ router = APIRouter()
 IMAGE_BACKENDS = ("gemini", "comfyui")
 
 
-def _generate_via_comfyui(model: Model, prompt: str) -> dict:
+def _generate_via_comfyui(
+    model: Model, prompt: str, width: int, height: int, refine: bool,
+) -> dict:
     """Run one generation on the local ComfyUI backend, loading it if cold.
 
     ``ensure_ready`` spawns the process and blocks until it answers — safe here
@@ -86,6 +89,9 @@ def _generate_via_comfyui(model: Model, prompt: str) -> dict:
             prompt,
             base_url=f"http://127.0.0.1:{model.port}",
             ckpt_name=checkpoint_name_for(model.model_path),
+            width=width,
+            height=height,
+            refine=refine,
         )
 
 
@@ -94,6 +100,14 @@ class ImagesGenerationRequest(BaseModel):
     prompt: str
     n: int = 1
     response_format: str = "b64_json"
+    # Preset name ("4k") or "WIDTHxHEIGHT" (#497). Honoured by comfyui rows;
+    # accepted and ignored by gemini, where Imagen controls its own dimensions
+    # — deliberately not a 400, because OpenAI clients send `size` routinely
+    # and rejecting it would break every existing caller.
+    size: str = DEFAULT_SIZE
+    # Second low-denoise pass over an upscaled image. Only meaningful for
+    # sizes above the native ceiling; a no-op otherwise.
+    refine: bool = False
 
 
 @router.post("/v1/images/generations")
@@ -125,6 +139,17 @@ def images_generations(req: ImagesGenerationRequest, request: Request) -> JSONRe
             status_code=400,
             detail="only response_format='b64_json' is supported",
         )
+    # Validate `size` only on a backend that honours it. Validating a field we
+    # then ignore would be user-hostile in a specific way: an Imagen request
+    # for "1920x1080" would be rejected with a message about FLUX's 16-pixel
+    # grid, for a constraint that does not apply to the model being called.
+    # Imagen ignores the field completely, so it ignores malformed values too.
+    width = height = None
+    if model.backend == "comfyui":
+        try:
+            width, height = parse_size(req.size)
+        except ImageSizeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     ctx = getattr(request.state, "obs_ctx", None)
     if ctx is not None:
@@ -145,8 +170,10 @@ def images_generations(req: ImagesGenerationRequest, request: Request) -> JSONRe
     start_ns = time.monotonic_ns()
     try:
         if model.backend == "comfyui":
-            out = _generate_via_comfyui(model, req.prompt)
+            out = _generate_via_comfyui(model, req.prompt, width, height, req.refine)
         else:
+            # Imagen sizes its own output and ignores pixel hints, so req.size
+            # is deliberately not forwarded here (docs/image-generation.md).
             out = call_gemini_image(req.prompt)
     except (GeminiCLIError, ComfyUIError) as e:
         record_genai_metrics(
@@ -179,10 +206,16 @@ def images_generations(req: ImagesGenerationRequest, request: Request) -> JSONRe
         "<- image bytes=%d media=%s backend=%s",
         len(out["image_bytes"]), out["media_type"], model.backend,
     )
-    return JSONResponse({
+    body = {
         "created": int(time.time()),
         "data": [{"b64_json": b64}],
-    })
+    }
+    # Non-OpenAI extension: the size actually produced. Present only when the
+    # backend knows it — Imagen picks its own dimensions and does not report
+    # them, and guessing would be worse than omitting the field.
+    if out.get("width") and out.get("height"):
+        body["size"] = f"{out['width']}x{out['height']}"
+    return JSONResponse(body)
 
 
 @router.post("/v1/images/edits")

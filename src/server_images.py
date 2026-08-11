@@ -36,7 +36,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from . import on_demand
-from .comfyui_client import ComfyUIError, checkpoint_name_for, generate_image
+from .comfyui_client import (
+    ComfyUIError,
+    ModelSpec,
+    checkpoint_name_for,
+    generate_image,
+)
 from .gemini_cli import GeminiCLIError, call_gemini_image
 from .image_sizes import DEFAULT_SIZE, ImageSizeError, parse_size
 from .model_registry import Model
@@ -88,11 +93,36 @@ def _generate_via_comfyui(
         return generate_image(
             prompt,
             base_url=f"http://127.0.0.1:{model.port}",
-            ckpt_name=checkpoint_name_for(model.model_path),
+            spec=model_spec_for(model),
             width=width,
             height=height,
             refine=refine,
         )
+
+
+def model_spec_for(model: Model) -> ModelSpec:
+    """Translate a ``models.yaml`` row into the client's workflow spec (#498).
+
+    ComfyUI resolves weights by bare filename inside its own search path, while
+    the registry stores repo-relative paths so the downloader and the install
+    check know where files belong — so every name is basenamed here. This is
+    the one place the two spellings meet.
+    """
+    if (model.workflow or "flux1") != "flux2":
+        return ModelSpec(workflow="flux1",
+                         ckpt_name=checkpoint_name_for(model.model_path))
+
+    by_role = {w.get("role"): w.get("path") for w in (model.extra_weights or [])}
+    unet = checkpoint_name_for(model.model_path)
+    return ModelSpec(
+        workflow="flux2",
+        unet_name=unet,
+        clip_name=checkpoint_name_for(by_role.get("text_encoder")),
+        vae_name=checkpoint_name_for(by_role.get("vae")),
+        # Stock ComfyUI cannot load a .gguf transformer; the loader choice
+        # follows the file, not a separate config flag that could disagree.
+        gguf=unet.lower().endswith(".gguf"),
+    )
 
 
 class ImagesGenerationRequest(BaseModel):

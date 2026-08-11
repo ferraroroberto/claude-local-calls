@@ -104,6 +104,23 @@ class Model:
     # after which the idle watchdog unloads the backend. ``None`` disables
     # idle unload (the model stays up once demanded until stopped by hand).
     idle_unload_minutes: Optional[int] = None
+    # Extra weight files beyond ``model_path`` (#498). ``model_path`` stays the
+    # *primary* weight — the transformer for an image model, the GGUF for a
+    # chat model — so every pre-#498 consumer (install's presence check, the
+    # downloader, backend_process's guard) keeps working unchanged. This adds
+    # the companions a split-loader model needs: FLUX.2 ships its transformer,
+    # text encoder and VAE as three separate files, unlike FLUX.1's all-in-one
+    # checkpoint.
+    #
+    # Each entry is ``{role, path, hf_repo, hf_pattern}``; ``role`` is what the
+    # workflow builder asks for (``text_encoder``, ``vae``).
+    extra_weights: List[Dict[str, str]] = field(default_factory=list)
+    # Which ComfyUI workflow graph this row needs (#498). ``None`` means the
+    # all-in-one FLUX.1 graph. FLUX.2 needs genuinely different nodes — a
+    # resolution-aware ``Flux2Scheduler``, ``EmptyFlux2LatentImage`` and
+    # ``SamplerCustomAdvanced`` rather than ``EmptySD3LatentImage``/``KSampler``
+    # — so it cannot be expressed as a parameter tweak of the FLUX.1 graph.
+    workflow: Optional[str] = None
 
     @property
     def host_chain(self) -> List[str]:
@@ -209,6 +226,8 @@ def _row_to_model(model_id: str, row: Dict) -> Model:
             int(row["idle_unload_minutes"])
             if row.get("idle_unload_minutes") is not None else None
         ),
+        extra_weights=[dict(w) for w in (row.get("extra_weights") or [])],
+        workflow=row.get("workflow"),
     )
 
 

@@ -233,6 +233,21 @@ def _check_models() -> List[Check]:
     for m in local_models():
         if m.backend not in SPAWNABLE_BACKENDS or not m.model_path:
             continue
+        # A split-loader row (#498) is only usable when every companion weight
+        # is present too — a missing text encoder or VAE fails at generation
+        # time with an opaque node error, not at load.
+        missing_extra = [
+            spec.get("path") for spec in (getattr(m, "extra_weights", None) or [])
+            if spec.get("path") and not (PROJECT_ROOT / spec["path"]).resolve().exists()
+        ]
+        if missing_extra:
+            rows.append(Check(
+                f"model_{m.id}", f"Model present: {m.display_name}", "missing",
+                f"missing companion weights: {', '.join(Path(p).name for p in missing_extra)}",
+                fix_id=f"download_{m.id}",
+                fix_label=f"scripts/download_models.py --only {m.id}",
+            ))
+            continue
         path = (PROJECT_ROOT / m.model_path).resolve()
         label = f"Model present: {m.display_name}"
         if path.exists() and path.is_file():

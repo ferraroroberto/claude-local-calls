@@ -38,8 +38,9 @@ import logging
 import random
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .http_client import get_sync_client
 
@@ -64,6 +65,13 @@ DEFAULT_SCHEDULER = "simple"
 # part of it back and forth between host and device on every run. The first
 # generation after a load is minutes; steady-state is far quicker.
 DEFAULT_TIMEOUT_S = 600.0
+# FLUX.2 [dev] is a 32B transformer paired with a 24B text encoder — roughly
+# 30 GB of weights streamed from system RAM through a 16 GB card on every run.
+# A 1024x1024 image measured **600.5 s** on tower, i.e. half a second past the
+# FLUX.1 budget above: the first real request would have failed on a timeout
+# that looks generous until you meet this model. Sized with genuine headroom
+# rather than trimmed to the one measurement (#498).
+FLUX2_TIMEOUT_S = 2400.0
 POLL_INTERVAL_S = 1.0
 # Per-HTTP-call timeouts. Distinct from the whole-generation budget above: a
 # submit that hangs means ComfyUI is wedged, not that the image is slow.
@@ -106,6 +114,183 @@ DEFAULT_REFINE_DENOISE = 0.25
 # Refine runs fewer steps than the base sample — it is finishing an image, not
 # building one from noise.
 DEFAULT_REFINE_STEPS = 10
+
+
+@dataclass(frozen=True)
+class GraphHandles:
+    """Where the reusable edges live in a built workflow (#498).
+
+    The two FLUX generations need structurally different graphs, but the
+    upscale/refine tail is identical work in both. Rather than teach the tail
+    about every graph, each builder reports the handful of edges it needs:
+    the model, the VAE, the positive/negative conditioning, and the node keys
+    of the final decode and output. ``add_upscale_tail`` then wires against
+    these instead of hardcoding FLUX.1's node names.
+    """
+
+    model: List[Any]
+    vae: List[Any]
+    positive: List[Any]
+    negative: List[Any]
+    decode: str
+    output: str
+
+
+# FLUX.2 node keys — a distinct namespace from the FLUX.1 graph above.
+_F2_UNET = "unet"
+_F2_CLIP = "clip"
+_F2_VAE = "vae"
+_F2_POSITIVE = "positive_prompt"
+_F2_NEGATIVE = "negative_prompt"
+_F2_GUIDANCE = "flux_guidance"
+_F2_GUIDER = "guider"
+_F2_SIGMAS = "sigmas"
+_F2_SAMPLER_SEL = "sampler_select"
+_F2_NOISE = "noise"
+_F2_LATENT = "empty_latent"
+_F2_SAMPLER = "sampler"
+_F2_DECODE = "vae_decode"
+
+# FLUX.2 reference settings. Guidance 4.0 is Black Forest Labs' published
+# default for the dev checkpoint; the distilled klein sibling wants fewer steps
+# and lower guidance, hence the per-variant overrides in FLUX2_DEFAULTS.
+DEFAULT_FLUX2_STEPS = 24
+DEFAULT_FLUX2_GUIDANCE = 4.0
+FLUX2_KLEIN_STEPS = 8
+FLUX2_KLEIN_GUIDANCE = 3.0
+
+
+def build_flux2_workflow(
+    prompt: str,
+    *,
+    unet_name: str,
+    clip_name: str,
+    vae_name: str,
+    gguf: bool,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    steps: int = DEFAULT_FLUX2_STEPS,
+    guidance: float = DEFAULT_FLUX2_GUIDANCE,
+    seed: Optional[int] = None,
+    weight_dtype: str = "fp8_e4m3fn",
+) -> tuple[Dict[str, Any], GraphHandles]:
+    """Build the FLUX.2 txt2img graph — a *split-loader* graph, unlike FLUX.1.
+
+    FLUX.2 ships the transformer, the Mistral-Small text encoder and the VAE as
+    three separate files, so there is no ``CheckpointLoaderSimple`` to yield
+    all three edges. It also needs FLUX.2-specific nodes, confirmed against a
+    live ``/object_info`` rather than assumed:
+
+    * ``EmptyFlux2LatentImage`` — its own latent shape.
+    * ``Flux2Scheduler`` — a **resolution-aware** sigma schedule taking width
+      and height, which is why the plain ``KSampler`` path cannot be reused.
+    * ``SamplerCustomAdvanced`` + ``BasicGuider`` — the guider carries a single
+      conditioning, matching a guidance-distilled model, instead of KSampler's
+      positive/negative pair with a CFG that would be a no-op.
+
+    ``gguf`` selects ``UnetLoaderGGUF`` (the quantized 32B dev transformer,
+    which stock ComfyUI cannot load at all) over the stock ``UNETLoader`` used
+    for klein's fp8 safetensors.
+
+    An empty negative prompt is built even though the sampling path ignores it:
+    the shared refine tail runs a ``KSampler``, whose signature requires one.
+    """
+    if seed is None:
+        seed = random.getrandbits(63)
+
+    loader = (
+        {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": unet_name}}
+        if gguf else
+        {"class_type": "UNETLoader",
+         "inputs": {"unet_name": unet_name, "weight_dtype": weight_dtype}}
+    )
+
+    graph: Dict[str, Any] = {
+        _F2_UNET: loader,
+        _F2_CLIP: {
+            "class_type": "CLIPLoader",
+            # `type` must be "flux2" — verified present in CLIPLoader's live
+            # enum. The FLUX.1 value would silently mis-tokenize the prompt.
+            "inputs": {"clip_name": clip_name, "type": "flux2"},
+        },
+        _F2_VAE: {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": vae_name},
+        },
+        _F2_POSITIVE: {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": prompt, "clip": [_F2_CLIP, 0]},
+        },
+        _F2_NEGATIVE: {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "", "clip": [_F2_CLIP, 0]},
+        },
+        _F2_GUIDANCE: {
+            "class_type": "FluxGuidance",
+            "inputs": {"conditioning": [_F2_POSITIVE, 0], "guidance": guidance},
+        },
+        _F2_GUIDER: {
+            "class_type": "BasicGuider",
+            "inputs": {"model": [_F2_UNET, 0], "conditioning": [_F2_GUIDANCE, 0]},
+        },
+        _F2_SIGMAS: {
+            "class_type": "Flux2Scheduler",
+            "inputs": {"steps": steps, "width": width, "height": height},
+        },
+        _F2_SAMPLER_SEL: {
+            "class_type": "KSamplerSelect",
+            "inputs": {"sampler_name": DEFAULT_SAMPLER},
+        },
+        _F2_NOISE: {
+            "class_type": "RandomNoise",
+            "inputs": {"noise_seed": seed},
+        },
+        _F2_LATENT: {
+            "class_type": "EmptyFlux2LatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": 1},
+        },
+        _F2_SAMPLER: {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": [_F2_NOISE, 0],
+                "guider": [_F2_GUIDER, 0],
+                "sampler": [_F2_SAMPLER_SEL, 0],
+                "sigmas": [_F2_SIGMAS, 0],
+                "latent_image": [_F2_LATENT, 0],
+            },
+        },
+        _F2_DECODE: {
+            "class_type": "VAEDecode",
+            # SamplerCustomAdvanced output 0 is the noisy latent, 1 is the
+            # denoised one — decoding 0 yields a grainy image.
+            "inputs": {"samples": [_F2_SAMPLER, 1], "vae": [_F2_VAE, 0]},
+        },
+        _OUTPUT: {
+            "class_type": "PreviewImage",
+            "inputs": {"images": [_F2_DECODE, 0]},
+        },
+    }
+    handles = GraphHandles(
+        model=[_F2_UNET, 0],
+        vae=[_F2_VAE, 0],
+        positive=[_F2_GUIDANCE, 0],
+        negative=[_F2_NEGATIVE, 0],
+        decode=_F2_DECODE,
+        output=_OUTPUT,
+    )
+    return graph, handles
+
+
+def flux1_handles() -> GraphHandles:
+    """Handles for the FLUX.1 graph built by :func:`build_flux_workflow`."""
+    return GraphHandles(
+        model=[_CKPT, 0],
+        vae=[_CKPT, 2],
+        positive=[_GUIDANCE, 0],
+        negative=[_NEGATIVE, 0],
+        decode=_DECODE,
+        output=_OUTPUT,
+    )
 
 
 def build_flux_workflow(
@@ -184,6 +369,7 @@ def add_upscale_tail(
     target_width: int,
     target_height: int,
     *,
+    handles: Optional[GraphHandles] = None,
     refine: bool = False,
     refine_denoise: float = DEFAULT_REFINE_DENOISE,
     refine_steps: int = DEFAULT_REFINE_STEPS,
@@ -206,13 +392,16 @@ def add_upscale_tail(
     it the model actually redraws at the higher resolution — roughly doubling
     generation time, which is why the caller opts in.
     """
+    # Defaults to the FLUX.1 graph's edges so pre-#498 callers are unchanged.
+    h = handles or flux1_handles()
+
     workflow[_UPSCALE_MODEL] = {
         "class_type": "UpscaleModelLoader",
         "inputs": {"model_name": upscale_model},
     }
     workflow[_UPSCALE] = {
         "class_type": "ImageUpscaleWithModel",
-        "inputs": {"upscale_model": [_UPSCALE_MODEL, 0], "image": [_DECODE, 0]},
+        "inputs": {"upscale_model": [_UPSCALE_MODEL, 0], "image": [h.decode, 0]},
     }
     workflow[_RESIZE] = {
         "class_type": "ImageScale",
@@ -229,14 +418,14 @@ def add_upscale_tail(
     if refine:
         workflow[_REFINE_ENCODE] = {
             "class_type": "VAEEncode",
-            "inputs": {"pixels": [_RESIZE, 0], "vae": [_CKPT, 2]},
+            "inputs": {"pixels": [_RESIZE, 0], "vae": list(h.vae)},
         }
         workflow[_REFINE_SAMPLER] = {
             "class_type": "KSampler",
             "inputs": {
-                "model": [_CKPT, 0],
-                "positive": [_GUIDANCE, 0],
-                "negative": [_NEGATIVE, 0],
+                "model": list(h.model),
+                "positive": list(h.positive),
+                "negative": list(h.negative),
                 "latent_image": [_REFINE_ENCODE, 0],
                 # A *different* seed from the base pass on purpose: reusing it
                 # would re-apply the same noise pattern the image already
@@ -251,11 +440,11 @@ def add_upscale_tail(
         }
         workflow[_REFINE_DECODE] = {
             "class_type": "VAEDecode",
-            "inputs": {"samples": [_REFINE_SAMPLER, 0], "vae": [_CKPT, 2]},
+            "inputs": {"samples": [_REFINE_SAMPLER, 0], "vae": list(h.vae)},
         }
         tail = _REFINE_DECODE
 
-    workflow[_OUTPUT]["inputs"]["images"] = [tail, 0]
+    workflow[h.output]["inputs"]["images"] = [tail, 0]
     return workflow
 
 
@@ -388,18 +577,66 @@ def _fetch_image(base_url: str, ref: Dict[str, Any]) -> tuple[bytes, str]:
     return r.content, media_type
 
 
+@dataclass(frozen=True)
+class ModelSpec:
+    """Everything the client needs to build a graph for one registry row (#498).
+
+    Built by ``server_images`` from a ``models.yaml`` row, so the client stays
+    ignorant of the registry. ``workflow`` selects the graph; the file fields
+    are ComfyUI's bare filenames (it resolves weights by name within its own
+    search path, not by our repo-relative paths).
+    """
+
+    workflow: str = "flux1"
+    ckpt_name: Optional[str] = None          # flux1: the all-in-one checkpoint
+    unet_name: Optional[str] = None          # flux2: the transformer
+    clip_name: Optional[str] = None          # flux2: the Mistral text encoder
+    vae_name: Optional[str] = None           # flux2
+    gguf: bool = False                       # flux2: quantized transformer
+    steps: Optional[int] = None
+    guidance: Optional[float] = None
+
+
+def _build_graph(
+    spec: ModelSpec, prompt: str, width: int, height: int, seed: int,
+) -> tuple[Dict[str, Any], GraphHandles]:
+    if spec.workflow == "flux2":
+        if not (spec.unet_name and spec.clip_name and spec.vae_name):
+            raise ComfyUIError(
+                "flux2 workflow needs unet/text_encoder/vae weights — check the "
+                "row's model_path and extra_weights in config/models.yaml"
+            )
+        return build_flux2_workflow(
+            prompt,
+            unet_name=spec.unet_name, clip_name=spec.clip_name,
+            vae_name=spec.vae_name, gguf=spec.gguf,
+            width=width, height=height,
+            steps=spec.steps or DEFAULT_FLUX2_STEPS,
+            guidance=spec.guidance if spec.guidance is not None else DEFAULT_FLUX2_GUIDANCE,
+            seed=seed,
+        )
+    if not spec.ckpt_name:
+        raise ComfyUIError("flux1 workflow needs a checkpoint — check model_path")
+    graph = build_flux_workflow(
+        prompt, spec.ckpt_name, width=width, height=height,
+        steps=spec.steps or DEFAULT_STEPS,
+        guidance=spec.guidance if spec.guidance is not None else DEFAULT_GUIDANCE,
+        seed=seed,
+    )
+    return graph, flux1_handles()
+
+
 def generate_image(
     prompt: str,
     *,
     base_url: str,
-    ckpt_name: str,
+    spec: Optional[ModelSpec] = None,
+    ckpt_name: Optional[str] = None,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
-    steps: int = DEFAULT_STEPS,
-    guidance: float = DEFAULT_GUIDANCE,
     seed: Optional[int] = None,
     refine: bool = False,
-    timeout_s: float = DEFAULT_TIMEOUT_S,
+    timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Generate one image with FLUX on a running ComfyUI.
 
@@ -422,34 +659,37 @@ def generate_image(
     """
     from .image_sizes import native_source_size, needs_upscale
 
+    if spec is None:
+        # Back-compat for the single-model call shape (#492/#497).
+        spec = ModelSpec(workflow="flux1", ckpt_name=ckpt_name)
+    if timeout_s is None:
+        timeout_s = (FLUX2_TIMEOUT_S if spec.workflow == "flux2"
+                     else DEFAULT_TIMEOUT_S)
+
     base = base_url.rstrip("/")
     upscaling = needs_upscale(width, height)
     src_w, src_h = native_source_size(width, height)
     if seed is None:
         seed = random.getrandbits(63)
 
-    workflow = build_flux_workflow(
-        prompt, ckpt_name, width=src_w, height=src_h,
-        steps=steps, guidance=guidance, seed=seed,
-    )
+    workflow, handles = _build_graph(spec, prompt, src_w, src_h, seed)
     if upscaling:
         add_upscale_tail(
-            workflow, width, height, refine=refine, seed=seed,
+            workflow, width, height, handles=handles, refine=refine, seed=seed,
         )
 
     started = time.monotonic()
     prompt_id = _post_prompt(base, workflow)
     if upscaling:
         logger.info(
-            "comfyui: queued prompt %s (%dx%d sampled -> %dx%d upscaled%s, "
-            "%d steps, guidance %.1f)",
-            prompt_id, src_w, src_h, width, height,
-            " + refine" if refine else "", steps, guidance,
+            "comfyui: queued prompt %s [%s] (%dx%d sampled -> %dx%d upscaled%s)",
+            prompt_id, spec.workflow, src_w, src_h, width, height,
+            " + refine" if refine else "",
         )
     else:
         logger.info(
-            "comfyui: queued prompt %s (%dx%d, %d steps, guidance %.1f)",
-            prompt_id, width, height, steps, guidance,
+            "comfyui: queued prompt %s [%s] (%dx%d)",
+            prompt_id, spec.workflow, width, height,
         )
 
     record = _await_history(base, prompt_id, timeout_s)

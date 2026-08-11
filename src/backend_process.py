@@ -402,6 +402,20 @@ def build_command(model: Model) -> list[str]:
                 f"checkpoint not found at {model_path} - run "
                 f"scripts/download_models.py --only {model.id}"
             )
+        # Per-model runtime state (#498). Several image rows each own their own
+        # ComfyUI process, and ComfyUI keeps a SQLite database plus settings in
+        # its user directory — a *shared* one means the second instance loses
+        # the race with "Could not acquire lock on database ... Another ComfyUI
+        # process may already be using it" and starts degraded. The temp dir is
+        # separated for the same reason: it holds the PreviewImage output this
+        # hub then fetches, and one instance's startup cleanup must not delete
+        # another's in-flight result.
+        # ComfyUI validates these paths at argument-parse time and refuses to
+        # start if they do not already exist, so create them here rather than
+        # leaving the first spawn to fail with an argparse error.
+        state_dir = PROJECT_ROOT / "data" / "comfyui" / model.id
+        for sub in ("user", "temp"):
+            (state_dir / sub).mkdir(parents=True, exist_ok=True)
         cmd = [
             str(py), str(VENDOR_COMFYUI / "main.py"),
             # Loopback only, unlike the llama/whisper backends' 0.0.0.0. ComfyUI
@@ -413,6 +427,8 @@ def build_command(model: Model) -> list[str]:
             # Without this ComfyUI opens a browser tab on every spawn — and this
             # backend is spawned on demand, from a windowless hub process.
             "--disable-auto-launch",
+            "--user-directory", str(state_dir / "user"),
+            "--temp-directory", str(state_dir / "temp"),
         ]
         cmd.extend(model.args or [])
         return cmd

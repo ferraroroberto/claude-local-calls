@@ -54,7 +54,7 @@ flowchart TB
     OAIUP["openai_upstream.py\nhttpx -> llama-server /v1"]
     AUDIOR["server_audio_asr.py + server_audio_tts.py\n/v1/audio/* proxy (#451 split)"]
     IMAGESR["server_images.py\n/v1/images/* proxy — dispatches on backend:\ngemini (Imagen) | comfyui (FLUX, #492)"]
-    COMFYCLI["comfyui_client.py (#492)\nhttpx -> ComfyUI prompt API:\nPOST /prompt (FLUX workflow graph) ->\npoll /history -> GET /view;\n>2 MP: sample native -> 4x upscale\n-> optional refine pass (#497)"]
+    COMFYCLI["comfyui_client.py (#492)\nhttpx -> ComfyUI prompt API:\nPOST /prompt -> poll /history -> GET /view;\ntwo graphs behind one ModelSpec (#498):\nflux1 all-in-one · flux2 split-loader;\n>2 MP: sample native -> 4x upscale\n-> optional refine pass (#497)"]
     IMGSIZE["image_sizes.py (#497)\nsize presets + 16px-grid validation +\nnative-vs-upscale split — one source\nfor the API and the Playground dropdown"]
   end
   CHATT -->|backend=claude| CLAUDECLI
@@ -149,7 +149,7 @@ flowchart TB
     AGYBIN["agy Antigravity CLI\n(Google AI Pro/Ultra subscription)"]
     LLAMA["llama-server (vendor/llama.cpp)\nQwen3.5-4B :8088 · Gemma4-26B-A4B :8087\n+ ad-hoc :8081/:8082/:8086"]
     TTS["tts_engines/ (piper · kokoro · chatterbox · orpheus)\nvia tts_server.py shim :8092/:8093/:8095/:8096\n(orpheus back on tower, gaming = fallback, #422)"]
-    COMFY["ComfyUI (vendor/comfyui, own .venv) :8188\nFLUX.1 [dev] fp8 on tower's RTX 5060 Ti (#492)\nloopback-bound · startup: on_demand"]
+    COMFY["ComfyUI (vendor/comfyui, own .venv)\n:8188 FLUX.1 [dev] fp8 (#492)\n:8189 FLUX.2 [dev] 32B GGUF · :8190 FLUX.2 [klein] 4B (#498)\n+ ComfyUI-GGUF custom node · loopback-bound · on_demand\none process per row — the process layer keys state by model id"]
     CCHOST["Any host Claude Code CLI session\n(incl. sub-agents — CLAUDE_CODE_ENABLE_TELEMETRY)"]
     MACMINI["Mac Mini (mac-mini-m4, 192.168.0.14)\npeer local-llm-hub install :8000\nowns qwen3.5-9b · parakeet-tdt-0.6b-v3"]
     PARAKEETWORKER["mac/parakeet-worker/ (Swift, ANE)\nFluidAudio Parakeet TDT 0.6B v3\nvia CoreML"]

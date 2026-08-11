@@ -96,7 +96,42 @@ def download_one(model_id: str) -> List[Path]:
                 if flat != r and not flat.exists():
                     r.rename(flat)
 
+    results.extend(_download_extra_weights(model))
     return results
+
+
+def _download_extra_weights(model: Model) -> List[Path]:
+    """Fetch a split-loader row's companion weights (#498).
+
+    ``model_path`` is the primary weight; a FLUX.2 row also needs its text
+    encoder and VAE, which live in different repos and different subfolders.
+    Each entry names its own ``hf_repo``/``hf_pattern`` and target ``path``,
+    and files already present are skipped so re-running is cheap.
+    """
+    out: List[Path] = []
+    for spec in getattr(model, "extra_weights", None) or []:
+        repo, pattern, rel = spec.get("hf_repo"), spec.get("hf_pattern"), spec.get("path")
+        if not (repo and pattern and rel):
+            log.warning("  skipping malformed extra_weights entry on %s: %r",
+                        model.id, spec)
+            continue
+        target = (PROJECT_ROOT / rel).resolve()
+        if target.exists():
+            log.info("  %s already present (%.2f GB)", target.name,
+                     target.stat().st_size / 1e9)
+            out.append(target)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        log.info("  fetching %s (%s) -> %s", pattern, repo, target)
+        got = Path(hf_hub_download(repo_id=repo, filename=pattern,
+                                   local_dir=str(target.parent)))
+        # Repos that nest under split_files/ land in a subtree; flatten to the
+        # search-path root ComfyUI actually scans.
+        if got != target:
+            target.unlink(missing_ok=True)
+            got.replace(target)
+        out.append(target)
+    return out
 
 
 def main(argv: List[str] | None = None) -> int:

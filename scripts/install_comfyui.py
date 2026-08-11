@@ -189,6 +189,32 @@ def read_marker() -> Optional[Dict[str, Any]]:
 UPSCALE_MODEL_REPO = "lokCX/4x-Ultrasharp"
 UPSCALE_MODEL_FILE = "4x-UltraSharp.pth"
 
+# city96's ComfyUI-GGUF custom node (#498). Stock ComfyUI cannot load a `.gguf`
+# diffusion model at all — without this node FLUX.2 [dev]'s quantized
+# transformer is simply unloadable, and the row fails at UnetLoaderGGUF with an
+# unknown-node error.
+#
+# Pinned to an explicit commit rather than a tag because this repo publishes
+# neither tags nor releases; `main` alone would make the install
+# non-reproducible. Bump deliberately, same policy as ComfyUI's PINNED_TAG.
+GGUF_NODE_GIT_URL = "https://github.com/city96/ComfyUI-GGUF"
+GGUF_NODE_PIN = "6ea2651e7df66d7585f6ffee804b20e92fb38b8a"  # 2026-12-01
+GGUF_NODE_DIR = VENDOR_DIR / "custom_nodes" / "ComfyUI-GGUF"
+
+# Dependencies ComfyUI under-constrains, pinned after its own requirements pass
+# so the resolved version is deterministic rather than "whatever was newest".
+#
+# transformers: ComfyUI asks for `transformers>=4.50.3` with no upper bound, so
+# pip installs 5.x. transformers 5 changed `MistralConverter.__init__` to take a
+# positional `vocab_file`, while ComfyUI v0.31.0 calls it as
+# `MistralConverter(vocab=..., additional_special_tokens=...)`. The mismatch is
+# invisible until a FLUX.2 generation actually loads the Mistral text encoder,
+# where it surfaces as `CLIPLoader raised TypeError: MistralConverter.__init__()
+# missing 1 required positional argument: 'vocab_file'` (#498). 4.57.6 is the
+# newest release carrying the signature ComfyUI expects. Re-check on a ComfyUI
+# bump — upstream will move to the 5.x call shape eventually.
+PINNED_DEPS = ["transformers==4.57.6"]
+
 
 def ensure_upscale_model() -> Path:
     """Download the 4x upscaler into ``models/comfyui/upscale_models/``.
@@ -212,6 +238,46 @@ def ensure_upscale_model() -> Path:
         shutil.move(str(got), str(target))
     log.info("  -> %s (%.1f MB)", target, target.stat().st_size / 1e6)
     return target
+
+
+def ensure_gguf_node() -> Path:
+    """Install/pin the ComfyUI-GGUF custom node into ``vendor/comfyui``.
+
+    Idempotent: an existing clone is fetched and hard-reset onto the pin, so
+    bumping :data:`GGUF_NODE_PIN` upgrades in place rather than needing a
+    ``--force`` wipe. Its own requirements go into ComfyUI's venv, not the
+    hub's — same isolation rule as everything else here.
+    """
+    if GGUF_NODE_DIR.exists():
+        log.info("updating ComfyUI-GGUF to %s ...", GGUF_NODE_PIN[:12])
+        _run(["git", "fetch", "--depth", "1", "origin", GGUF_NODE_PIN],
+             cwd=GGUF_NODE_DIR, timeout=300)
+        _run(["git", "checkout", "--force", GGUF_NODE_PIN],
+             cwd=GGUF_NODE_DIR, timeout=120)
+    else:
+        log.info("cloning ComfyUI-GGUF @ %s ...", GGUF_NODE_PIN[:12])
+        GGUF_NODE_DIR.parent.mkdir(parents=True, exist_ok=True)
+        _run(["git", "clone", GGUF_NODE_GIT_URL, str(GGUF_NODE_DIR)], timeout=600)
+        _run(["git", "checkout", "--force", GGUF_NODE_PIN],
+             cwd=GGUF_NODE_DIR, timeout=120)
+
+    req = GGUF_NODE_DIR / "requirements.txt"
+    if req.exists():
+        _run([str(venv_python()), "-m", "pip", "install", "-r", str(req)],
+             timeout=900)
+    return GGUF_NODE_DIR
+
+
+def apply_pinned_deps() -> None:
+    """Force :data:`PINNED_DEPS` into ComfyUI's venv.
+
+    Runs *after* every other pip pass, so an under-constrained transitive
+    resolution cannot win. Idempotent — pip no-ops when the pin is satisfied.
+    """
+    if not PINNED_DEPS:
+        return
+    log.info("applying pinned deps: %s", ", ".join(PINNED_DEPS))
+    _run([str(venv_python()), "-m", "pip", "install", *PINNED_DEPS], timeout=1800)
 
 
 def write_extra_model_paths() -> Path:
@@ -294,6 +360,8 @@ def install() -> None:
         (MODELS_DIR / sub).mkdir(parents=True, exist_ok=True)
     write_extra_model_paths()
     ensure_upscale_model()
+    ensure_gguf_node()
+    apply_pinned_deps()
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -316,8 +384,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif already_installed():
         log.info("ComfyUI already installed at %s", VENDOR_DIR)
         write_extra_model_paths()  # cheap; keeps the path file in sync
-        # Also backfills an install that predates the upscaler (#497).
+        # Backfill assets an older install predates, and re-pin the custom
+        # node, so bumping GGUF_NODE_PIN (#498) or adding the upscaler (#497)
+        # does not require a --force wipe of a working install.
         ensure_upscale_model()
+        ensure_gguf_node()
+        apply_pinned_deps()
         verify_cuda()
         return 0
 

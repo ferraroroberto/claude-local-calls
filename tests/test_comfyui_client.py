@@ -266,11 +266,9 @@ def test_upscaler_filename_matches_what_the_installer_provisions():
     two drifted, the 4K path failed on a fresh machine with a bare
     'value not in list' node error while working fine where the file had been
     placed by hand."""
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import install_comfyui  # type: ignore
+    # Same import form src/install.py uses, so this is the module the rest of
+    # the app actually sees rather than a second copy of the same file.
+    from scripts import install_comfyui  # type: ignore
 
     assert cc.DEFAULT_UPSCALE_MODEL == install_comfyui.UPSCALE_MODEL_FILE
 
@@ -356,6 +354,137 @@ def test_refine_is_ignored_for_a_native_size(monkeypatch):
                       width=1024, height=1024, refine=True)
     posted = client.calls[0][2]["json"]["prompt"]
     assert cc._REFINE_SAMPLER not in posted
+
+
+# --- FLUX.2 split-loader graph (#498) ------------------------------------
+
+_F2 = dict(unet_name="flux2-dev-Q4_K_M.gguf",
+           clip_name="mistral_3_small_flux2_fp4_mixed.safetensors",
+           vae_name="flux2-vae.safetensors")
+
+
+def test_flux2_uses_its_own_latent_and_scheduler():
+    """FLUX.2 is not FLUX.1 with different weights: it needs its own latent
+    node and a *resolution-aware* scheduler. Reusing the FLUX.1 nodes is the
+    kind of mistake that produces noise rather than an error."""
+    wf, _ = cc.build_flux2_workflow("x", gguf=True, **_F2)
+    classes = _classes(wf)
+    assert "EmptyFlux2LatentImage" in classes
+    assert "Flux2Scheduler" in classes
+    assert "EmptySD3LatentImage" not in classes
+    assert "KSampler" not in classes  # sampling goes through SamplerCustomAdvanced
+
+
+def test_flux2_scheduler_gets_the_sampled_resolution():
+    """Flux2Scheduler takes width/height — that is *why* it cannot be swapped
+    for a plain scheduler."""
+    wf, _ = cc.build_flux2_workflow("x", width=1216, height=832, steps=24, **_F2, gguf=True)
+    sig = wf[cc._F2_SIGMAS]["inputs"]
+    assert (sig["width"], sig["height"], sig["steps"]) == (1216, 832, 24)
+
+
+def test_flux2_clip_loader_uses_the_flux2_type():
+    """The FLUX.1 value would silently mis-tokenize the prompt rather than
+    fail, so this is asserted explicitly."""
+    wf, _ = cc.build_flux2_workflow("x", **_F2, gguf=True)
+    assert wf[cc._F2_CLIP]["inputs"]["type"] == "flux2"
+
+
+def test_flux2_gguf_flag_picks_the_loader():
+    """Stock ComfyUI cannot load a .gguf transformer at all; the quantized dev
+    model needs the custom node's loader."""
+    gguf_wf, _ = cc.build_flux2_workflow("x", **_F2, gguf=True)
+    assert gguf_wf[cc._F2_UNET]["class_type"] == "UnetLoaderGGUF"
+
+    plain = dict(_F2, unet_name="flux-2-klein-4b-fp8.safetensors")
+    safet_wf, _ = cc.build_flux2_workflow("x", **plain, gguf=False)
+    assert safet_wf[cc._F2_UNET]["class_type"] == "UNETLoader"
+    assert safet_wf[cc._F2_UNET]["inputs"]["weight_dtype"] == "fp8_e4m3fn"
+
+
+def test_flux2_wires_three_separate_loaders():
+    """Unlike FLUX.1's all-in-one checkpoint, MODEL/CLIP/VAE come from three
+    different files."""
+    wf, h = cc.build_flux2_workflow("x", **_F2, gguf=True)
+    assert wf[cc._F2_POSITIVE]["inputs"]["clip"] == [cc._F2_CLIP, 0]
+    assert wf[cc._F2_DECODE]["inputs"]["vae"] == [cc._F2_VAE, 0]
+    assert h.model == [cc._F2_UNET, 0]
+    assert h.vae == [cc._F2_VAE, 0]
+
+
+def test_flux2_guider_carries_the_guidance_conditioning():
+    wf, _ = cc.build_flux2_workflow("x", **_F2, gguf=True, guidance=4.0)
+    assert wf[cc._F2_GUIDANCE]["inputs"]["guidance"] == 4.0
+    assert wf[cc._F2_GUIDER]["inputs"]["conditioning"] == [cc._F2_GUIDANCE, 0]
+    assert wf[cc._F2_GUIDER]["inputs"]["model"] == [cc._F2_UNET, 0]
+
+
+def test_flux2_upscale_tail_wires_against_flux2_nodes():
+    """The shared tail must follow the graph's own handles — hardcoding
+    FLUX.1's checkpoint node would reference a node that does not exist here."""
+    wf, h = cc.build_flux2_workflow("x", **_F2, gguf=True, width=1920, height=1088)
+    cc.add_upscale_tail(wf, 3840, 2160, handles=h, refine=True, seed=7)
+    assert wf[cc._UPSCALE]["inputs"]["image"] == [cc._F2_DECODE, 0]
+    assert wf[cc._REFINE_ENCODE]["inputs"]["vae"] == [cc._F2_VAE, 0]
+    assert wf[cc._REFINE_SAMPLER]["inputs"]["model"] == [cc._F2_UNET, 0]
+    assert wf[cc._OUTPUT]["inputs"]["images"] == [cc._REFINE_DECODE, 0]
+    assert cc._CKPT not in wf  # no FLUX.1 leakage
+
+
+def test_flux1_graph_is_unchanged_by_the_refactor():
+    """Regression guard for #492/#497: the split-loader work must not alter
+    the all-in-one path."""
+    wf = cc.build_flux_workflow("x", _CKPT, seed=1)
+    assert wf[cc._CKPT]["class_type"] == "CheckpointLoaderSimple"
+    assert wf[cc._LATENT]["class_type"] == "EmptySD3LatentImage"
+    assert wf[cc._SAMPLER]["class_type"] == "KSampler"
+    h = cc.flux1_handles()
+    assert (h.model, h.vae, h.decode, h.output) == ([cc._CKPT, 0], [cc._CKPT, 2],
+                                                    cc._DECODE, cc._OUTPUT)
+
+
+def test_generate_routes_by_spec_workflow(monkeypatch):
+    client = _install(monkeypatch, _FakeClient(history_sequence=[_done_record()]))
+    cc.generate_image("x", base_url=_BASE,
+                      spec=cc.ModelSpec(workflow="flux2", gguf=True, **_F2))
+    posted = client.calls[0][2]["json"]["prompt"]
+    assert posted[cc._F2_CLIP]["inputs"]["type"] == "flux2"
+
+
+def test_generate_without_spec_still_uses_flux1(monkeypatch):
+    """Back-compat for the pre-#498 call shape."""
+    client = _install(monkeypatch, _FakeClient(history_sequence=[_done_record()]))
+    cc.generate_image("x", base_url=_BASE, ckpt_name=_CKPT)
+    posted = client.calls[0][2]["json"]["prompt"]
+    assert posted[cc._CKPT]["inputs"]["ckpt_name"] == _CKPT
+
+
+def test_flux2_gets_a_bigger_default_timeout_than_flux1(monkeypatch):
+    """Regression: a 1024x1024 FLUX.2 [dev] image measured 600.5 s — half a
+    second past FLUX.1's 600 s budget. Sharing one timeout means the very first
+    real request fails."""
+    assert cc.FLUX2_TIMEOUT_S > cc.DEFAULT_TIMEOUT_S
+    seen = {}
+
+    def fake_await(base, prompt_id, timeout_s):
+        seen["timeout"] = timeout_s
+        return _done_record()["pid-1"]
+
+    _install(monkeypatch, _FakeClient(history_sequence=[_done_record()]))
+    monkeypatch.setattr(cc, "_await_history", fake_await)
+
+    cc.generate_image("x", base_url=_BASE,
+                      spec=cc.ModelSpec(workflow="flux2", gguf=True, **_F2))
+    assert seen["timeout"] == cc.FLUX2_TIMEOUT_S
+
+    cc.generate_image("x", base_url=_BASE, ckpt_name=_CKPT)
+    assert seen["timeout"] == cc.DEFAULT_TIMEOUT_S
+
+
+def test_flux2_spec_missing_companion_weights_is_a_clear_error():
+    with pytest.raises(ComfyUIError, match="extra_weights"):
+        cc._build_graph(cc.ModelSpec(workflow="flux2", unet_name="a.gguf"),
+                        "x", 1024, 1024, 1)
 
 
 # --- liveness -------------------------------------------------------------

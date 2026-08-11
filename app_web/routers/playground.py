@@ -73,10 +73,22 @@ _IMAGE_BACKEND_INFO = {
         "supports_size": True,
         "supports_edit": False,
         "note": "Runs entirely on this machine. Sizes are honoured exactly. "
-                "First image after an idle period loads the model (~1 min). "
-                "Measured warm: ~40 s at 1024×1024, ~82 s at HD, ~96 s at 4K, "
-                "~6 min at 4K with refine. Generation only — no editing.",
+                "First image after an idle period loads the model. "
+                "Generation only — no editing.",
     },
+}
+
+# Per-model cost, measured on tower at 1024x1024 (#492/#497/#498). Keyed by id
+# because the three local rows differ by a factor of ~24 — a single
+# backend-level note would be useless for choosing between them.
+_IMAGE_MODEL_NOTES = {
+    "flux1_local": "FLUX.1 [dev] — ~40 s warm. The middle option, and the one "
+                   "whose 4K upscale path is exercised end to end.",
+    "flux2_klein": "FLUX.2 [klein] 4B — ~25 s warm, ~100 s cold. Fastest local "
+                   "model and the everyday choice.",
+    "flux2_local": "FLUX.2 [dev] 32B — ~10 MINUTES per image. The quality "
+                   "ceiling this GPU can reach at all: a 32B transformer "
+                   "streamed from system RAM. Avoid at 4K.",
 }
 
 
@@ -94,6 +106,7 @@ async def playground_image_models() -> Dict[str, Any]:
     for m in enabled_models():
         if getattr(m, "image_gen", False):
             info = _IMAGE_BACKEND_INFO.get(m.backend, {})
+            per_model = _IMAGE_MODEL_NOTES.get(m.id, "")
             rows.append(
                 {
                     "id": m.id,
@@ -103,12 +116,22 @@ async def playground_image_models() -> Dict[str, Any]:
                     "where": info.get("where", m.backend),
                     "supports_size": info.get("supports_size", False),
                     "supports_edit": info.get("supports_edit", False),
-                    "note": info.get("note", ""),
+                    "note": " ".join(x for x in (per_model, info.get("note", "")) if x),
                 }
             )
-    # Local-first: the default selection should be the one that costs nothing
-    # and honours the controls this card exposes.
-    rows.sort(key=lambda r: (not r["supports_size"], r["id"]))
+    # Local-first, then cheapest: the default selection should cost nothing and
+    # honour the controls this card exposes, and among the local models it
+    # should not be the one that takes ten minutes.
+    _PREFERENCE = ["flux2_klein", "flux1_local", "flux2_local"]
+
+    def _rank(row):
+        try:
+            local_rank = _PREFERENCE.index(row["id"])
+        except ValueError:
+            local_rank = len(_PREFERENCE)
+        return (not row["supports_size"], local_rank, row["id"])
+
+    rows.sort(key=_rank)
     return {
         "models": rows,
         "sizes": preset_payload(),

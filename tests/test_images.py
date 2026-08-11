@@ -144,7 +144,7 @@ def flux_backend(monkeypatch):
     called is how we prove the route loads a cold backend before dispatching.
     """
     seen = {"ready": [], "prompt": None, "base_url": None, "ckpt": None,
-            "width": None, "height": None, "refine": None}
+            "spec": None, "width": None, "height": None, "refine": None}
 
     monkeypatch.setattr(images_mod, "remote_base_url", lambda m: None)
     monkeypatch.setattr(
@@ -152,11 +152,14 @@ def flux_backend(monkeypatch):
         lambda model, *a, **k: seen["ready"].append(model.id),
     )
 
-    def fake_generate(prompt, *, base_url, ckpt_name, width=None, height=None,
+    def fake_generate(prompt, *, base_url, spec=None, width=None, height=None,
                       refine=False, **kwargs):
         seen["prompt"] = prompt
         seen["base_url"] = base_url
-        seen["ckpt"] = ckpt_name
+        seen["spec"] = spec
+        # #498 moved the checkpoint name inside the workflow spec; keep the
+        # old key populated so the size/refine assertions stay readable.
+        seen["ckpt"] = getattr(spec, "ckpt_name", None)
         seen["width"] = width
         seen["height"] = height
         seen["refine"] = refine
@@ -367,6 +370,97 @@ def test_gemini_ignores_a_size_it_could_never_honour(gemini_backend):
                     json={"model": "gemini_image", "prompt": "x", "size": "1920x1080"})
     assert r.status_code == 200
     assert gemini_backend["called"] is True
+
+
+# --- FLUX.2 rows (#498) ---------------------------------------------------
+
+def _row(model_id):
+    from src.model_registry import enabled_models
+    row = next((m for m in enabled_models() if m.id == model_id), None)
+    if row is None:
+        pytest.skip(f"{model_id} is not enabled on this host")
+    return row
+
+
+def test_flux1_row_maps_to_the_all_in_one_spec():
+    spec = images_mod.model_spec_for(_row("flux1_local"))
+    assert spec.workflow == "flux1"
+    assert spec.ckpt_name == "flux1-dev-fp8.safetensors"
+    assert spec.unet_name is None
+
+
+def test_flux2_dev_row_maps_to_a_split_gguf_spec():
+    spec = images_mod.model_spec_for(_row("flux2_local"))
+    assert spec.workflow == "flux2"
+    assert spec.unet_name.endswith(".gguf")
+    assert spec.gguf is True          # stock ComfyUI cannot load a .gguf unet
+    assert spec.clip_name and spec.vae_name
+
+
+def test_flux2_klein_row_uses_the_stock_loader():
+    spec = images_mod.model_spec_for(_row("flux2_klein"))
+    assert spec.workflow == "flux2"
+    assert spec.gguf is False         # plain fp8 safetensors
+    assert spec.unet_name.endswith(".safetensors")
+
+
+def test_klein_and_dev_do_not_share_a_text_encoder():
+    """Regression: klein pairs with Qwen3-4B, dev with Mistral-Small-24B.
+    Swapping them does not fail at load — it fails deep in sampling with
+    'mat1 and mat2 shapes cannot be multiplied', which is a miserable thing to
+    debug from a config file."""
+    dev = images_mod.model_spec_for(_row("flux2_local"))
+    klein = images_mod.model_spec_for(_row("flux2_klein"))
+    assert dev.clip_name != klein.clip_name
+    assert "mistral" in dev.clip_name.lower()
+    assert "qwen" in klein.clip_name.lower()
+    # They *do* share the VAE — that part is interchangeable.
+    assert dev.vae_name == klein.vae_name
+
+
+def test_spec_basenames_the_registry_paths():
+    """The registry stores repo-relative paths so the downloader knows where
+    files belong; ComfyUI resolves by bare filename inside its search path."""
+    spec = images_mod.model_spec_for(_row("flux2_local"))
+    for name in (spec.unet_name, spec.clip_name, spec.vae_name):
+        assert "/" not in name and "\\" not in name
+
+
+@pytest.mark.parametrize("model_id", ["flux2_local", "flux2_klein"])
+def test_flux2_rows_generate_through_the_route(monkeypatch, model_id):
+    _row(model_id)
+    seen = {}
+    monkeypatch.setattr(images_mod, "remote_base_url", lambda m: None)
+    monkeypatch.setattr(images_mod.on_demand, "ensure_ready", lambda *a, **k: None)
+
+    def fake_generate(prompt, *, base_url, spec=None, width=None, height=None,
+                      refine=False, **kw):
+        seen["spec"] = spec
+        seen["base_url"] = base_url
+        return {"image_bytes": _PNG_BYTES, "media_type": "image/png",
+                "width": width, "height": height, "result_text": "ok"}
+
+    monkeypatch.setattr(images_mod, "generate_image", fake_generate)
+    client = TestClient(server_mod.app)
+    r = client.post("/v1/images/generations",
+                    json={"model": model_id, "prompt": "x"})
+    assert r.status_code == 200
+    assert seen["spec"].workflow == "flux2"
+
+
+def test_flux2_rows_have_their_own_ports():
+    """One ComfyUI could serve every model, but this repo's process layer keys
+    start/stop, inheritance and idle-unload by model id — a shared port would
+    let one row's idle unload kill a server another row is mid-request on."""
+    ports = {mid: _row(mid).port
+             for mid in ("flux1_local", "flux2_local", "flux2_klein")}
+    assert len(set(ports.values())) == 3, ports
+
+
+def test_list_models_includes_the_flux2_rows():
+    client = TestClient(server_mod.app)
+    ids = {m["id"] for m in client.get("/v1/models").json()["data"]}
+    assert {"flux2_local", "flux2_klein"} <= ids
 
 
 def test_list_models_includes_flux1_local():

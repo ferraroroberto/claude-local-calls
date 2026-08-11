@@ -13,6 +13,10 @@ there's real usage to judge by (#492).
 |---|---|---|---|---|
 | `gemini_image` | Google Imagen via the `agy` CLI | Google's servers, on the AI Pro/Ultra subscription | yes (procedural, slow) | seconds |
 | `flux1_local` (alias `flux`) | FLUX.1 [dev] fp8 via ComfyUI | tower's RTX 5060 Ti, fully local | no | ~40 s at 1024², ~96 s at 4K |
+| `flux2_klein` (alias `klein`) | FLUX.2 [klein] 4B fp8 via ComfyUI | same GPU | no | **~25 s** at 1024² |
+| `flux2_local` (alias `flux2`) | FLUX.2 [dev] 32B Q4_K_M via ComfyUI | same GPU | no | **~10 min** at 1024² |
+
+**Which to reach for:** `flux2_klein` is the everyday local choice — fastest of the three and genuinely good. `flux1_local` is the middle option and the only one with the 4K/upscale path exercised end to end. `flux2_local` is the quality ceiling this hardware can reach *at all*, at roughly 24x klein's cost; treat it as a "when it matters" model, not a default.
 
 The rest of this note covers the Imagen path first (it came first, and its
 constraints are the surprising ones), then the local FLUX path.
@@ -272,6 +276,89 @@ against a 7014 MB baseline with the row stopped (tower, 2026-08-11):
 So it coexists comfortably with the rest of tower's rotation while running, and
 `on_demand` is about not holding ~5 GB (plus its RSS) for a backend used a few
 times a day — not about it being unable to fit.
+
+## FLUX.2: dev 32B and klein 4B (#498)
+
+FLUX.2 is **not** FLUX.1 with different weights. Three things differ, and each
+one fails in a way that is hard to diagnose from a config file:
+
+**It is a split-loader model.** FLUX.1 [dev] fp8 is one all-in-one checkpoint
+(transformer + text encoders + VAE). FLUX.2 ships three separate files, so the
+row carries `model_path` (the transformer) plus `extra_weights` for the text
+encoder and VAE, and the graph uses `UnetLoaderGGUF`/`UNETLoader` +
+`CLIPLoader(type="flux2")` + `VAELoader` instead of `CheckpointLoaderSimple`.
+
+**It needs FLUX.2-specific nodes.** `EmptyFlux2LatentImage`, a
+*resolution-aware* `Flux2Scheduler`, and `SamplerCustomAdvanced` + `BasicGuider`
+— not `EmptySD3LatentImage`/`KSampler`. These names were read off a live
+`/object_info`, not assumed; guessing here yields a runtime "value not in list"
+at best and plausible noise at worst.
+
+**dev and klein use different text encoders.** dev pairs with
+Mistral-Small-3.2-24B, klein with **Qwen3-4B**. They are not interchangeable,
+and swapping them does not fail at load — it fails deep in sampling with
+`mat1 and mat2 shapes cannot be multiplied (512x15360 and 7680x3072)`.
+
+### The 32B is slow, and that is the point
+
+Measured on tower, 1024×1024, in isolation:
+
+| | Cold | Warm | GPU peak |
+|---|--:|--:|--:|
+| `flux2_klein` (4B fp8) | ~100 s | **~25 s** | ~9.4 GB |
+| `flux2_local` (32B Q4_K_M) | — | **~600 s** | ~13.7 GB |
+
+The 32B streams roughly 30 GB of weights (18.7 GB transformer + 11.4 GB
+encoder) from system RAM through a 16 GB card on every run. Its client timeout
+is raised to 2400 s accordingly — the first measurement came in at **600.5 s**,
+half a second past FLUX.1's 600 s budget, so sharing one timeout would have
+failed the very first real request.
+
+**Do not run the 32B at 4K.** The upscale path samples at ~2 MP, which on this
+model means roughly 20 minutes before the upscale even starts. It is not
+blocked, but nothing about it is pleasant.
+
+### One ComfyUI process per row
+
+Each image row gets its own port (`:8188` FLUX.1, `:8189` FLUX.2 dev, `:8190`
+klein) and therefore its own ComfyUI process. One ComfyUI *could* serve every
+model — the workflow names the weights per request — but this repo's process
+layer keys start/stop, restart-inheritance, the idle watchdog and the port check
+by model id, so a shared port would let one row's idle unload kill a server
+another row is mid-request on.
+
+That in turn requires per-process state: each instance is given its own
+`--user-directory` and `--temp-directory` under `data/comfyui/<model_id>/`.
+Sharing them means the second instance loses the SQLite race and starts degraded
+with *"Could not acquire lock on database … Another ComfyUI process may already
+be using it"*.
+
+**Two image models resident at once can fail a generation.** These rows are the
+first thing in the repo that can put two ComfyUI processes on the GPU
+simultaneously, and between them they can want more than 16 GB. The hub's VRAM
+policy is deliberately *advisory* — `on_demand.py` logs an overcommit warning and
+proceeds, because "eviction arbitration is explicitly out of scope" (#375/#422) —
+so the failure surfaces as a 502 from the losing request, e.g.
+`KSampler raised RuntimeError: HostBuffer.read_file_slice failed`. It is not a
+corrupted state and needs no cleanup: stop the other image model (admin Models
+tab) or wait out its 15-minute idle unload, and the request succeeds. Requesting
+one image model at a time is the supported pattern.
+
+### Install
+
+`scripts/install_comfyui.py` also provisions **city96's ComfyUI-GGUF** custom
+node, pinned to an explicit commit (that repo publishes neither tags nor
+releases, so `main` alone would not be reproducible). Stock ComfyUI cannot load
+a `.gguf` diffusion model at all, so without it `flux2_local` is simply
+unloadable.
+
+It additionally **pins `transformers==4.57.6`** into ComfyUI's venv. ComfyUI asks
+for `transformers>=4.50.3` with no upper bound, so pip installs 5.x, which
+changed `MistralConverter.__init__` to take a positional `vocab_file` while
+ComfyUI v0.31.0 still calls it as `MistralConverter(vocab=…)`. The mismatch is
+invisible until a FLUX.2 generation actually loads the Mistral encoder, where it
+surfaces as `CLIPLoader raised TypeError: MistralConverter.__init__() missing 1
+required positional argument: 'vocab_file'`. Re-check this pin on a ComfyUI bump.
 
 ## The contract
 

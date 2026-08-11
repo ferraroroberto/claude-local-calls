@@ -26,6 +26,11 @@ Thumbs.db
 data/logs/
 data/output/
 data/telemetry/
+# Per-model ComfyUI runtime state (#498) — each image row runs its own ComfyUI
+# process, and a shared user directory means the second instance cannot acquire
+# the SQLite lock. Holds that database, per-instance settings, and the temp
+# directory generated images land in.
+data/comfyui/
 data/code_usage_history.json
 # Diagnostics capture store (issue #315) — per-machine runtime data, plus the
 # SQLite WAL/shm sidecars. config/diagnostics_{apps,rules}.json ARE committed:

@@ -54,6 +54,15 @@ Subscription-backed cloud routes (no GPU, no API keys, no Cloud project):
   upscaled (#497). Generation only; editing stays on `gemini_image`. Install with
   `scripts/install_comfyui.py` — see
   [docs/image-generation.md](docs/image-generation.md).
+- **`flux2_klein`** (alias `klein`) and **`flux2_local`** (alias `flux2`) —
+  **FLUX.2** on the same GPU, same contract (#498). klein is the distilled 4B
+  and the fastest local option at **~25 s** per 1024² image; `flux2_local` is
+  the 32B [dev] at Q4_K_M and is the quality ceiling this card can reach at
+  all, at **~10 minutes** per image (it streams ~30 GB of weights from system
+  RAM every run — don't ask it for 4K). FLUX.2 is a *split-loader* model
+  (separate transformer / text encoder / VAE) with its own ComfyUI nodes, and
+  dev and klein use **different** text encoders — Mistral-Small-24B vs
+  Qwen3-4B, not interchangeable.
 
 Self-hosted entries in active use as of the May 2026 frontier reading. A row
 runs on whichever machine `config/models.yaml` gives it — not necessarily the

@@ -79,10 +79,11 @@ _IMAGE_BACKEND_INFO = {
 }
 
 # Per-model cost, measured on tower at 1024x1024 (#492/#497/#498). Keyed by id
-# because the three local rows differ by a factor of ~24 — a single
+# because the local rows differ by ~3x in speed and in *which* prompts they
+# get right (klein miscounts, flux1 doesn't) — a single
 # backend-level note would be useless for choosing between them.
 _IMAGE_MODEL_NOTES = {
-    "flux1_local": "FLUX.1 [dev] — ~44 s warm. Slower than klein but better at "
+    "flux1_local": "FLUX.1 [dev] — ~42 s warm. Slower than klein but better at "
                    "exact counts and spatial relations, and the only model "
                    "whose 4K upscale path is exercised end to end.",
     "flux2_klein": "FLUX.2 [klein] 4B — ~14 s warm, ~100 s cold. Fastest local "

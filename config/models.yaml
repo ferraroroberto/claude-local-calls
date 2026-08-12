@@ -378,7 +378,7 @@ models:
     # sampling, 5741 MB peak. Well under the fp8 checkpoint's 17.25 GB on disk
     # because ComfyUI's RAM-pressure cache keeps weights in system RAM and
     # streams them per run (which is also why a warm generation still takes
-    # ~40 s rather than seconds).
+    # ~42 s rather than seconds).
     est_vram_mb: 5700
     hf_repo: "Comfy-Org/flux1-dev"
     hf_pattern: "flux1-dev-fp8.safetensors"

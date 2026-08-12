@@ -359,7 +359,10 @@ def test_refine_is_ignored_for_a_native_size(monkeypatch):
 # --- FLUX.2 split-loader graph (#498) ------------------------------------
 
 _F2 = dict(unet_name="flux-2-klein-4b-fp8.safetensors",
-           clip_name="mistral_3_small_flux2_fp4_mixed.safetensors",
+           # klein's real encoder. Deliberately not the Mistral build the
+           # removed [dev] row used — a fixture naming it would sit oddly
+           # beside the test asserting klein never pairs with Mistral.
+           clip_name="qwen_3_4b_fp4_flux2.safetensors",
            vae_name="flux2-vae.safetensors")
 
 

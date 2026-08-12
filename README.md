@@ -47,7 +47,7 @@ Subscription-backed cloud routes (no GPU, no API keys, no Cloud project):
   beyond the model's own. Runs `startup: on_demand` — the first request loads
   it and 15 idle minutes unload it again, so it isn't holding GPU memory
   against the always-on agentic/voice rotation. Not fast: measured ~55 s cold
-  and ~40 s warm at 1024x1024 / 20 steps (ComfyUI re-streams weights from
+  and ~42 s warm at 1024x1024 / 20 steps (ComfyUI re-streams weights from
   system RAM each run, so warm barely beats cold), for a measured ~5.7 GB peak
   on the GPU. Unlike Imagen it **honours `size`** — presets from `square` up to
   `4k`, where anything above ~2 MP is sampled at a native-safe size and then

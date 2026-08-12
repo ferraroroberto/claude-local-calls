@@ -12,7 +12,7 @@ there's real usage to judge by (#492).
 | Model id | Backend | Where it runs | Editing | Typical latency |
 |---|---|---|---|---|
 | `gemini_image` | Google Imagen via the `agy` CLI | Google's servers, on the AI Pro/Ultra subscription | yes (procedural, slow) | seconds |
-| `flux1_local` (alias `flux`) | FLUX.1 [dev] fp8 via ComfyUI | tower's RTX 5060 Ti, fully local | no | ~40 s at 1024², ~96 s at 4K |
+| `flux1_local` (alias `flux`) | FLUX.1 [dev] fp8 via ComfyUI | tower's RTX 5060 Ti, fully local | no | ~42 s at 1024², ~96 s at 4K |
 | `flux2_klein` (alias `klein`) | FLUX.2 [klein] 4B fp8 via ComfyUI | same GPU | no | **~14 s** at 1024² |
 
 **Which to reach for**, from the controlled comparison below: **`flux2_klein`** is the default — 3x faster than FLUX.1 and better at texture and typography. Reach for **`flux1_local`** when the prompt contains **numbers or spatial relations**, or when you want 4K (it is the only model whose upscale path is exercised end to end). A third row, FLUX.2 [dev] 32B, was added in #498 and **removed in #501 as unusable** — see below.
@@ -251,7 +251,7 @@ a control that does nothing.
   misleading "not an image-generation model".
 - **It is not fast, warm or cold.** Measured on tower at 1024x1024 / 20 steps:
   **~55 s** for the first request after an idle unload (ComfyUI takes ~40 s to
-  boot and accept work) and **~40 s** warm. Warm is not much better than cold
+  boot and accept work) and **~42 s** warm. Warm is not much better than cold
   because ComfyUI runs a *RAM-pressure cache*: it parks weights in system RAM
   between runs and re-streams them to the GPU each time, so the upload is paid
   per generation rather than once per load. That is also why the GPU footprint
@@ -340,7 +340,7 @@ Four prompt types, same seeds, 1024², plus a **second klein seed as a variance
 ruler** — klein's two seeds made near-identical choices on every prompt, so the
 differences below are signal rather than one lucky sample.
 
-| Test | `flux2_klein` (~14 s) | `flux1_local` (~44 s) |
+| Test | `flux2_klein` (~14 s) | `flux1_local` (~42 s) |
 |---|---|---|
 | Rendered text ("NORTHWIND BAKERY") | correct **and** serif as asked, both seeds | correct spelling, but sans-serif |
 | Counting ("three apples, one pear") | **2 apples — wrong on both seeds** | exactly 3 ✓, spatial relations ✓ |

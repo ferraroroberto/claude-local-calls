@@ -87,7 +87,7 @@ hosts:
     # spawning it locally. install.py's local_models() filter (only rows
     # this host actually owns) keeps this from triggering a download/port
     # check for a model tower will never run itself.
-    enabled: [qwen35_4b, qwen35_4b_nothink, gemma4_e4b, gemma4_26b, whisper, whisper_translate, whisper_vanilla, piper, chatterbox, orpheus, kokoro, qwen, parakeet, flux1_local, flux2_local, flux2_klein]
+    enabled: [qwen35_4b, qwen35_4b_nothink, gemma4_e4b, gemma4_26b, whisper, whisper_translate, whisper_vanilla, piper, chatterbox, orpheus, kokoro, qwen, parakeet, flux1_local, flux2_klein]
 
   mac-mini-m4:
     platform: darwin
@@ -378,7 +378,7 @@ models:
     # sampling, 5741 MB peak. Well under the fp8 checkpoint's 17.25 GB on disk
     # because ComfyUI's RAM-pressure cache keeps weights in system RAM and
     # streams them per run (which is also why a warm generation still takes
-    # ~40 s rather than seconds).
+    # ~42 s rather than seconds).
     est_vram_mb: 5700
     hf_repo: "Comfy-Org/flux1-dev"
     hf_pattern: "flux1-dev-fp8.safetensors"
@@ -396,57 +396,15 @@ models:
   # than EmptySD3LatentImage/KSampler. Node names verified against a live
   # ComfyUI /object_info, not assumed.
   #
-  # The two rows share the FLUX.2 VAE but NOT the text encoder: dev pairs with
-  # Mistral-Small-3.2-24B, klein with Qwen3-4B. Do not "simplify" them onto one
-  # encoder — the mismatch is not caught at load, it fails deep in sampling with
-  # `mat1 and mat2 shapes cannot be multiplied (512x15360 and 7680x3072)`.
-  flux2_local:
-    display_name: flux2-dev
-    backend: comfyui
-    engine: comfyui-server
-    workflow: flux2
-    host: tower
-    image_gen: true
-    aliases: ["flux2_local", "flux2"]
-    # Its own port, and therefore its own ComfyUI process, rather than sharing
-    # flux1_local's :8188. One ComfyUI *could* serve every model — the workflow
-    # names the weights per request — but this repo's process layer is built
-    # around one process per row: start/stop, inherit-on-restart, the idle
-    # watchdog and the port check are all keyed by model id. Sharing a port
-    # would let one row's idle unload kill the server another row is mid-
-    # request on. `startup: on_demand` bounds the cost: at most one of these is
-    # normally resident, and 15 idle minutes reclaim it.
-    port: 8189
-    startup: on_demand
-    idle_unload_minutes: 15
-    # The quality ceiling this 16 GB card can reach at all: a 32B transformer
-    # at Q4_K_M (18.7 GB on disk) plus a 24B text encoder, streamed per run.
-    # MEASURED on tower 2026-08-11: ~13700 MB peak (15076 MB board total against
-    # a 1348 MB baseline). A 1024x1024 image takes ~10 MINUTES — this is the
-    # "can it run at all" row, not an everyday one. See docs/image-generation.md.
-    est_vram_mb: 13700
-    hf_repo: "city96/FLUX.2-dev-gguf"
-    hf_pattern: "flux2-dev-Q4_K_M.gguf"
-    model_path: "models/comfyui/diffusion_models/flux2-dev-Q4_K_M.gguf"
-    extra_weights:
-      # fp4-mixed rather than the 18 GB fp8 build: it is Comfy-Org's own
-      # packaging and fp4 is native on this Blackwell card (sm_120).
-      - role: text_encoder
-        path: "models/comfyui/text_encoders/mistral_3_small_flux2_fp4_mixed.safetensors"
-        hf_repo: "Comfy-Org/flux2-dev"
-        hf_pattern: "split_files/text_encoders/mistral_3_small_flux2_fp4_mixed.safetensors"
-      - role: vae
-        path: "models/comfyui/vae/flux2-vae.safetensors"
-        hf_repo: "Comfy-Org/flux2-dev"
-        hf_pattern: "split_files/vae/flux2-vae.safetensors"
-
-  # The distilled 4B sibling — the everyday FLUX.2 option. Same graph and the
-  # same VAE as flux2_local, but a **different text encoder**: klein pairs with
-  # Qwen3-4B, not dev's Mistral-Small-24B. That is not interchangeable — using
-  # dev's encoder here fails deep in sampling with
-  # `mat1 and mat2 shapes cannot be multiplied (512x15360 and 7680x3072)`,
-  # never at load. Its transformer is plain fp8 safetensors, so it uses the
-  # stock UNETLoader rather than the GGUF custom node.
+  # There was a second row here — `flux2_local`, FLUX.2 [dev] 32B at Q4_K_M.
+  # It was removed in #501 as unusable on this GPU: ~586 s *per sampling step*,
+  # roughly 4 hours per 1024x1024 image, once anything else had run. A 32B
+  # transformer plus a 24B text encoder cannot stay resident on 16 GB, so every
+  # step re-uploads ~30 GB of weights. Don't re-add it here without a bigger
+  # card; the full measurement is in #501 and docs/image-generation.md.
+  #
+  # klein pairs with Qwen3-4B, NOT the Mistral-Small-24B encoder that dev used.
+  # Its transformer is plain fp8 safetensors, so it uses the stock UNETLoader.
   flux2_klein:
     display_name: flux2-klein-4b
     backend: comfyui
@@ -455,12 +413,20 @@ models:
     host: tower
     image_gen: true
     aliases: ["flux2_klein", "klein"]
-    port: 8190  # own process, same reasoning as flux2_local above
+    # Its own port, and therefore its own ComfyUI process, rather than sharing
+    # flux1_local's :8188. One ComfyUI *could* serve every model — the workflow
+    # names the weights per request — but this repo's process layer is built
+    # around one process per row: start/stop, inherit-on-restart, the idle
+    # watchdog and the port check are all keyed by model id. Sharing a port
+    # would let one row's idle unload kill the server another row is mid-
+    # request on. `startup: on_demand` bounds the cost.
+    port: 8190
     startup: on_demand
     idle_unload_minutes: 15
     # MEASURED on tower 2026-08-11: ~9400 MB peak (10667 MB board total against
     # a 1310 MB baseline) — 3.8 GB fp8 transformer plus the Qwen3-4B encoder.
-    # ~25 s warm at 1024x1024, ~100 s cold: the everyday FLUX.2 option.
+    # ~14 s warm at 1024x1024, ~100 s cold — the fastest local image model and
+    # the Playground default. Weak at exact counts; see docs/image-generation.md.
     est_vram_mb: 9400
     hf_repo: "black-forest-labs/FLUX.2-klein-4b-fp8"
     hf_pattern: "flux-2-klein-4b-fp8.safetensors"

@@ -389,44 +389,35 @@ def test_flux1_row_maps_to_the_all_in_one_spec():
     assert spec.unet_name is None
 
 
-def test_flux2_dev_row_maps_to_a_split_gguf_spec():
-    spec = images_mod.model_spec_for(_row("flux2_local"))
+def test_flux2_klein_row_maps_to_a_split_spec():
+    """klein is a split-loader model: transformer, text encoder and VAE are
+    three separate files, unlike flux1_local's all-in-one checkpoint."""
+    spec = images_mod.model_spec_for(_row("flux2_klein"))
     assert spec.workflow == "flux2"
-    assert spec.unet_name.endswith(".gguf")
-    assert spec.gguf is True          # stock ComfyUI cannot load a .gguf unet
+    assert spec.ckpt_name is None
+    assert spec.unet_name.endswith(".safetensors")
     assert spec.clip_name and spec.vae_name
 
 
-def test_flux2_klein_row_uses_the_stock_loader():
+def test_klein_uses_the_qwen_encoder_not_mistral():
+    """klein pairs with Qwen3-4B. The removed FLUX.2 [dev] row used
+    Mistral-Small-24B, and the two are not interchangeable — swapping them does
+    not fail at load, it fails deep in sampling with 'mat1 and mat2 shapes
+    cannot be multiplied', which is miserable to debug from a config file."""
     spec = images_mod.model_spec_for(_row("flux2_klein"))
-    assert spec.workflow == "flux2"
-    assert spec.gguf is False         # plain fp8 safetensors
-    assert spec.unet_name.endswith(".safetensors")
-
-
-def test_klein_and_dev_do_not_share_a_text_encoder():
-    """Regression: klein pairs with Qwen3-4B, dev with Mistral-Small-24B.
-    Swapping them does not fail at load — it fails deep in sampling with
-    'mat1 and mat2 shapes cannot be multiplied', which is a miserable thing to
-    debug from a config file."""
-    dev = images_mod.model_spec_for(_row("flux2_local"))
-    klein = images_mod.model_spec_for(_row("flux2_klein"))
-    assert dev.clip_name != klein.clip_name
-    assert "mistral" in dev.clip_name.lower()
-    assert "qwen" in klein.clip_name.lower()
-    # They *do* share the VAE — that part is interchangeable.
-    assert dev.vae_name == klein.vae_name
+    assert "qwen" in spec.clip_name.lower()
+    assert "mistral" not in spec.clip_name.lower()
 
 
 def test_spec_basenames_the_registry_paths():
     """The registry stores repo-relative paths so the downloader knows where
     files belong; ComfyUI resolves by bare filename inside its search path."""
-    spec = images_mod.model_spec_for(_row("flux2_local"))
+    spec = images_mod.model_spec_for(_row("flux2_klein"))
     for name in (spec.unet_name, spec.clip_name, spec.vae_name):
         assert "/" not in name and "\\" not in name
 
 
-@pytest.mark.parametrize("model_id", ["flux2_local", "flux2_klein"])
+@pytest.mark.parametrize("model_id", ["flux2_klein"])
 def test_flux2_rows_generate_through_the_route(monkeypatch, model_id):
     _row(model_id)
     seen = {}
@@ -448,19 +439,21 @@ def test_flux2_rows_generate_through_the_route(monkeypatch, model_id):
     assert seen["spec"].workflow == "flux2"
 
 
-def test_flux2_rows_have_their_own_ports():
+def test_image_rows_have_their_own_ports():
     """One ComfyUI could serve every model, but this repo's process layer keys
     start/stop, inheritance and idle-unload by model id — a shared port would
     let one row's idle unload kill a server another row is mid-request on."""
-    ports = {mid: _row(mid).port
-             for mid in ("flux1_local", "flux2_local", "flux2_klein")}
-    assert len(set(ports.values())) == 3, ports
+    ports = {mid: _row(mid).port for mid in ("flux1_local", "flux2_klein")}
+    assert len(set(ports.values())) == len(ports), ports
 
 
-def test_list_models_includes_the_flux2_rows():
+def test_list_models_includes_klein_and_not_the_removed_dev_row():
+    """#501 removed flux2_local as unusable (~4 h/image). It must be gone from
+    the served surface, not merely unlisted somewhere."""
     client = TestClient(server_mod.app)
     ids = {m["id"] for m in client.get("/v1/models").json()["data"]}
-    assert {"flux2_local", "flux2_klein"} <= ids
+    assert "flux2_klein" in ids
+    assert "flux2_local" not in ids
 
 
 def test_list_models_includes_flux1_local():

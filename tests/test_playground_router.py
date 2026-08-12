@@ -249,27 +249,27 @@ def _image_models():
 
 def test_image_card_defaults_to_the_fastest_local_model():
     """The dropdown's first entry is what a user gets without choosing. It must
-    be local (not the subscription path) and, among the local models, not the
-    one that takes ten minutes — the three differ by a factor of ~24.
+    be local (not the subscription path) and the quickest local model — klein
+    is ~3x faster than flux1 at 1024x1024.
     """
     models = _image_models()["models"]
     ids = [m["id"] for m in models]
     if "flux2_klein" not in ids:
-        return  # host without the FLUX.2 rows enabled
+        return  # host without the FLUX.2 row enabled
     assert ids[0] == "flux2_klein"
-    assert ids.index("flux2_local") > ids.index("flux1_local")
+    if "flux1_local" in ids:
+        assert ids.index("flux2_klein") < ids.index("flux1_local")
     # Subscription rows sort after every size-honouring local one.
     if "gemini_image" in ids:
         assert ids.index("gemini_image") > ids.index("flux2_klein")
 
 
 def test_image_models_carry_per_model_cost_copy():
-    """A backend-level note cannot tell a user that one local model is 24x
-    slower than another, so each row carries its own."""
+    """A backend-level note cannot tell a user that one local model is 3x
+    slower than another, or which one miscounts, so each row carries its own."""
     models = {m["id"]: m for m in _image_models()["models"]}
-    if "flux2_local" not in models:
+    if "flux2_klein" not in models or "flux1_local" not in models:
         return
-    assert "MINUTE" in models["flux2_local"]["note"].upper()
-    assert models["flux2_local"]["note"] != models["flux2_klein"]["note"]
+    assert models["flux2_klein"]["note"] != models["flux1_local"]["note"]
     for row in models.values():
         assert row["note"].strip()

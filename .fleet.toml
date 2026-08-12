@@ -6,7 +6,7 @@ layer       = "enabling"
 icon        = "🧠"
 port        = ":8000"
 description = "Shared LLM gateway — routes to local models or claude -p."
-chips       = ["claude -p", "agy gemini", "qwen35-4b :8088", "gemma-26b :8087", "voice → gaming+mac", "tts :8092+", "flux1-dev :8188", "flux2-dev :8189", "flux2-klein :8190"]
+chips       = ["claude -p", "agy gemini", "qwen35-4b :8088", "gemma-26b :8087", "voice → gaming+mac", "tts :8092+", "flux1-dev :8188", "flux2-klein :8190"]
 
 # Diff-proportionate e2e routing (project-scaffolding docs/e2e-routing.md).
 # Rules are evaluated top-to-bottom; first match wins. Unmatched paths fall

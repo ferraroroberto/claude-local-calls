@@ -284,8 +284,8 @@ one fails in a way that is hard to diagnose from a config file:
 **It is a split-loader model.** FLUX.1 [dev] fp8 is one all-in-one checkpoint
 (transformer + text encoders + VAE). FLUX.2 ships three separate files, so the
 row carries `model_path` (the transformer) plus `extra_weights` for the text
-encoder and VAE, and the graph uses `UnetLoaderGGUF`/`UNETLoader` +
-`CLIPLoader(type="flux2")` + `VAELoader` instead of `CheckpointLoaderSimple`.
+encoder and VAE, and the graph uses `UNETLoader` + `CLIPLoader(type="flux2")` +
+`VAELoader` instead of `CheckpointLoaderSimple`.
 
 **It needs FLUX.2-specific nodes.** `EmptyFlux2LatentImage`, a
 *resolution-aware* `Flux2Scheduler`, and `SamplerCustomAdvanced` + `BasicGuider`
@@ -349,8 +349,7 @@ differences below are signal rather than one lucky sample.
 
 klein is faster *and* better on texture and typography, but **systematically
 miscounts** — reproducibly, not by chance. If a prompt says "three of X", use
-`flux1_local`. It is not
-blocked, but nothing about it is pleasant.
+`flux1_local`.
 
 ### One ComfyUI process per row
 

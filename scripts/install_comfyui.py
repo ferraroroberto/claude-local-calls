@@ -350,9 +350,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif already_installed():
         log.info("ComfyUI already installed at %s", VENDOR_DIR)
         write_extra_model_paths()  # cheap; keeps the path file in sync
-        # Backfill assets an older install predates, and re-pin the custom
-        # so adding the upscaler (#497) or bumping a pinned dep does not
-        # require a --force wipe of a working install.
+        # Backfill assets an older install predates, so adding the upscaler
+        # (#497) or bumping a pinned dep does not require a --force wipe of an
+        # otherwise working install.
         ensure_upscale_model()
         apply_pinned_deps()
         verify_cuda()

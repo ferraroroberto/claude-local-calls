@@ -425,7 +425,8 @@ models:
     idle_unload_minutes: 15
     # MEASURED on tower 2026-08-11: ~9400 MB peak (10667 MB board total against
     # a 1310 MB baseline) — 3.8 GB fp8 transformer plus the Qwen3-4B encoder.
-    # ~25 s warm at 1024x1024, ~100 s cold: the everyday FLUX.2 option.
+    # ~14 s warm at 1024x1024, ~100 s cold — the fastest local image model and
+    # the Playground default. Weak at exact counts; see docs/image-generation.md.
     est_vram_mb: 9400
     hf_repo: "black-forest-labs/FLUX.2-klein-4b-fp8"
     hf_pattern: "flux-2-klein-4b-fp8.safetensors"

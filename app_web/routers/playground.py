@@ -82,13 +82,12 @@ _IMAGE_BACKEND_INFO = {
 # because the three local rows differ by a factor of ~24 — a single
 # backend-level note would be useless for choosing between them.
 _IMAGE_MODEL_NOTES = {
-    "flux1_local": "FLUX.1 [dev] — ~40 s warm. The middle option, and the one "
+    "flux1_local": "FLUX.1 [dev] — ~44 s warm. Slower than klein but better at "
+                   "exact counts and spatial relations, and the only model "
                    "whose 4K upscale path is exercised end to end.",
-    "flux2_klein": "FLUX.2 [klein] 4B — ~25 s warm, ~100 s cold. Fastest local "
-                   "model and the everyday choice.",
-    "flux2_local": "FLUX.2 [dev] 32B — ~10 MINUTES per image. The quality "
-                   "ceiling this GPU can reach at all: a 32B transformer "
-                   "streamed from system RAM. Avoid at 4K.",
+    "flux2_klein": "FLUX.2 [klein] 4B — ~14 s warm, ~100 s cold. Fastest local "
+                   "model and the default. Stronger on texture and typography; "
+                   "weaker when the prompt specifies how many of something.",
 }
 
 
@@ -119,10 +118,10 @@ async def playground_image_models() -> Dict[str, Any]:
                     "note": " ".join(x for x in (per_model, info.get("note", "")) if x),
                 }
             )
-    # Local-first, then cheapest: the default selection should cost nothing and
-    # honour the controls this card exposes, and among the local models it
-    # should not be the one that takes ten minutes.
-    _PREFERENCE = ["flux2_klein", "flux1_local", "flux2_local"]
+    # Local-first, then cheapest: the default selection should cost nothing,
+    # honour the controls this card exposes, and be the quickest local model —
+    # klein is ~3x faster than flux1 at 1024x1024.
+    _PREFERENCE = ["flux2_klein", "flux1_local"]
 
     def _rank(row):
         try:

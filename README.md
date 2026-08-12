@@ -54,15 +54,16 @@ Subscription-backed cloud routes (no GPU, no API keys, no Cloud project):
   upscaled (#497). Generation only; editing stays on `gemini_image`. Install with
   `scripts/install_comfyui.py` — see
   [docs/image-generation.md](docs/image-generation.md).
-- **`flux2_klein`** (alias `klein`) and **`flux2_local`** (alias `flux2`) —
-  **FLUX.2** on the same GPU, same contract (#498). klein is the distilled 4B
-  and the fastest local option at **~25 s** per 1024² image; `flux2_local` is
-  the 32B [dev] at Q4_K_M and is the quality ceiling this card can reach at
-  all, at **~10 minutes** per image (it streams ~30 GB of weights from system
-  RAM every run — don't ask it for 4K). FLUX.2 is a *split-loader* model
-  (separate transformer / text encoder / VAE) with its own ComfyUI nodes, and
-  dev and klein use **different** text encoders — Mistral-Small-24B vs
-  Qwen3-4B, not interchangeable.
+- **`flux2_klein`** (alias `klein`) — **FLUX.2 [klein] 4B** on the same GPU and
+  the same contract (#498). The **fastest local model at ~14 s** per 1024²
+  image and the Playground default. A *split-loader* model (separate
+  transformer / text encoder / VAE, paired with Qwen3-4B) using FLUX.2's own
+  ComfyUI nodes. In a controlled comparison it beats FLUX.1 on texture and
+  typography but **systematically miscounts** — if the prompt says "three of
+  X", use `flux1_local`. A FLUX.2 [dev] 32B row was added in #498 and removed
+  in #501: it needs ~4 hours per image on a 16 GB card, which is not a model
+  but a science experiment. The measurement is kept in
+  [docs/image-generation.md](docs/image-generation.md).
 
 Self-hosted entries in active use as of the May 2026 frontier reading. A row
 runs on whichever machine `config/models.yaml` gives it — not necessarily the

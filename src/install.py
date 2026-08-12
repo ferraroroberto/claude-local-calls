@@ -471,36 +471,15 @@ def _check_comfyui() -> Check:
                      "run `python scripts/install_comfyui.py --verify`",
                      fix_id="comfyui", fix_label=fix_label)
 
-    # The GGUF custom node is checked separately from the engine because a
-    # missing one is invisible until generation time: stock ComfyUI cannot load
-    # a `.gguf` diffusion model, so `flux2_local` would sit in the model list
-    # looking healthy and fail with an unknown-node error on first use (#498).
-    # An unverifiable node is reported as its own state, never folded into ok.
-    gguf_rows = [m for m in local_models()
-                 if any((w.get("path") or "").endswith(".gguf")
-                        for w in ([{"path": m.model_path or ""}]
-                                  + list(getattr(m, "extra_weights", None) or [])))
-                 and m.backend == "comfyui"]
-    if gguf_rows:
-        head = install_comfyui.installed_gguf_node_sha()
-        if head is None:
-            return Check("comfyui", label, "missing",
-                         "ComfyUI-GGUF custom node is absent — "
-                         f"{', '.join(m.id for m in gguf_rows)} cannot load "
-                         "(stock ComfyUI cannot read a .gguf diffusion model)",
-                         fix_id="comfyui", fix_label=fix_label)
-        if head != install_comfyui.GGUF_NODE_PIN:
-            return Check("comfyui", label, "warn",
-                         f"ComfyUI-GGUF is at {head[:12]}, expected pin "
-                         f"{install_comfyui.GGUF_NODE_PIN[:12]} — re-run the "
-                         "installer to re-pin",
-                         fix_id="comfyui", fix_label=fix_label)
-
-    node_note = f", GGUF node {install_comfyui.GGUF_NODE_PIN[:12]}" if gguf_rows else ""
+    # No custom-node check here since #501 removed the only `.gguf` row. If a
+    # quantized model is ever re-added, the ComfyUI-GGUF node must be verified
+    # here too — a missing one is invisible until generation time, because
+    # stock ComfyUI cannot read that format and the row would sit in the model
+    # list looking healthy.
     return Check("comfyui", label, "ok",
                  f"ComfyUI {marker.get('comfyui_tag', '?')}, "
                  f"torch {marker.get('torch_version', '?')} "
-                 f"(CUDA {marker.get('cuda', '?')} verified){node_note}")
+                 f"(CUDA {marker.get('cuda', '?')} verified)")
 
 
 def _port_in_use(port: int) -> bool:

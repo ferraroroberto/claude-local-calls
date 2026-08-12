@@ -65,13 +65,6 @@ DEFAULT_SCHEDULER = "simple"
 # part of it back and forth between host and device on every run. The first
 # generation after a load is minutes; steady-state is far quicker.
 DEFAULT_TIMEOUT_S = 600.0
-# FLUX.2 [dev] is a 32B transformer paired with a 24B text encoder — roughly
-# 30 GB of weights streamed from system RAM through a 16 GB card on every run.
-# A 1024x1024 image measured **600.5 s** on tower, i.e. half a second past the
-# FLUX.1 budget above: the first real request would have failed on a timeout
-# that looks generous until you meet this model. Sized with genuine headroom
-# rather than trimmed to the one measurement (#498).
-FLUX2_TIMEOUT_S = 2400.0
 POLL_INTERVAL_S = 1.0
 # Per-HTTP-call timeouts. Distinct from the whole-generation budget above: a
 # submit that hangs means ComfyUI is wedged, not that the image is slow.
@@ -166,7 +159,6 @@ def build_flux2_workflow(
     unet_name: str,
     clip_name: str,
     vae_name: str,
-    gguf: bool,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     steps: int = DEFAULT_FLUX2_STEPS,
@@ -180,8 +172,9 @@ def build_flux2_workflow(
     separate files, so there is no ``CheckpointLoaderSimple`` to yield all
     three edges. Which encoder depends on the variant — Mistral-Small-24B for
     [dev], Qwen3-4B for [klein] — and they are **not** interchangeable; the
-    caller supplies the right one via ``clip_name``. It also needs FLUX.2-specific nodes, confirmed against a
-    live ``/object_info`` rather than assumed:
+    caller supplies the right one via ``clip_name``. It also needs
+    FLUX.2-specific nodes, confirmed against a live ``/object_info`` rather
+    than assumed:
 
     * ``EmptyFlux2LatentImage`` — its own latent shape.
     * ``Flux2Scheduler`` — a **resolution-aware** sigma schedule taking width
@@ -190,9 +183,11 @@ def build_flux2_workflow(
       conditioning, matching a guidance-distilled model, instead of KSampler's
       positive/negative pair with a CFG that would be a no-op.
 
-    ``gguf`` selects ``UnetLoaderGGUF`` (the quantized 32B dev transformer,
-    which stock ComfyUI cannot load at all) over the stock ``UNETLoader`` used
-    for klein's fp8 safetensors.
+    The transformer loads through the stock ``UNETLoader``. #498 also carried a
+    ``UnetLoaderGGUF`` branch for the quantized 32B [dev] transformer, dropped
+    with that row in #501 — see ``config/models.yaml``. Re-adding a ``.gguf``
+    model means restoring both the loader branch and the ComfyUI-GGUF custom
+    node, since stock ComfyUI cannot read that format at all.
 
     An empty negative prompt is built even though the sampling path ignores it:
     the shared refine tail runs a ``KSampler``, whose signature requires one.
@@ -200,15 +195,11 @@ def build_flux2_workflow(
     if seed is None:
         seed = random.getrandbits(63)
 
-    loader = (
-        {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": unet_name}}
-        if gguf else
-        {"class_type": "UNETLoader",
-         "inputs": {"unet_name": unet_name, "weight_dtype": weight_dtype}}
-    )
-
     graph: Dict[str, Any] = {
-        _F2_UNET: loader,
+        _F2_UNET: {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": unet_name, "weight_dtype": weight_dtype},
+        },
         _F2_CLIP: {
             "class_type": "CLIPLoader",
             # `type` must be "flux2" — verified present in CLIPLoader's live
@@ -596,7 +587,6 @@ class ModelSpec:
     # Not interchangeable; see the note in config/models.yaml.
     clip_name: Optional[str] = None
     vae_name: Optional[str] = None           # flux2
-    gguf: bool = False                       # flux2: quantized transformer
     steps: Optional[int] = None
     guidance: Optional[float] = None
 
@@ -613,7 +603,7 @@ def _build_graph(
         return build_flux2_workflow(
             prompt,
             unet_name=spec.unet_name, clip_name=spec.clip_name,
-            vae_name=spec.vae_name, gguf=spec.gguf,
+            vae_name=spec.vae_name,
             width=width, height=height,
             steps=spec.steps or DEFAULT_FLUX2_STEPS,
             guidance=spec.guidance if spec.guidance is not None else DEFAULT_FLUX2_GUIDANCE,
@@ -667,8 +657,7 @@ def generate_image(
         # Back-compat for the single-model call shape (#492/#497).
         spec = ModelSpec(workflow="flux1", ckpt_name=ckpt_name)
     if timeout_s is None:
-        timeout_s = (FLUX2_TIMEOUT_S if spec.workflow == "flux2"
-                     else DEFAULT_TIMEOUT_S)
+        timeout_s = DEFAULT_TIMEOUT_S
 
     base = base_url.rstrip("/")
     upscaling = needs_upscale(width, height)

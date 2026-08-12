@@ -113,15 +113,11 @@ def model_spec_for(model: Model) -> ModelSpec:
                          ckpt_name=checkpoint_name_for(model.model_path))
 
     by_role = {w.get("role"): w.get("path") for w in (model.extra_weights or [])}
-    unet = checkpoint_name_for(model.model_path)
     return ModelSpec(
         workflow="flux2",
-        unet_name=unet,
+        unet_name=checkpoint_name_for(model.model_path),
         clip_name=checkpoint_name_for(by_role.get("text_encoder")),
         vae_name=checkpoint_name_for(by_role.get("vae")),
-        # Stock ComfyUI cannot load a .gguf transformer; the loader choice
-        # follows the file, not a separate config flag that could disagree.
-        gguf=unet.lower().endswith(".gguf"),
     )
 
 

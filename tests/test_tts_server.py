@@ -372,7 +372,13 @@ class _SpeechUpstreamResponse:
 
 
 def test_hub_forwards_exact_spanish_speech_payload(monkeypatch):
+    """Regression for #508: this drives the real hub app against the real
+    ``config/models.yaml``, and ``kokoro-tts`` resolves to the ``on_demand``
+    kokoro row — without stubbing ``ensure_backend_ready_or_503`` this spawned
+    a real, uncontained ``tts_server`` subprocess (real ONNX weights on CUDA,
+    port 8095) on every run."""
     captured: dict = {}
+    ready_calls: list = []
 
     class _FakeClient:
         async def post(self, url, **kwargs):
@@ -381,6 +387,10 @@ def test_hub_forwards_exact_spanish_speech_payload(monkeypatch):
             return _SpeechUpstreamResponse()
 
     monkeypatch.setattr(server_audio_tts, "get_async_client", lambda: _FakeClient())
+    monkeypatch.setattr(
+        server_audio_tts, "ensure_backend_ready_or_503",
+        lambda model: ready_calls.append(model.id),
+    )
     payload = {
         "model": "kokoro-tts",
         "input": "Hola, esta es una prueba.",
@@ -393,6 +403,7 @@ def test_hub_forwards_exact_spanish_speech_payload(monkeypatch):
     assert response.status_code == 200
     assert captured["url"] == "http://127.0.0.1:8095/v1/audio/speech"
     assert json.loads(captured["content"]) == payload
+    assert ready_calls == ["kokoro"]
 
 
 def test_hub_rejects_explicit_unknown_tts_model():

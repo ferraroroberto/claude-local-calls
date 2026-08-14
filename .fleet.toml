@@ -8,6 +8,12 @@ port        = ":8000"
 description = "Shared LLM gateway — routes to local models or claude -p."
 chips       = ["claude -p", "agy gemini", "qwen35-4b :8088", "gemma-26b :8087", "voice → gaming+mac", "tts :8092+", "flux1-dev :8188", "flux2-klein :8190"]
 
+# Extra gitignored path an agent worktree needs junctioned in alongside .venv
+# so this repo's own gate can pass there (fleet-config#620). Read by
+# worktree_junction_targets() in fleet-config/skills/_lib/worktree_claim.py.
+[worktree]
+extra_junctions = ["vendor/comfyui"]
+
 # Diff-proportionate e2e routing (project-scaffolding docs/e2e-routing.md).
 # Rules are evaluated top-to-bottom; first match wins. Unmatched paths fall
 # through to `full` by design — see the doc before narrowing this table.

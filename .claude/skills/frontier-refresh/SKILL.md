@@ -6,11 +6,9 @@ description: Recurring (bi-weekly) local-AI efficient-frontier research run — 
 You are running the **local-AI frontier refresh** for this repo. You produce
 artifacts and a ledger comment only — never modify `config/models.yaml`,
 `launchers/`, `models/`, or `tray/`. Acting on the result is a separate,
-human-in-the-loop step driven by `/swap-model`.
-
-This file is the **single owner** of the whole process: research brief,
-cadence, quality weights, output contract, scheduling. There is no separate
-research-prompt document.
+human-in-the-loop step driven by `/swap-model`. This file is the **single
+owner** of the whole process (research brief, cadence, quality weights, output
+contract, scheduling) — there is no separate research-prompt document.
 
 ## Cadence & scheduling
 
@@ -23,10 +21,10 @@ research-prompt document.
   re-runnable; a notable model launch is a good reason not to wait.
 
 **Unattended constraint (fleet-config#314):** every step below must run
-**synchronously** within the turn. A headless `claude -p` session has no
-wake-up mechanism — never background a tool call (web research, artifact
+**synchronously** within the turn — a headless `claude -p` session has no
+wake-up mechanism. Never background a tool call (web research, artifact
 writing, `gh issue comment`, git push) and end the turn expecting to be
-resumed. If a step is long, poll it to completion before moving on.
+resumed; poll a long step to completion before moving on.
 
 ## Research brief
 
@@ -127,9 +125,9 @@ is out of scope for a run:
 
 Three artifacts under `docs/frontier/runs/<today>/`, plus the `LATEST`
 pointer and the ledger comment. Table shapes and section order are **fixed**
-so consecutive runs diff mechanically; the LLM narrative is kept but scoped
-to a short didactic paragraph per section explaining *why* the tables say
-what they say — tables carry the facts, prose carries the teaching.
+so consecutive runs diff mechanically; keep prose to a short didactic
+paragraph per section explaining *why* the tables say what they say — tables
+carry the facts.
 
 ### `report.md` — sections, in this exact order
 
@@ -202,8 +200,8 @@ admin SPA footer's 📈 Frontier link serves the latest run's copy.
 ### Ledger comment — issue #272
 
 Post one comment per run (`gh issue comment 272`) so the ledger's last
-comment always answers "what runs in each role, what's the best alternative,
-am I missing something?". Exact shape:
+comment always answers what runs in each role and what the best alternative
+is. Exact shape:
 
 ```markdown
 ## Frontier run <YYYY-MM-DD>
@@ -224,9 +222,9 @@ Single long lines, no hard wraps (rendered markdown).
    `config/models.yaml` → `models:` and `roles:` (current incumbents);
    `config/machine_specs.yaml` if present;
    **`docs/frontier/local-findings.md`** — locally-tested candidates whose
-   published numbers didn't hold up on this box (#277). This is the
+   published numbers didn't hold up on this box (#277). It is the
    deterministic run-over-run memory; ledger comments are NOT re-read, so a
-   disproof only reaches you through this file.
+   disproof reaches you only through this file.
 2. **Pick today's date** (`YYYY-MM-DD`). If today's run dir already exists,
    overwrite it — same-day re-runs are idempotent.
 3. **Run the research** per the brief above (web search; date-stamp claims).
@@ -255,9 +253,9 @@ Single long lines, no hard wraps (rendered markdown).
    > work this verdict calls for.
 
    One subagent per actionable verdict; `/issue-add`'s own duplicate check
-   (it scans open issues before creating) keeps repeat runs from re-filing
-   while the issue is still open. **Await every subagent to completion
-   within this turn** — in a headless scheduled run nothing resumes you
+   (it scans open issues first) keeps repeat runs from re-filing while the
+   issue is still open. **Await every subagent to completion within this
+   turn** — in a headless scheduled run nothing resumes you
    (fleet-config#314); never fire-and-forget. Include the filed (or
    deduped) issue numbers in the step-10 summary.
 9. **Commit the run** — scoped to the artifacts only:
@@ -276,8 +274,8 @@ Single long lines, no hard wraps (rendered markdown).
 ## What success looks like
 
 - `docs/frontier/runs/<today>/{report.md,frontier.json,frontier.html}` all
-  present, self-consistent, and following the output contract (§0 verdict
-  table + §8 progression table present with the exact columns)
+  present, self-consistent, following the output contract (§0 verdict table
+  + §8 progression table with the exact columns)
 - `docs/frontier/runs/LATEST` resolves to today
 - Ledger issue #272 has this run's comment
 - Every actionable verdict (`upgrade` / `runtime_upgrade` / `retire`) has an

@@ -1,8 +1,8 @@
 """Windows Job Object containment for hub subprocesses (#468).
 
 The single implementation of "assign a child to a job that kills its whole
-membership when the last handle closes". Two callers (#470 folded the second
-in, which had grown its own ~70-line ctypes copy):
+membership when the last handle closes". Three callers (#470 folded the second in, which had grown its own ~70-line
+ctypes copy; #507 added the third):
 
 * ``tests/e2e``'s ``hub_url`` fixture, containing a throwaway test hub and
   every backend it spawns — the incident this module was written for, below.
@@ -11,6 +11,12 @@ in, which had grown its own ~70-line ctypes copy):
   The hub stops a backend with ``TerminateProcess`` — no ``atexit``, no
   ``finally`` — so a grandchild in its own process group would otherwise leak,
   holding GPU VRAM and its internal port.
+* ``run_backend._self_contain`` (#507): the same incident shape as the
+  ``hub_url`` fixture, but for ``python -m src.run_backend hub`` — the
+  manual/verification launch surface a build agent runs a worktree's own hub
+  from, rather than a pytest fixture spawning one externally. That hub
+  assigns *itself* to the job instead of being assigned to one by an outside
+  harness, since nothing external is wrapping it.
 
 A verification run (``tests/e2e``'s ``hub_url`` fixture) boots a throwaway
 hub as a plain ``subprocess.Popen``. If a test drives an ``on_demand``

@@ -22,6 +22,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+from . import win_job
 from .backend_process import (
     build_command,
     external_pid as backend_external_pid,
@@ -40,6 +41,43 @@ from .server_process import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _self_contain() -> None:
+    """Bind every backend this hub spawns to this process's own lifetime (#507).
+
+    ``python -m src.run_backend hub`` is the manual/verification launch
+    surface — a developer or a build/verification agent running a worktree's
+    own hub for live testing. It is never how the tray runs the production
+    hub (``tray/tray.py`` spawns ``-m src.server`` directly, bypassing this
+    module entirely), which matters because the tray's hub deliberately
+    leaves on-demand backends (e.g. an on-demand TTS row) running across its
+    *own* restart so ``backend_process.inherit_running_backends`` can reclaim
+    them — see ``src/win_job.py``'s module docstring. A verification hub has
+    no such reinheritance story: nothing is ever going to reclaim what it
+    spawns, so there is no feature to preserve, only an orphan risk to close.
+
+    Without this, a verification hub that is killed abnormally (an agent
+    process that is force-killed, times out, or ends its turn early) skips
+    its ASGI shutdown handler (``server_lifecycle.stop_backend_children``)
+    entirely, and any backend it spawned on demand — deliberately started
+    with ``CREATE_NEW_PROCESS_GROUP`` so a restart's CTRL_BREAK doesn't hit
+    it — survives as an orphan, pinning whatever worktree it's rooted in
+    (the exact incident #507 reports twice). Assigning this process to a
+    kill-on-close Job Object *before* any backend is spawned means every
+    future ``backend_process.start()`` child inherits job membership
+    automatically (job membership propagates to descendants unless a child
+    opts out with ``CREATE_BREAKAWAY_FROM_JOB``, which nothing here does),
+    so Windows reaps the whole tree the moment this process's handles close
+    — on a clean exit or a hard kill alike.
+
+    Best-effort, matching ``win_job``'s own contract: a failure here
+    (non-Windows, any API error) never blocks the hub from starting.
+    """
+    job = win_job.create_kill_on_close_job(f"local-llm-hub-verify-{os.getpid()}")
+    if job:
+        win_job.assign_pid(job, os.getpid())
+        log.info("self-contained in a kill-on-close job — spawned backends die with this process (#507)")
+
+
 def _run_hub() -> int:
     # Adopt: if the hub is already up (e.g. started by the tray or another
     # `run_hub` window), don't try to bind :8000 a second time — uvicorn
@@ -50,6 +88,7 @@ def _run_hub() -> int:
         suffix = f" (PID {ext})" if ext else ""
         log.info("hub already running at %s%s — nothing to do.", HUB_BASE_URL, suffix)
         return 0
+    _self_contain()
     from . import server
     server.main()
     return 0

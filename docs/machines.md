@@ -48,7 +48,7 @@ glance that used to gate a placement change by hand.
 | Host id | `vram_mb` ceiling | Source |
 | --- | --- | --- |
 | `tower` | `16384` | RTX 5060 Ti 16 GB |
-| `gaming` | `8192` | GTX 1070 8 GB — the tightest ceiling; holds whisper + orpheus + whisper_translate + whisper_vanilla (#370) — 2000 + 2800 + 0 + 2000 = 6800 MB, comfortably under |
+| `gaming` | `8192` | GTX 1070 8 GB — the tightest ceiling; holds whisper + orpheus + whisper_translate + whisper_vanilla (#370) — 2000 + 2200 + 0 + 2000 = 6200 MB, comfortably under |
 | `mac-mini-m4` | *(none)* | Apple-silicon **unified memory** has no fixed VRAM partition to check against — the grid skips the warning rather than inventing a misleading ceiling |
 | `openclaw` | *(none)* | Serves no models; not placeable, so no ceiling needed |
 

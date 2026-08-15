@@ -351,6 +351,12 @@ klein is faster *and* better on texture and typography, but **systematically
 miscounts** — reproducibly, not by chance. If a prompt says "three of X", use
 `flux1_local`.
 
+**The images themselves**, with the prompt, seed, steps, sampler, resolution
+and wall-clock behind each one, are archived in
+[image-generation/flux-local-benchmark.html](image-generation/flux-local-benchmark.html)
+(#514) — a self-contained page covering the whole #492 → #501 arc, including
+the two 32B measurements that disagree by 24x and why.
+
 ### One ComfyUI process per row
 
 Each image row gets its own port (`:8188` FLUX.1, `:8190` klein) and therefore

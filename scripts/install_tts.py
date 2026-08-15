@@ -221,20 +221,9 @@ def _download_kokoro_onnx() -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         for filename, url in _KOKORO_ASSETS.items():
             out = out_dir / filename
-            if out.exists() and out.stat().st_size > 0:
-                log.info("Kokoro asset already present: %s", out)
-                continue
-            log.info("downloading Kokoro asset %s …", filename)
-            tmp = out.with_suffix(out.suffix + ".tmp")
             try:
-                urllib.request.urlretrieve(url, tmp)
-                tmp.replace(out)
-                log.info("  -> %s", out)
+                _download_file(url, out, "Kokoro asset")
             except Exception as exc:  # noqa: BLE001
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
                 log.warning("Kokoro asset download skipped: %s", exc)
 
 

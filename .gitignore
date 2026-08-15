@@ -102,14 +102,11 @@ test-results/
 # launcher temporary files
 .launcher-tmp/
 
-# Spike scratch (issue #123 Parakeet bench — binaries, weights, clips)
+# Spike scratch — the one home for local-only experiment artefacts too big or
+# too disposable to commit: benchmark binaries, model weights, audio clips
+# (#123 Parakeet), and full-res image masters (#514 FLUX). Anything a reader
+# needs is committed elsewhere; this is working material, per-machine.
 .scratch/
-
-# Local-only spike originals (#514) — full-res PNGs behind the FLUX benchmark
-# write-up. The committed page (docs/image-generation/) embeds its own display
-# copies, so nothing here is needed to read it; these are the 1024² and
-# 3840×2160 masters, kept out of git for their size.
-tmp/
 
 # Swift build artifacts (mac/parakeet-worker/) — rebuilt by `swift build`,
 # analogous to .venv/ for the Python side. Source (Package.swift, Sources/)

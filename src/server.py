@@ -2,24 +2,20 @@
 
 Each request resolves its `model` field against `config/models.yaml`
 (by registry id, display_name, or alias) and routes by the resolved
-row's `backend`. The active routes on the reference CUDA host:
+row's `backend`. The backend families dispatched on:
 
-- claude_haiku / claude_sonnet / claude_opus
-                          -> `claude -p` subprocess (Anthropic subscription)
-- gemini_pro / gemini_flash / gemini_lite
-                          -> `agy` Antigravity CLI (Google AI Pro subscription)
-- agentic_light / qwen3.5-4b
-                          -> llama-server at 127.0.0.1:8088 (/v1)
-- agentic_heavy / gemma4-26b-a4b-it
-                          -> llama-server at 127.0.0.1:8087 (/v1)
-- whisper-large-v3-turbo / whisper-medium-translate
-                          -> whisper-server on :8090 / :8091 (/v1/audio/*)
+- claude   -> `claude -p` subprocess (Anthropic subscription)
+- gemini   -> `agy` Antigravity CLI (Google AI Pro subscription)
+- openai   -> a llama-server process on its own port (/v1)
+- whisper  -> whisper-server / parakeet-server (/v1/audio/* ASR)
+- tts      -> tts-server (/v1/audio/speech)
+- comfyui  -> ComfyUI (/v1/images/*)
 
-(qwen3.5-9b on :8081, glm-4.5-air on :8082 and gemma4-e4b-it on :8086
-remain defined as ad-hoc / fallback candidates but are out of the
-active rotation — not in any host's `enabled:` list.)
+Which rows exist, which host owns each, and which port each listens on
+are `config/models.yaml`'s alone — deliberately not restated here, since
+a copy of the registry in this docstring is a copy that goes stale (#505).
 
-Two shapes exposed:
+Shapes exposed:
   * POST /v1/messages          - Anthropic shape (drop-in for the SDK)
   * POST /v1/messages/count_tokens
                                - Anthropic shape; exact on llama-server,
@@ -27,6 +23,12 @@ Two shapes exposed:
                                  subscription-CLI backends
   * POST /v1/chat/completions  - OpenAI shape (passthrough/translation)
   * GET  /v1/models            - union of enabled names (both shapes)
+  * POST /v1/audio/transcriptions, /v1/audio/translations
+    GET  /v1/audio/health      - ASR proxy (`server_audio_asr.py`)
+  * POST /v1/audio/speech      - TTS proxy (`server_audio_tts.py`)
+  * POST /v1/images/generations, /v1/images/edits
+                               - image gen/edit (`server_images.py`);
+                                 edits are gemini-only
 
 Caveats: image content blocks work on the claude-* and gemini-* paths
 (decoded to a per-request temp dir); local llama-server backends are

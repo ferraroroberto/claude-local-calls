@@ -30,8 +30,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import httpx
-
 from .host_profile import resolve as resolve_host
 from .http_client import get_sync_client
 from .model_registry import (
@@ -303,7 +301,7 @@ def probe_health(model: Model, timeout: float = 1.5) -> Optional[Dict[str, Any]]
         return None
     base = model.url.removesuffix("/v1").rstrip("/")
     try:
-        r = httpx.get(f"{base}/health", timeout=timeout)
+        r = get_sync_client().get(f"{base}/health", timeout=timeout)
         if r.status_code == 200:
             body = r.json()
             return body if isinstance(body, dict) else None

@@ -24,6 +24,42 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 
+def pytest_collection_modifyitems(items: list) -> None:
+    """Run ``tests/e2e`` last in a combined run (issue #493).
+
+    Playwright's *sync* API starts its own asyncio event loop on the main
+    thread and drives it through a greenlet-based dispatcher fiber (see
+    ``playwright/sync_api/_context_manager.py``'s ``__enter__``) whose
+    ``run_until_complete`` frame stays alive on the OS thread for the whole
+    life of the session-scoped ``playwright``/``browser`` fixtures — so
+    ``asyncio.get_running_loop()`` keeps returning that loop on the main
+    thread for the rest of the *process*, not just for the duration of one
+    e2e test. Any later test that reaches for a bare ``asyncio.run(...)``
+    (``tests/test_audio_failover.py``, ``tests/test_fleet_reconcile.py``,
+    ``tests/test_model_failover.py``, ``tests/test_server_lifecycle.py``)
+    then trips ``asyncio.run()``'s "already running" guard — a different
+    mechanism from the #416/#441 event-loop leaks those files were already
+    cleared of (both explicitly scoped to ``--ignore=tests/e2e`` and ruled
+    e2e out of scope).
+
+    ``scripts/verify-before-ship.ps1`` already runs unit tests and
+    ``tests/e2e`` as two separate ``pytest`` processes, so it never hits
+    this. But a bare ``pytest -q`` — what ``testpaths = tests`` in
+    ``pytest.ini`` deliberately collects, e2e included, so a bare invocation
+    or an IDE runner works — shares one process, and ``tests/e2e`` sorts
+    *first* alphabetically ("e2e" < "test_..."), so it always ran ahead of
+    the affected files. Moving every ``tests/e2e`` item after every other
+    item removes the hazard without touching Playwright or any affected
+    test's ``asyncio.run()`` call site: nothing async-driven runs after
+    ``tests/e2e`` in-process to trip the guard.
+    """
+    e2e_items = [item for item in items if "e2e" in item.path.parts]
+    if not e2e_items:
+        return
+    other_items = [item for item in items if item not in e2e_items]
+    items[:] = other_items + e2e_items
+
+
 @pytest.fixture
 def write_config(tmp_path, monkeypatch):
     """Write a throwaway ``models.yaml`` and point the config readers at it.

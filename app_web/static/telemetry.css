@@ -56,6 +56,10 @@ ul.tel-traces > li > .tel-trace-actions {
   gap: 6px;
   margin-top: 4px;
 }
+/* Row-level trace action (Copy/Replay) — compact, same documented exception
+ * as .services-row .services-actions (#284): scaled down from the Models
+ * tab's 36px touch target to fit this dense trace row's rhythm, not a
+ * silent one-off from the 44/52/60 rows scale. */
 ul.tel-traces > li > .tel-trace-actions .ghost-btn {
   min-height: 28px;
   padding: 4px 10px;

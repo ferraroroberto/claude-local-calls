@@ -197,6 +197,18 @@ x = tok/s, y = composite quality, bubble = VRAM, color = tier; VRAM-fit
 filter; hover cards; shortlist + audio panels; prominent date stamp). The
 admin SPA footer's 📈 Frontier link serves the latest run's copy.
 
+**Icon set (fleet-config#503):** this report is served at `/frontier` inside
+the admin PWA, so it inherits design.md's one-icon-set rule — no emoji glyphs
+in rendered verdict/tier markers (tagline/primary_use strings, badges, list
+bullets). Inline the specific `<symbol>` defs actually used, copied verbatim
+from `app_web/static/_vendored/icons/icons-sprite.html` (self-contained,
+still works offline), and render them via `<svg><use href="#i-…"/></svg>`
+next to the text instead of a leading unicode glyph. Suggested mapping —
+reuse existing ids, don't invent new ones: upgrade/win/keep → `i-circle-check`,
+dropped/fail/retired → `i-circle-x`, watch/retest-later → `i-clock`,
+notable/tied-best → `i-sparkles`. If a run's data has no natural icon-sprite
+equivalent for a marker, drop the glyph rather than reach for a new emoji.
+
 ### Ledger comment — issue #272
 
 Post one comment per run (`gh issue comment 272`) so the ledger's last

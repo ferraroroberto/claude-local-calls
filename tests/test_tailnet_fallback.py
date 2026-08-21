@@ -19,9 +19,21 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import pytest
+
 from src import machine_console as mc
 from src import remote_stats, ssh_exec
 from src.host_profile import HostProfile, get_host
+
+
+@pytest.fixture(autouse=True)
+def _peer_identity(config_with_example_identity):
+    """Every test in this module is about peer machines, and peer identity
+    (addresses, magic-DNS names, MACs, SSH users) left the public config in
+    #525. Pair the real models.yaml with the committed example overlay for the
+    whole module -- hermetic, and it can never read the developer's real
+    machines.local.yaml by accident."""
+    yield
 
 
 def _run(coro):
@@ -48,7 +60,7 @@ def _run(coro):
 
 
 _LAN = "192.168.0.99"
-_TS = "peer.tail1121fd.ts.net"
+_TS = "peer.example-tailnet.ts.net"
 
 
 def _peer(**kwargs) -> HostProfile:
@@ -214,10 +226,10 @@ def test_remote_base_url_for_host_dials_the_winner(monkeypatch):
     from src import remote_proxy
 
     monkeypatch.setattr(
-        remote_stats, "dial_address", lambda host, **kw: "mac-mini.tail1121fd.ts.net"
+        remote_stats, "dial_address", lambda host, **kw: "mac-peer.example-tailnet.ts.net"
     )
     url = remote_proxy.remote_base_url_for_host("mac-mini-m4")
-    assert url == "http://mac-mini.tail1121fd.ts.net:8000"
+    assert url == "http://mac-peer.example-tailnet.ts.net:8000"
 
 
 def test_run_ssh_targets_the_dial_winner(monkeypatch):
@@ -261,12 +273,12 @@ def test_power_command_dials_tailnet_when_lan_dead(monkeypatch):
         return _Done()
 
     monkeypatch.setattr(
-        remote_stats, "dial_address", lambda host, **kw: "mac-mini.tail1121fd.ts.net"
+        remote_stats, "dial_address", lambda host, **kw: "mac-peer.example-tailnet.ts.net"
     )
     monkeypatch.setattr(ssh_exec.subprocess, "run", fake_run)
     result = remote_bootstrap._run_power_command("mac-mini-m4", "-r")
     assert result["ok"] is True
-    assert "roberto@mac-mini.tail1121fd.ts.net" in captured["cmd"]
+    assert "youruser@mac-peer.example-tailnet.ts.net" in captured["cmd"]
 
 
 def test_probe_machine_badges_via_tailnet(monkeypatch):

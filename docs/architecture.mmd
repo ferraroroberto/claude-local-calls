@@ -151,12 +151,12 @@ flowchart TB
     TTS["tts_engines/ (piper · kokoro · chatterbox · orpheus)\nvia tts_server.py shim :8092/:8093/:8095/:8096\n(orpheus back on tower, gaming = fallback, #422)"]
     COMFY["ComfyUI (vendor/comfyui, own .venv)\n:8188 FLUX.1 [dev] fp8 (#492) · :8190 FLUX.2 [klein] 4B (#498)\nloopback-bound · on_demand · one process per row\n(the process layer keys state by model id)\nFLUX.2 [dev] 32B removed #501 — ~4 h/image on 16 GB"]
     CCHOST["Any host Claude Code CLI session\n(incl. sub-agents — CLAUDE_CODE_ENABLE_TELEMETRY)"]
-    MACMINI["Mac Mini (mac-mini-m4, 192.168.0.14)\npeer local-llm-hub install :8000\nowns qwen3.5-9b · parakeet-tdt-0.6b-v3"]
+    MACMINI["Mac Mini (mac-mini-m4)\npeer local-llm-hub install :8000\nowns qwen3.5-9b · parakeet-tdt-0.6b-v3"]
     PARAKEETWORKER["mac/parakeet-worker/ (Swift, ANE)\nFluidAudio Parakeet TDT 0.6B v3\nvia CoreML"]
     AGENTSVIEW["AgentsView server (optional, external)\nkenn-io/agentsview · :8080 (issue #280)"]
     SESSIONHOST["app-launcher session-host (:8446)\nloopback ConPTY/WS engine reused for the\nSSH terminal — needs app-launcher#558"]
-    OPENCLAW["OpenClaw (Linux laptop, 192.168.0.11)\nmanaged-only machine: SSH reboot/shutdown/\nuptime + RDP (Machines console, #309)"]
-    GAMING["gaming (Ryzen Linux satellite, 192.168.0.16)\npeer local-llm-hub install :8000 (systemd, #341;\ninstall.py + bootstrap/sync parity #368)\nowns all whisper.cpp STT (turbo/translate/vanilla)\n#323/#370; orpheus fallback tier only since #422\nGTX 1070, CUDA sm_61 builds"]
+    OPENCLAW["OpenClaw (Linux laptop)\nmanaged-only machine: SSH reboot/shutdown/\nuptime + RDP (Machines console, #309)"]
+    GAMING["gaming (Ryzen Linux satellite)\npeer local-llm-hub install :8000 (systemd, #341;\ninstall.py + bootstrap/sync parity #368)\nowns all whisper.cpp STT (turbo/translate/vanilla)\n#323/#370; orpheus fallback tier only since #422\nGTX 1070, CUDA sm_61 builds"]
   end
   CLAUDECLI --> CLAUDEBIN
   GEMINICLI --> AGYBIN

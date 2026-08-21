@@ -13,11 +13,22 @@ from __future__ import annotations
 import asyncio
 import os
 
+import pytest
+
 os.environ.setdefault("LOCAL_LLM_HUB_HOST", "tower")
 
 from src import backend_process as bp  # noqa: E402
 from src import fleet_maintenance, fleet_reconcile as fr, model_registry  # noqa: E402
 from src import remote_bootstrap, services  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _peer_identity(config_with_example_identity):
+    """Reconciliation reaches, wakes and bootstraps peer machines, and peer
+    identity (addresses, MACs, SSH users) left the public config in #525.
+    Pair the real models.yaml with the committed example overlay for the whole
+    module -- hermetic, never the developer's real machines.local.yaml."""
+    yield
 
 
 def _run(coro):

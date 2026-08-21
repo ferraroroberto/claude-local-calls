@@ -1,26 +1,32 @@
 # Fleet machines
 
 A single coherent record of the physical machines this hub knows about — their
-LAN addresses, SSH logins, Tailscale identities, OS, and role. The **source of
+OS, hardware class and role, and how the hub reaches them. The **source of
 truth for what the hub acts on** is `config/models.yaml` `hosts:` (the machine
-console reads it directly); this page is the human-readable companion, and the
-cross-machine SSH/access details also live in the `life-os` `geek-out`
-`context/setup.md` skill. Update all three together when a machine changes.
+console reads it directly) plus the gitignored `config/machines.local.yaml`
+overlay that supplies the addressing; this page is the human-readable
+companion, and the cross-machine SSH/access details also live in the `life-os`
+`geek-out` `context/setup.md` skill. Update all together when a machine changes.
 
-> LAN IPs and SSH usernames are already committed in `config/models.yaml` (same
-> convention across the fleet). Tailscale `100.x` addresses are private
-> CGNAT-range tailnet IPs, not publicly routable. The sudo/login password is
-> **never** stored anywhere in these repos — passwordless-sudo sudoers drop-ins
-> make it unnecessary for automation.
+> **This repo is public, so no real machine identity is recorded here** (#525).
+> Magic-DNS hostnames, tailnet `100.x` addresses, LAN addresses, wired-NIC MAC
+> addresses and SSH logins live only in `config/machines.local.yaml`, which is
+> gitignored — see `config/machines.local.example.yaml` for the shape. This page
+> describes *how* each mechanism works and which machine has which capability;
+> read the overlay for the actual values. The sudo/login password is **never**
+> stored anywhere in these repos — passwordless-sudo sudoers drop-ins make it
+> unnecessary for automation.
 
 ## Inventory
 
-| Host id | Role | OS | LAN IP | SSH user | Wired-NIC MAC | Hardware |
-| --- | --- | --- | --- | --- | --- | --- |
-| `tower` | The hub runs here; Windows workstation | Windows 11 | `192.168.0.13` | — (active host, never remote-powered) | `34:5a:60:d3:59:53` (Realtek 2.5GbE) | Ryzen 7 7800X3D · RTX 5060 Ti 16 GB · 128 GB RAM · hostname `tower` |
-| `mac-mini-m4` | Apple-silicon hub peer (owns `qwen3.5-9b`, `parakeet`) | macOS | `192.168.0.14` | `roberto` | `1c:f6:4c:56:05:da` | Apple M4 |
-| `openclaw` | Ubuntu laptop · future inference node | Ubuntu | `192.168.0.11` | `openclaw` | *(no wired NIC — Wi‑Fi only)* | GeForce MX250 |
-| `gaming` | Ryzen inference satellite · STT/TTS offload (#323) | Ubuntu 24.04 (HWE, kernel 7.0) | `192.168.0.16` (static) | `gaming` | `d4:5d:64:d6:7e:a0` (`enp4s0`) | Ryzen 9 5900X · GeForce GTX 1070 8 GB (`nvidia-driver-535`, installed 2026-07-21) · 16 GB RAM (single stick) |
+| Host id | Role | OS | Hardware |
+| --- | --- | --- | --- |
+| `tower` | The hub runs here; Windows workstation | Windows 11 | Ryzen 7 7800X3D · RTX 5060 Ti 16 GB · 128 GB RAM |
+| `mac-mini-m4` | Apple-silicon hub peer (owns `qwen3.5-9b`, `parakeet`) | macOS | Apple M4 · 16 GB unified |
+| `openclaw` | Ubuntu laptop · future inference node | Ubuntu | GeForce MX250 · Wi-Fi only (no wired NIC) |
+| `gaming` | Ryzen inference satellite · STT/TTS offload (#323) | Ubuntu 24.04 (HWE, kernel 7.0) | Ryzen 9 5900X · GeForce GTX 1070 8 GB · 16 GB RAM |
+
+Addresses, SSH logins and MACs for these hosts: `config/machines.local.yaml`.
 
 All non-host machines carry a `sudoers.d/99-<user>-nopasswd` drop-in
 (passwordless sudo), so reboot/shutdown and read-only stat probes run over the
@@ -77,10 +83,10 @@ Mechanically, waking a host sends a standard 102-byte magic packet (6 bytes of `
 
 ### Per-machine WOL status (re-verified 2026-07-24, from #357 remote-prep recon)
 
-- **`tower`** (Windows 11, hub host) — wired MAC `34:5a:60:d3:59:53` (Realtek 2.5GbE, link up). Tailscale service confirmed `Running`/`Automatic` (a boot-time service, not a login item — starts pre-login by construction); the reboot-with-nobody-logged-in *proof* remains untested on this box alone, because `tower` is the hub host and rebooting it would kill the very session driving the test (see the reboot-proof subsection below). **NIC-driver WOL confirmed enabled 2026-07-24**: `Get-NetAdapterAdvancedProperty` on "integrated ethernet" shows "Reactivar en Magic Packet" (Wake on Magic Packet) = Activado, "Activación con LAN de apagado" (WOL from shutdown) = Activado, and Energy-Efficient Ethernet = Desactivado (the setting the issue flagged as a potential WOL-breaker); `powercfg /devicequery wake_armed` lists the Realtek adapter, confirming Windows itself has the device armed to wake the system. This is the full OS/driver-level WOL configuration — only the **BIOS-level** WOL toggle (and ErP/deep-sleep) and **BIOS AC-restore** remain, both requiring physical screen access — manual checklist tracked in #357.
-- **`mac-mini-m4`** (macOS, Apple silicon) — ethernet MAC `1c:f6:4c:56:05:da`; `pmset womp=1` and `autorestart=1` both set 2026-07-22, **re-confirmed live 2026-07-24** via SSH (`pmset -g`). Still wired since 2026-07-23: `en0` shows `status: active` and owns the default route. Apple-silicon caveat unchanged: WOL only wakes from sleep, never from a full power-off — full-off recovery relies on "start up after power failure" (`autorestart=1`, already enabled, no BIOS-equivalent step needed on this box).
-- **`openclaw`** (Ubuntu laptop) — **re-confirmed 2026-07-24**: no wired NIC exists (`lspci` shows only the Comet Lake WiFi controller, no Ethernet device), so Wake-on-LAN isn't possible without a USB-ethernet adapter; no `mac:` is set in the registry, consistent with that. `tailscaled` is `enabled`+`active` (systemd, boots pre-login). The box answers SSH at `192.168.0.11` (ICMP is filtered — plain `ping` times out, TCP/22 does not) — worth knowing if a future reachability check uses `ping` and reports a false negative.
-- **`gaming`** (Ubuntu 24.04) — **re-confirmed 2026-07-24**: `enp4s0` link detected, 1 Gb/s, MAC `d4:5d:64:d6:7e:a0` matches the registry; `ethtool` reports `Wake-on: g` live and `nmcli` shows the `Wired connection 1` profile persists `802-3-ethernet.wake-on-lan: magic`; `tailscaled` is `enabled`+`active`. BIOS WOL / AC-restore are still unverified (physical access required).
+- **`tower`** (Windows 11, hub host) — wired MAC recorded in the overlay (Realtek 2.5GbE, link up). Tailscale service confirmed `Running`/`Automatic` (a boot-time service, not a login item — starts pre-login by construction); the reboot-with-nobody-logged-in *proof* remains untested on this box alone, because `tower` is the hub host and rebooting it would kill the very session driving the test (see the reboot-proof subsection below). **NIC-driver WOL confirmed enabled 2026-07-24**: `Get-NetAdapterAdvancedProperty` on "integrated ethernet" shows "Reactivar en Magic Packet" (Wake on Magic Packet) = Activado, "Activación con LAN de apagado" (WOL from shutdown) = Activado, and Energy-Efficient Ethernet = Desactivado (the setting the issue flagged as a potential WOL-breaker); `powercfg /devicequery wake_armed` lists the Realtek adapter, confirming Windows itself has the device armed to wake the system. This is the full OS/driver-level WOL configuration — only the **BIOS-level** WOL toggle (and ErP/deep-sleep) and **BIOS AC-restore** remain, both requiring physical screen access — manual checklist tracked in #357.
+- **`mac-mini-m4`** (macOS, Apple silicon) — ethernet MAC recorded in the overlay; `pmset womp=1` and `autorestart=1` both set 2026-07-22, **re-confirmed live 2026-07-24** via SSH (`pmset -g`). Still wired since 2026-07-23: `en0` shows `status: active` and owns the default route. Apple-silicon caveat unchanged: WOL only wakes from sleep, never from a full power-off — full-off recovery relies on "start up after power failure" (`autorestart=1`, already enabled, no BIOS-equivalent step needed on this box).
+- **`openclaw`** (Ubuntu laptop) — **re-confirmed 2026-07-24**: no wired NIC exists (`lspci` shows only the Comet Lake WiFi controller, no Ethernet device), so Wake-on-LAN isn't possible without a USB-ethernet adapter; no `mac:` is set in the registry, consistent with that. `tailscaled` is `enabled`+`active` (systemd, boots pre-login). The box answers SSH at its overlay `address:` (ICMP is filtered — plain `ping` times out, TCP/22 does not) — worth knowing if a future reachability check uses `ping` and reports a false negative.
+- **`gaming`** (Ubuntu 24.04) — **re-confirmed 2026-07-24**: `enp4s0` link detected, 1 Gb/s, MAC matches the overlay; `ethtool` reports `Wake-on: g` live and `nmcli` shows the `Wired connection 1` profile persists `802-3-ethernet.wake-on-lan: magic`; `tailscaled` is `enabled`+`active`. BIOS WOL / AC-restore are still unverified (physical access required).
 
 ### Tailscale-at-boot: reboot proof (2026-07-24)
 
@@ -95,7 +101,7 @@ The #357 checklist's verification bar is *"reboot → reachable over tailnet wit
 
 On the two Linux boxes the "nobody logged in" half was confirmed with `loginctl`, not just `who`: the only logind session on each is the SSH login the probe itself opened (`seat = -`, no TTY — no physical seat attached), `graphical.target` is `inactive`, and both default to `multi-user.target`. Ignore `uptime`'s "1 user" counter here; it disagrees with `who`/`loginctl` on both boxes before *and* after the reboot, so it is an accounting artifact rather than a hidden console session.
 
-**The `mac-mini-m4` result is the one real finding here.** The Mac does rejoin the tailnet unattended, but *not* because Tailscale is a boot daemon: `launchctl list` shows **no system-level Tailscale job**, and both `Tailscale.app` and its `IPNExtension` run as user `roberto`. It reconnects only because `/Library/Preferences/com.apple.loginwindow` carries `autoLoginUser = roberto` and FileVault is **off**, so macOS auto-logs that user in and the login item then starts. The practical consequence is worth knowing before anyone hardens this box: **enabling FileVault, or switching auto-login off, would silently drop the Mac off the tailnet after every reboot.** It would stay recoverable — `sshd` is a true system daemon (Remote Login is on) and keeps answering on the LAN at `192.168.0.14` — but the tailnet path would then need a physical login. The GUI Tailscale build has no pre-login mode; a genuine boot daemon would mean moving to the standalone `tailscaled` distribution, which is out of scope here.
+**The `mac-mini-m4` result is the one real finding here.** The Mac does rejoin the tailnet unattended, but *not* because Tailscale is a boot daemon: `launchctl list` shows **no system-level Tailscale job**, and both `Tailscale.app` and its `IPNExtension` run as the console user. It reconnects only because `/Library/Preferences/com.apple.loginwindow` carries an `autoLoginUser` entry and FileVault is **off**, so macOS auto-logs that user in and the login item then starts. The practical consequence is worth knowing before anyone hardens this box: **enabling FileVault, or switching auto-login off, would silently drop the Mac off the tailnet after every reboot.** It would stay recoverable — `sshd` is a true system daemon (Remote Login is on) and keeps answering on the LAN at its overlay `address:` — but the tailnet path would then need a physical login. The GUI Tailscale build has no pre-login mode; a genuine boot daemon would mean moving to the standalone `tailscaled` distribution, which is out of scope here.
 
 Post-reboot the settled facts all survived: `pmset womp=1` / `autorestart=1` still set on the Mac, `enp4s0` and `en0` both came back **wired**, and all three peers returned to `state: up` in the Machines console.
 
@@ -190,28 +196,34 @@ boxes):
 
 ## Tailscale identities
 
-| Host id | Tailscale magic-DNS | Tailscale IP | Notes |
-| --- | --- | --- | --- |
-| `mac-mini-m4` | `mac-mini.tail1121fd.ts.net` | `100.82.9.41` | Confirmed 2026-07-23 via `tailscale status` — the tailnet node is `mac-mini`. Recorded in `models.yaml` as the #396 LAN-failover target (it owns live models, so it's the peer where a wired failure hurts most). |
-| `openclaw` | `asus-linux.tail1121fd.ts.net` | `100.102.186.128` | Confirmed 2026-07-21 — the tailnet node is `asus-linux` (renamed from the earlier `laptop`). |
-| `gaming` | `gaming-linux.tail1121fd.ts.net` | `100.77.216.127` | Tailscale installed; its own tailnet node (#332). Confirmed 2026-07-21. |
-| `tower` | `tower.tail1121fd.ts.net` | `100.107.242.100` | The hub box; serves Langfuse at `tower.tail1121fd.ts.net:3000`. Confirmed 2026-07-21; IP recorded 2026-07-25. |
+Every host has a Tailscale magic-DNS name. The names themselves are **not
+recorded in this repo** — they live in `config/machines.local.yaml` under each
+host's `tailscale:` key (#525).
 
-Since #396 these names are more than an inventory: every peer-connect path in the hub (model-proxy upstream, SSH ops, remote stats/liveness) dials the wired LAN `address:` first and falls back to the host's `tailscale:` magic-DNS name when the LAN path stops answering — by design, a wired-NIC failure moves a box to an unreserved Wi-Fi pool address, and only the tailnet name survives that. The failover is logged at info level and surfaces as a "via tailnet" badge on the Machines card.
+Since #396 those names are more than an inventory: every peer-connect path in
+the hub (model-proxy upstream, SSH ops, remote stats/liveness) dials the wired
+LAN `address:` first and falls back to the host's `tailscale:` magic-DNS name
+when the LAN path stops answering — by design, a wired-NIC failure moves a box
+to an unreserved Wi-Fi pool address, and only the tailnet name survives that.
+The failover is logged at info level and surfaces as a "via tailnet" badge on
+the Machines card. A host with no `tailscale:` in the overlay simply never
+falls back, which is the correct behaviour for a machine that isn't on the
+tailnet.
 
-**Resolved — the `tower.tail1121fd.ts.net` name and Langfuse host.** The hub box
-(fleet id `tower`, formerly `pc-cuda` — renamed in #335) owns
-`tower.tail1121fd.ts.net` and is where Langfuse runs
-(`docs/telemetry-langfuse.md`'s `LANGFUSE_PUBLIC_URL` →
-`tower.tail1121fd.ts.net:3000`). The `gaming` satellite is a separate tailnet
-node `gaming-linux.tail1121fd.ts.net` and does **not** own this name — earlier
-records that reserved `tower.tail1121fd.ts.net` for `gaming` were mistaken.
+What is worth recording here, because it cost real debugging time:
 
-**Resolved — `openclaw` is the tailnet node `asus-linux`.** The `asus-linux`
-node at `100.102.186.128` is `openclaw` (renamed from the earlier `laptop`
-magic-DNS name). The tailnet also lists a separate `asus-windows` node (offline,
-last seen 11d as of 2026-07-21); it is not mapped to any fleet host in
-`config/models.yaml`, and its identity is left unstated here rather than guessed.
+- **The hub box (id `tower`) owns the magic-DNS name that also serves Langfuse**
+  (`docs/telemetry-langfuse.md`'s `LANGFUSE_PUBLIC_URL`, port 3000). The
+  `gaming` satellite is a **separate** tailnet node and does not share it —
+  earlier records that attributed the hub's name to `gaming` were mistaken.
+- **`openclaw`'s tailnet node was renamed** from its original name; the fleet
+  host id `openclaw` and its tailnet node name are not the same string. The
+  tailnet also lists an unrelated Windows node that maps to no fleet host in
+  `config/models.yaml`; its identity is left unstated rather than guessed.
+- Fleet host ids and tailnet node names drift apart over time. Treat
+  `config/machines.local.yaml` as the mapping of record, and re-confirm with
+  `tailscale status` rather than assuming a name from the host id.
+
 
 ## Machine specs snapshot
 

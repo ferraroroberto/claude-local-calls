@@ -445,16 +445,16 @@ satellite (#323/#370) and parakeet lives on the Mac Mini; the tower is only
 whisper's degraded `cpu: true` last rung. Callers still POST to this hub's
 :8000 and it proxies to the owner — but weights, builds, and `enabled:` rows
 belong on the owning machine:
-  whisper / whisper_translate / whisper_vanilla  → gaming      (192.168.0.16)
-  parakeet (transcribe primary)                  → mac-mini-m4 (192.168.0.14)
+  whisper / whisper_translate / whisper_vanilla  → gaming      (192.168.1.13)
+  parakeet (transcribe primary)                  → mac-mini-m4 (192.168.1.11)
 
 Demoted (defined in config/models.yaml, not in any host's enabled list):
   glm-4.5-air — bring up via launchers/run_model.bat glm
 Replaced as agentic_light on 2026-05-10 (still enabled on tower for fallback):
   gemma4-e4b-it — bring up via launchers/run_model.bat gemma4_e4b
 Mac Mini (mac-mini-m4), proxied through this hub's own base_url — see below:
-  qwen3.5-9b  → this hub 127.0.0.1:8000  → mac hub 192.168.0.14:8000 → llama-server :8081
-  parakeet    → this hub 127.0.0.1:8000  → mac hub 192.168.0.14:8000 → parakeet-server :8098
+  qwen3.5-9b  → this hub 127.0.0.1:8000  → mac hub 192.168.1.11:8000 → llama-server :8081
+  parakeet    → this hub 127.0.0.1:8000  → mac hub 192.168.1.11:8000 → parakeet-server :8098
 ```
 
 Which machine owns which row is [`config/models.yaml`](config/models.yaml)'s
@@ -476,8 +476,9 @@ request-lifecycle sequences and the LLM key-facts briefing,
 `local-llm-hub` runs as **one full install per machine**, but a model can
 be *owned* by one host and made reachable through any other host's own
 `base_url` — a client never needs to know or care which machine actually
-runs a given model. Each `hosts:` entry in `config/models.yaml` gets an
-`address:` (LAN IP), and each `models:` row gets an optional `host:` (which
+runs a given model. Each `hosts:` entry gets an
+`address:` (LAN IP) from `config/machines.local.yaml` (see **Machine identity**
+below), and each `models:` row in `config/models.yaml` gets an optional `host:` (which
 host owns it — omitted means "whichever host resolves this config", i.e.
 every existing single-host model is unaffected). A model listed in a
 *non-owning* host's `enabled:` is transparently proxied: the request lands
@@ -487,7 +488,7 @@ own `:8000` (not its raw backend port) — so the proxied call still lands in
 the owning hub's own observability ring. This is symmetric: the Mac Mini's
 own hub can equally proxy to a Windows-owned model.
 
-Today this powers the `mac-mini-m4` host (`192.168.0.14`, Apple M4):
+Today this powers the `mac-mini-m4` host (`192.168.1.11`, Apple M4):
 
 - **`qwen3.5-9b`** — moved here from `tower` (see
   [Demoted candidates](#demoted-candidates-kept-defined-not-in-active-rotation)
@@ -503,7 +504,7 @@ Today this powers the `mac-mini-m4` host (`192.168.0.14`, Apple M4):
   measurement + trade-off writeup:
   [docs/parakeet-asr-evaluation.md](docs/parakeet-asr-evaluation.md).
 
-The same pattern powers the **`gaming`** satellite (`192.168.0.16`, Ryzen 9
+The same pattern powers the **`gaming`** satellite (`192.168.1.13`, Ryzen 9
 5900X, GTX 1070 8 GB, headless Ubuntu — #323), which owns the whisper STT
 trio moved off the tower, so tower carries no whisper backends at all:
 
@@ -928,8 +929,35 @@ drop-in (already in place on the Mac Mini and OpenClaw); **nothing has to be
 deployed to a managed machine** — no per-peer key, no forced-command script.
 This is why OpenClaw's power buttons work the moment it is reachable.
 
+### Machine identity — `config/machines.local.yaml`
+
+This repository is **public**, so it deliberately records nothing that maps a
+private network. `config/models.yaml` carries what a reader needs to understand
+the fleet — roles, model rosters, capacity ceilings — while the per-host
+addressing lives in a gitignored sibling:
+
+| Field | What it is |
+| --- | --- |
+| `address` | LAN address other hosts dial to reach this box's own hub |
+| `tailscale` | Tailscale magic-DNS name — the peer-connect fallback (#396) |
+| `mac` | wired-NIC MAC for Wake-on-LAN (#356) |
+| `ssh_user` | login for the remote-bootstrap/sync endpoints (#181) |
+| `rdp` | `{address, user}` for the Remote-Desktop launch action |
+
+`src/host_profile.py` merges these onto the matching `hosts:` rows at load time.
+To set it up, copy the committed template and fill in your own values:
+
+```powershell
+copy config\machines.local.example.yaml config\machines.local.yaml
+```
+
+The file is **optional**. Without it the hub boots normally and every
+peer-dependent feature — proxy failover, remote stats, SSH ops, Wake-on-LAN,
+RDP — simply stays inert, which is the correct behaviour for a single-machine
+install. Restart the hub to pick up an edit, same as `models.yaml`.
+
 **Wake (non-destructive, #356).** A machine that is **down or dormant** and
-has a wired-NIC `mac:` recorded in its `config/models.yaml` host row offers a
+has a wired-NIC `mac:` recorded in `config/machines.local.yaml` offers a
 **Wake** button — a fire-and-forget Wake-on-LAN magic packet
 (`src/wake_on_lan.py`, UDP broadcast to `255.255.255.255:9`, stdlib socket
 only) via `POST /admin/api/machines/{id}/wake`. No confirmation loop: the

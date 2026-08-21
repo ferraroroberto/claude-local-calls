@@ -39,9 +39,15 @@ tray:
 #   role          one-line description under the name
 #   icon          Lucide glyph id (bare name; the SPA prefixes `i-`)
 #   dormant       true = a powered-down node shown but not live-probed
-#   tailscale     Tailscale magic-DNS hostname (peer reachability + RDP)
-#   rdp           {address, user} for the Remote-Desktop launch action
-# Human-readable fleet inventory + Tailscale identities: docs/machines.md
+#
+# Machine *identity* is deliberately absent from this file (#525): this repo
+# is public, and `address` / `tailscale` / `mac` / `ssh_user` / `rdp` together
+# map a private network. They live in the gitignored sibling
+# config/machines.local.yaml, which src/host_profile.py merges onto these rows
+# at load time -- see config/machines.local.example.yaml for the shape. The
+# overlay is optional: without it the hub boots and the peer-dependent
+# features (proxy failover, remote stats, SSH ops, Wake-on-LAN, RDP) stay
+# inert. How the fleet inventory works: docs/machines.md.
 # Reboot/shutdown are offered for any peer with both `address` + `ssh_user`
 # (never the active host — that's the hub, excluded as destructive).
 #
@@ -63,14 +69,6 @@ hosts:
     display_name: tower
     role: "Windows workstation · CUDA GPU · the hub runs here"
     icon: monitor
-    # Tailscale magic-DNS name — this box also serves Langfuse at
-    # tower.tail1121fd.ts.net:3000 (see docs/telemetry-langfuse.md).
-    tailscale: tower.tail1121fd.ts.net
-    # LAN address other hosts dial to reach this host's own hub (:8000) when
-    # proxying to a model this host owns (`host: tower` in a models: row).
-    address: 192.168.0.13
-    # Wired-NIC MAC used for Wake-on-LAN (#356) — WiFi WOL is unsupported.
-    mac: 34:5a:60:d3:59:53
     # RTX 5060 Ti 16 GB (docs/machines.md) — the placement grid's VRAM ceiling
     # for overcommit warnings (#375).
     vram_mb: 16384
@@ -95,20 +93,6 @@ hosts:
     display_name: Mac Mini M4
     role: "Apple-silicon hub peer · SSH + passwordless sudo"
     icon: server
-    # LAN address the tower host dials to reach this host's own hub when
-    # proxying to a model this host owns (`host: mac-mini-m4`) — e.g. qwen,
-    # parakeet. Mac-native TTS (mac_say) is a follow-up, not yet enrolled.
-    address: 192.168.0.14
-    # Wired-NIC MAC used for Wake-on-LAN (#356) — WiFi WOL is unsupported.
-    mac: 1c:f6:4c:56:05:da
-    # Tailscale magic-DNS name — the tailnet node is `mac-mini` (100.82.9.41,
-    # verified via `tailscale status` 2026-07-23). Besides reachability/RDP,
-    # every `tailscale:` name is now the peer-connect fallback (#396): the
-    # wired LAN `address:` above is primary, and when it stops answering
-    # (Wi-Fi failover moves the box to an unreserved DHCP pool address) the
-    # hub's proxy/SSH/stats paths dial this name instead — it is
-    # NIC-independent and survives any failover.
-    tailscale: mac-mini.tail1121fd.ts.net
     # No `vram_mb` (#375): Apple-silicon unified memory has no fixed VRAM
     # partition to check a model set against, so the placement grid skips the
     # capacity warning for this host rather than inventing a misleading ceiling.
@@ -116,10 +100,6 @@ hosts:
     # fleet summary (#431/#434): doubles as the unified-memory ceiling shown
     # against the GPU estimate, never a warning input.
     ram_mb: 16384
-    # SSH login used for the remote-bootstrap/sync endpoints (#181) — not a
-    # secret, just which account the forced-command key logs in as. The
-    # private key itself lives outside git (LOCAL_LLM_HUB_SSH_KEY in .env).
-    ssh_user: roberto
     # Same cross-enable pattern as tower's list above, reversed: every
     # tower-owned model is listed here too so the Mac's hub can resolve
     # and proxy to it — genuinely bidirectional (#178), not Windows-only.
@@ -136,42 +116,23 @@ hosts:
     display_name: OpenClaw
     role: "Ubuntu laptop · SSH + passwordless sudo · future inference node"
     icon: laptop
-    # LAN address for SSH (reboot/shutdown, remote uptime) + RDP. Same
-    # ssh_user/address contract as the Mac Mini peer above; reboot/shutdown
-    # run over the hub user's own general SSH (passwordless sudo), so they
-    # work as soon as OpenClaw is reachable — no key deploy needed (#311).
-    address: 192.168.0.11
-    ssh_user: openclaw
-    # No `mac:` — the laptop has no wired NIC, so Wake-on-LAN is impossible
-    # (#356/#357 recon).
-    # Tailscale magic-DNS name — used for reachability + RDP when off-LAN.
-    # This box is the tailnet node `asus-linux` (confirmed 2026-07-21).
-    tailscale: asus-linux.tail1121fd.ts.net
-    # Server (headless, multi-user.target) is the systemd default; Desktop
-    # (graphical.target/GNOME) is a one-boot GRUB override via `grub-reboot`
-    # — done + verified 2026-07-21, see docs/machines.md.
-    rdp:
-      address: 192.168.0.11
-      user: openclaw
 
   gaming:
     platform: linux
     # Ryzen 9 5900X gaming PC, brought online as a live Linux inference
     # satellite (#323) — reinstalled from the old dormant Windows node that
     # used to hold the fleet `tower` id (that id is now the hub box, #335).
-    # It has SSH + passwordless sudo (user `gaming`, static 192.168.0.16), so
-    # it gets reboot/shutdown/terminal like the other peers. Tailscale is
-    # installed and live as `gaming-linux.tail1121fd.ts.net` (confirmed
-    # 2026-07-21); the `tower.tail1121fd.ts.net` name belongs to the hub box
-    # (id `tower`), not this satellite. RDP targets xrdp on the LAN IP.
+    # It has SSH + passwordless sudo, so it gets reboot/shutdown/terminal like
+    # the other peers, and Tailscale is installed and live. This satellite is
+    # its own tailnet node -- it does NOT share the hub box's (id `tower`)
+    # magic-DNS name. RDP targets xrdp on the LAN IP. Real addressing for all
+    # of these lives in the gitignored config/machines.local.yaml (#525).
     # Headless `multi-user.target` is now the systemd default (Server mode);
     # GRUB adds a one-boot Desktop-mode override via `grub-reboot` — done +
     # verified 2026-07-21, see docs/machines.md and #323.
     display_name: gaming
     role: "Ryzen 9 5900X · Ubuntu · 8 GB VRAM · SSH + passwordless sudo · STT/TTS offload satellite"
     icon: monitor
-    address: 192.168.0.16
-    ssh_user: gaming
     # Owns the whisper STT trio (#323/#370): whisper + whisper_translate +
     # whisper_vanilla moved here from the tower to free its VRAM for the
     # agentic lanes. Orpheus moved BACK to tower in #422 (the 1070 renders it
@@ -190,12 +151,6 @@ hosts:
     # 16 GB system RAM, single stick (docs/machines.md) — display-only context
     # on the fleet summary (#431), never a warning input.
     ram_mb: 16384
-    # Wired-NIC MAC used for Wake-on-LAN (#356) — WiFi WOL is unsupported.
-    mac: d4:5d:64:d6:7e:a0
-    tailscale: gaming-linux.tail1121fd.ts.net
-    rdp:
-      address: 192.168.0.16
-      user: gaming
 
 # --- Dynamic model fallback (issue #342) ---
 # A models: row may replace its single `host:` with an ordered preference

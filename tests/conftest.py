@@ -74,18 +74,60 @@ def write_config(tmp_path, monkeypatch):
 
     Pass ``dirpath`` to write a *second* config in the same test — the file
     name is fixed, so a distinct directory is what makes it a distinct file.
+
+    Pass ``machines`` to also write the gitignored identity overlay
+    (``machines.local.yaml``) beside it (#525). ``host_profile.machines_path()``
+    derives the overlay from ``CONFIG_PATH``'s directory, so a test that
+    repoints the config to ``tmp_path`` gets *this* overlay or none at all —
+    never the developer's real one. That is what keeps these tests hermetic.
     """
     from src import host_profile, model_registry
 
-    def _write(content: dict, *, dirpath=None) -> Path:
+    def _write(content: dict, *, dirpath=None, machines: dict | None = None) -> Path:
         cfg = Path(dirpath or tmp_path) / "models.yaml"
         cfg.write_text(yaml.safe_dump(content), encoding="utf-8")
+        if machines is not None:
+            (cfg.parent / "machines.local.yaml").write_text(
+                yaml.safe_dump(machines), encoding="utf-8"
+            )
         monkeypatch.setattr(host_profile, "CONFIG_PATH", cfg)
         monkeypatch.setattr(model_registry, "CONFIG_PATH", cfg, raising=False)
         host_profile._CONFIG_CACHE.clear()
         return cfg
 
     return _write
+
+
+@pytest.fixture
+def config_with_example_identity(tmp_path, monkeypatch):
+    """The real ``config/models.yaml`` paired with the *committed example*
+    identity overlay, both in a temp dir (#525).
+
+    Machine identity left the public config, so any test asserting on an
+    address / magic-DNS name / SSH user has nothing to read from
+    ``models.yaml`` alone — and must never read the developer's real
+    ``machines.local.yaml`` either, or it passes locally and fails in a clean
+    clone (exactly what happened when this change was first made).
+
+    Copying the shipped ``config/machines.local.example.yaml`` — rather than
+    inlining values here — means the tests and the example file cannot drift
+    apart, and a broken example file fails the suite instead of only being
+    discovered by the next person who clones.
+    """
+    from src import host_profile, model_registry
+
+    src_dir = Path(host_profile.PROJECT_ROOT) / "config"
+    cfg = tmp_path / "models.yaml"
+    cfg.write_text((src_dir / "models.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "machines.local.yaml").write_text(
+        (src_dir / "machines.local.example.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(host_profile, "CONFIG_PATH", cfg)
+    monkeypatch.setattr(model_registry, "CONFIG_PATH", cfg, raising=False)
+    host_profile._CONFIG_CACHE.clear()
+    yield cfg
+    host_profile._CONFIG_CACHE.clear()
 
 
 @pytest.fixture(autouse=True)

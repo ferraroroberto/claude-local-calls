@@ -281,7 +281,7 @@ def test_ram_mb_surfaces_where_documented(monkeypatch):
     assert hosts["openclaw"]["ram_mb"] is None
 
 
-def test_live_ram_block_rides_reachable_ssh_peers(monkeypatch):
+def test_live_ram_block_rides_reachable_ssh_peers(monkeypatch, config_with_example_identity):
     """#434: the capacity line reads RAM used/total live where available —
     the local host snapshots itself; a reachable SSH peer carries the
     ``ram`` block from the (cached) Machines-tab stats probe; a peer whose
@@ -315,7 +315,7 @@ def test_live_ram_none_when_probe_fails(monkeypatch):
     assert hosts["openclaw"]["ram"] is None
 
 
-def test_live_gpu_block_rides_local_and_ssh_peers(monkeypatch):
+def test_live_gpu_block_rides_local_and_ssh_peers(monkeypatch, config_with_example_identity):
     """#436: the capacity line reads GPU used/total live from the same probe
     plumbing the Machines tab uses — local nvidia-smi snapshot on the hub
     host, the cached SSH stats probe on reachable peers — so the two tabs

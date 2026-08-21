@@ -60,6 +60,11 @@ docker/searxng/config/
 
 # Host-specific machine specs (real values; example file is committed)
 config/machine_specs.yaml
+# Real per-host identity (addresses, magic-DNS names, MACs, SSH users, RDP
+# targets) for this install — this repo is public and models.yaml is committed,
+# so the addressing lives here and never in git (#525). Committed template:
+# config/machines.local.example.yaml.
+config/machines.local.yaml
 
 # Runtime-mutated startup profile (issue #304) — the admin UI's Startup card
 # rewrites this on every service toggle, so it must not be tracked.

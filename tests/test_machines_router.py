@@ -13,12 +13,23 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src import machine_console as mc
 from src import server as server_mod
 from src import ssh_exec
 from src.host_profile import HostProfile, all_hosts, get_host, resolve
+
+
+@pytest.fixture(autouse=True)
+def _peer_identity(config_with_example_identity):
+    """Every test in this module is about peer machines, and peer identity
+    (addresses, magic-DNS names, MACs, SSH users) left the public config in
+    #525. Pair the real models.yaml with the committed example overlay for the
+    whole module -- hermetic, and it can never read the developer's real
+    machines.local.yaml by accident."""
+    yield
 
 
 def _client() -> TestClient:
@@ -60,8 +71,8 @@ def test_openclaw_has_ssh_and_rdp():
     h = get_host("openclaw")
     assert h is not None
     assert h.can_ssh is True  # address + ssh_user
-    assert h.rdp and h.rdp["address"] == "192.168.0.11"
-    assert h.tailscale == "asus-linux.tail1121fd.ts.net"  # tailnet node (#335)
+    assert h.rdp and h.rdp["address"] == "192.168.1.12"
+    assert h.tailscale == "laptop.example-tailnet.ts.net"  # tailnet node (#335)
     assert h.dormant is False
 
 
@@ -73,8 +84,8 @@ def test_gaming_is_live_ssh_host():
     assert h is not None
     assert h.dormant is False
     assert h.can_ssh is True  # address + ssh_user → power actions
-    assert h.rdp and h.rdp["address"] == "192.168.0.16"
-    assert h.tailscale == "gaming-linux.tail1121fd.ts.net"  # its own tailnet node (#332)
+    assert h.rdp and h.rdp["address"] == "192.168.1.13"
+    assert h.tailscale == "satellite.example-tailnet.ts.net"  # its own tailnet node (#332)
 
 
 def test_tower_is_the_hub_box_not_the_old_satellite():
@@ -86,7 +97,7 @@ def test_tower_is_the_hub_box_not_the_old_satellite():
     assert h is not None
     assert h.platform == "win32"                      # the hub box, not the linux satellite
     assert h.default is True                           # resolves as the active win32 host
-    assert h.tailscale == "tower.tail1121fd.ts.net"    # owns the tower magic-DNS + Langfuse
+    assert h.tailscale == "workstation.example-tailnet.ts.net"    # owns the tower magic-DNS + Langfuse
     assert get_host("gaming") is not None              # the satellite kept its own id
 
 
@@ -318,8 +329,8 @@ def test_rdp_file_generated_for_peer_with_target():
     assert generated is not None
     filename, content = generated
     assert filename == "openclaw.rdp"
-    assert "full address:s:192.168.0.11" in content
-    assert "username:s:openclaw" in content
+    assert "full address:s:192.168.1.12" in content
+    assert "username:s:youruser" in content
 
 
 def test_rdp_file_none_for_host_without_target():
@@ -374,10 +385,10 @@ def test_remote_stats_parse_network_wired():
     SSID/signal (#397)."""
     from src import remote_stats
 
-    raw = "uptime 34782\ncpu 0\nnet_iface enp4s0\nnet_mac d4:5d:64:d6:7e:a0\nnet_wireless 0\n"
+    raw = "uptime 34782\ncpu 0\nnet_iface enp4s0\nnet_mac aa:bb:cc:dd:ee:02\nnet_wireless 0\n"
     s = remote_stats._parse(raw)
     assert s["network"] == {
-        "iface": "enp4s0", "mac": "d4:5d:64:d6:7e:a0",
+        "iface": "enp4s0", "mac": "aa:bb:cc:dd:ee:02",
         "wireless": False, "ssid": None, "signal_dbm": None,
     }
 
@@ -654,7 +665,7 @@ def test_rdp_endpoint_downloads_for_peer():
     r = _client().get("/admin/api/machines/openclaw/rdp")
     assert r.status_code == 200, r.text
     assert "attachment" in r.headers.get("content-disposition", "")
-    assert "full address:s:192.168.0.11" in r.text
+    assert "full address:s:192.168.1.12" in r.text
 
 
 def test_rdp_endpoint_404_for_host():
@@ -795,7 +806,7 @@ def test_power_command_uses_general_ssh_not_forced_command_key(monkeypatch):
     cmd = captured["cmd"]
     assert cmd[0] == "ssh"
     assert "-i" not in cmd  # NOT the LOCAL_LLM_HUB_SSH_KEY forced-command key
-    assert "roberto@192.168.0.14" in cmd  # peer ssh_user@address
+    assert "youruser@192.168.1.11" in cmd  # peer ssh_user@address
     remote = cmd[-1]
     assert "sudo -n /sbin/shutdown -r now" in remote
     assert "nohup" in remote  # detached so the SSH command returns cleanly

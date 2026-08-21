@@ -6,13 +6,13 @@ It targets a hub by ``--base-url``, so the *same* tool measures any machine:
 
     # STT — whisper on the tower vs the gaming satellite (same clip set)
     python scripts/bench_voice.py stt --base-url http://127.0.0.1:8000  --model whisper  --clips-dir .scratch/voice-bench
-    python scripts/bench_voice.py stt --base-url http://192.168.0.16:8000 --model whisper  --clips-dir .scratch/voice-bench
+    python scripts/bench_voice.py stt --base-url http://192.168.1.13:8000 --model whisper  --clips-dir .scratch/voice-bench
     # STT — parakeet on the Mac Mini
-    python scripts/bench_voice.py stt --base-url http://192.168.0.14:8000 --model parakeet --clips-dir .scratch/voice-bench
+    python scripts/bench_voice.py stt --base-url http://192.168.1.11:8000 --model parakeet --clips-dir .scratch/voice-bench
 
     # TTS — orpheus on the tower vs gaming
     python scripts/bench_voice.py tts --base-url http://127.0.0.1:8000  --model orpheus
-    python scripts/bench_voice.py tts --base-url http://192.168.0.16:8000 --model orpheus
+    python scripts/bench_voice.py tts --base-url http://192.168.1.13:8000 --model orpheus
 
 Both modes hit the hub's OpenAI-shaped endpoints (``/v1/audio/transcriptions``
 and ``/v1/audio/speech``) so the numbers are end-to-end through the hub — the

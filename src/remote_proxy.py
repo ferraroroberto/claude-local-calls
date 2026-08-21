@@ -21,7 +21,7 @@ from .model_registry import Model
 
 
 def remote_base_url_for_host(host_id: Optional[str]) -> Optional[str]:
-    """Hub base URL of ``host_id`` (e.g. ``http://192.168.0.14:8000``, no
+    """Hub base URL of ``host_id`` (e.g. ``http://192.168.1.11:8000``, no
     trailing slash, no ``/v1``) when it is remote relative to the active host —
     ``None`` when ``host_id`` is empty, names the active host, or names a host
     with no dialable address configured.
@@ -50,7 +50,7 @@ def remote_base_url_for_host(host_id: Optional[str]) -> Optional[str]:
 
 
 def remote_base_url(model: Model) -> Optional[str]:
-    """Owning host's hub base URL (e.g. ``http://192.168.0.14:8000``, no
+    """Owning host's hub base URL (e.g. ``http://192.168.1.11:8000``, no
     trailing slash, no ``/v1``) when ``model`` is remote relative to the
     active host — ``None`` when it's local (no owning host, or it matches
     the active host) or when the owning host has no ``address`` configured.

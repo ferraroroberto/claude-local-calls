@@ -8,6 +8,16 @@ the `LOCAL_LLM_HUB_HOST` env var as an explicit override.
 ``_load_config()`` below is also the single cached YAML loader for
 ``config/models.yaml`` — ``src/model_registry.py`` imports it directly
 rather than keeping its own parallel cache of the same file.
+
+Machine *identity* is deliberately NOT in that committed file (#525): this
+repo is public, and the per-host addressing (`address`, `tailscale`, `mac`,
+`ssh_user`, `rdp`) is a map of a private network. Those five fields live in
+a gitignored sibling, ``config/machines.local.yaml``, which ``_load_config()``
+merges onto the ``hosts:`` rows -- same committed-sample pattern this repo
+already uses for ``config/machine_specs.yaml`` and ``config/webapp_config.json``.
+The overlay is optional by design: a fresh clone without one boots fine and
+every peer-dependent feature simply stays inert (all five fields are
+``Optional`` on ``HostProfile``, and ``can_ssh`` already degrades to False).
 """
 
 from __future__ import annotations
@@ -35,7 +45,7 @@ class HostProfile:
     default: bool = False
     source: str = ""  # human-readable description of how we picked it
     # LAN address (IP or resolvable hostname) other hosts dial to reach this
-    # machine's own hub — e.g. "192.168.0.14". Unset on hosts nothing ever
+    # machine's own hub — e.g. "192.168.1.11". Unset on hosts nothing ever
     # proxies to (today, that's fine; only a host that owns a remote-tagged
     # model row needs one). See src/remote_proxy.py.
     address: Optional[str] = None
@@ -90,6 +100,53 @@ class HostProfile:
 _CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
+# Per-host identity fields the public config never carries -- supplied by the
+# gitignored overlay instead (#525). Kept as one tuple so the merge, the
+# example file and the docs can't drift apart silently.
+IDENTITY_FIELDS = ("address", "tailscale", "mac", "ssh_user", "rdp")
+
+
+def machines_path() -> Path:
+    """Path to the gitignored identity overlay -- always a sibling of the
+    config actually in use, never a fixed constant. Tests that repoint
+    ``CONFIG_PATH`` at a temp file therefore get *that* directory's overlay
+    (usually none), never this machine's real one."""
+    return CONFIG_PATH.parent / "machines.local.yaml"
+
+
+def _merge_identity(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge ``machines.local.yaml``'s per-host identity onto the ``hosts:``
+    rows. Absent overlay, unreadable overlay, or a host it says nothing about
+    all mean the same thing: those fields stay unset and the peer features
+    that need them stay inert. Never raises -- a broken overlay must not stop
+    the hub booting."""
+    path = machines_path()
+    if not path.exists():
+        return data
+    try:
+        overlay = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        # Visible, not silent: a dead overlay is why peer dialling would
+        # suddenly go quiet, and a silent None is exactly what makes that
+        # class of failure take weeks to find.
+        print(f"[WARN] ignoring unreadable {path.name}: {exc}", file=sys.stderr)
+        return data
+
+    rows = overlay.get("hosts") or {}
+    if not isinstance(rows, dict):
+        print(f"[WARN] ignoring {path.name}: 'hosts:' is not a mapping", file=sys.stderr)
+        return data
+
+    hosts = data.get("hosts") or {}
+    for host_id, ident in rows.items():
+        if not isinstance(ident, dict) or host_id not in hosts:
+            continue
+        for field in IDENTITY_FIELDS:
+            if ident.get(field) is not None:
+                hosts[host_id][field] = ident[field]
+    return data
+
+
 def _load_config() -> Dict[str, Any]:
     key = str(CONFIG_PATH)
     cached = _CONFIG_CACHE.get(key)
@@ -98,6 +155,7 @@ def _load_config() -> Dict[str, Any]:
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(f"config file missing: {CONFIG_PATH}")
     data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    data = _merge_identity(data)
     _CONFIG_CACHE[key] = data
     return data
 

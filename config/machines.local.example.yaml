@@ -1,0 +1,59 @@
+# Template for config/machines.local.yaml — copy, then fill in your own values.
+#
+#     cp config/machines.local.example.yaml config/machines.local.yaml
+#
+# Why this file exists (#525): config/models.yaml is committed to a PUBLIC
+# repo. It carries what a reader needs to understand the fleet — roles, model
+# rosters, capacity ceilings — and deliberately nothing that maps a private
+# network. The per-host addressing lives here instead, and the real
+# machines.local.yaml is gitignored.
+#
+# src/host_profile.py merges these five fields onto the matching `hosts:` row
+# from models.yaml at load time. Keys must match the host ids used there; a
+# host this file says nothing about simply keeps the fields unset.
+#
+# Entirely optional. With no machines.local.yaml the hub boots normally and
+# every peer-dependent feature stays inert — proxy failover, remote stats,
+# SSH ops, Wake-on-LAN and RDP all check for these fields before acting.
+#
+# Fields (all optional, per host):
+#   address    LAN address other hosts dial to reach this box's own hub
+#   tailscale  Tailscale magic-DNS hostname — the peer-connect fallback (#396)
+#              used when the wired LAN address stops answering
+#   mac        wired-NIC MAC for Wake-on-LAN (#356); Wi-Fi WOL is unsupported
+#   ssh_user   login for the remote-bootstrap/sync endpoints (#181). Not a
+#              secret — the key itself is LOCAL_LLM_HUB_SSH_KEY in .env
+#   rdp        {address, user} for the Remote-Desktop launch action
+#
+# Every value below is a placeholder. Replace them.
+
+hosts:
+  tower:
+    # The hub box. No ssh_user/rdp: it is the active host, never remote-powered.
+    address: 192.168.1.10
+    tailscale: workstation.example-tailnet.ts.net
+    mac: aa:bb:cc:dd:ee:ff
+
+  mac-mini-m4:
+    address: 192.168.1.11
+    tailscale: mac-peer.example-tailnet.ts.net
+    mac: aa:bb:cc:dd:ee:01
+    ssh_user: youruser
+
+  openclaw:
+    # A laptop: no wired NIC, so no `mac:` and no Wake-on-LAN.
+    address: 192.168.1.12
+    tailscale: laptop.example-tailnet.ts.net
+    ssh_user: youruser
+    rdp:
+      address: 192.168.1.12
+      user: youruser
+
+  gaming:
+    address: 192.168.1.13
+    tailscale: satellite.example-tailnet.ts.net
+    mac: aa:bb:cc:dd:ee:02
+    ssh_user: youruser
+    rdp:
+      address: 192.168.1.13
+      user: youruser

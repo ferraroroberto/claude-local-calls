@@ -83,7 +83,7 @@ every device on your tailnet. Verify with:
 
 ```powershell
 tailscale serve status
-# https://tower.tail1121fd.ts.net:3000 (tailnet only)
+# https://<your-host>.ts.net:3000 (tailnet only)
 # |-- / proxy http://localhost:3000
 ```
 
@@ -91,7 +91,7 @@ Then set the public URL in `.env` so the Telemetry tab's deep-links
 land at the Tailscale URL instead of the local one:
 
 ```
-LANGFUSE_PUBLIC_URL=https://tower.tail1121fd.ts.net:3000
+LANGFUSE_PUBLIC_URL=https://<your-host>.ts.net:3000
 ```
 
 …and restart the hub. Tear the serve back down with

@@ -43,7 +43,7 @@ closed on the reconcile side: arm ``src.fleet_maintenance`` for the target host
 before inducing an outage (via ``/admin/api/fleet-maintenance``) so reconcile
 stands down and this engine's probe/decide/act cycle gets a clean read.
 
-Reachability reuses ``services.peer_health`` (the same dial-resolver probe
+Reachability reuses ``remote_stats.peer_health`` (the same dial-resolver probe
 the Machines tab and fleet reconcile already use — no second prober), and
 the observation loop is the only writer of tracker state; request paths
 only read the current owner (cheap, lock-guarded dict lookup).
@@ -276,15 +276,15 @@ def multi_host_models() -> List[Model]:
 # ---------------------------------------------------------------------- #
 async def _default_probe(host_id: str) -> bool:
     """Reachability of a chain candidate — the active host is trivially up
-    (this code is running on it); peers reuse ``services.peer_health`` (the
-    Machines-tab prober — LAN address with tailnet fallback, #396)."""
+    (this code is running on it); peers reuse ``remote_stats.peer_health``
+    (the Machines-tab prober — LAN address with tailnet fallback, #396)."""
     from .host_profile import resolve as resolve_host
 
     if host_id == resolve_host().id:
         return True
-    from . import services
+    from . import remote_stats
 
-    health = await services.peer_health(host_id)
+    health = await remote_stats.peer_health(host_id)
     return bool(health.get("reachable"))
 
 

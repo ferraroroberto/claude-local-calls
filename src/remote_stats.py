@@ -1,7 +1,8 @@
-"""Remote machine liveness + stats for the Machines console (#309).
+"""Remote machine liveness + stats + hub-peer probing (#309, #533).
 
-Answers two questions the console cares about, both **independent of whether
-the hub runs on the peer**:
+Answers the questions the Machines console and the Services card care
+about, all **independent of whether the hub runs on the peer** except
+where noted:
 
   * :func:`is_reachable` — *is the machine powered on?* A plain TCP connect to
     a liveness port (SSH / RDP), so a box that is up but not running the hub
@@ -13,6 +14,11 @@ the hub runs on the peer**:
     This same general-SSH channel also carries the destructive reboot/shutdown
     power actions (``remote_bootstrap``, #311); the forced-command key is now
     solely the hub-lifecycle (bootstrap/sync) path.
+  * :func:`remote_models` / :func:`peer_health` / :func:`hub_peers` — the
+    cross-host peer-probe trio (does the peer run a hub, is it reachable,
+    what does it report), moved here from ``services.py`` (issue #533) since
+    this module already owns ``dial_address``, the address resolver every
+    peer-connect path — including these — dials through.
 
 Per-OS commands emit ``key value`` lines that :func:`_parse` folds into the
 same shape as ``machine_console.self_snapshot``'s stats, so a peer card and
@@ -30,7 +36,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from src.host_profile import HostProfile
+from src.host_profile import HostProfile, hub_port
+from src.http_client import get_async_client
 from src.ssh_exec import run_ssh
 
 logger = logging.getLogger(__name__)
@@ -50,6 +57,12 @@ _LIVENESS_CACHE_TTL_S = 5.0
 # recovery back to the LAN path (or over to the tailnet name) lands within half
 # a minute of the network changing underneath us.
 _DIAL_TTL_S = 30.0
+# /admin/api/models on the remote peer health-probes every local model it
+# owns before responding (observed 2-5.5s under normal load), so this needs
+# real headroom above that, not just network RTT — this only guards the
+# admin Models-tab merge poll and the peer-health probes below, not any
+# request hot path.
+REMOTE_HUB_PROBE_TIMEOUT_S = 8.0
 
 
 # host_id -> (expiry_monotonic, stats_or_None)
@@ -516,3 +529,138 @@ async def collect(host: HostProfile) -> Optional[Dict[str, Any]]:
     stats = _parse(raw) if raw else None
     _cache[host.id] = (now + _CACHE_TTL_S, stats)
     return stats
+
+
+# ------------------------------------------------------------- peer probes
+# Cross-host: does the peer run its own hub, is it reachable, and what does
+# it report — moved from services.py (#533).
+
+
+async def remote_models(
+    owner: HostProfile, timeout_s: float = REMOTE_HUB_PROBE_TIMEOUT_S
+) -> Optional[List[Dict[str, Any]]]:
+    """GET ``{owner's hub}/admin/api/models`` — used to merge a remote
+    host's own model rows into this hub's Models tab (#178).
+
+    Returns ``None`` (not ``[]``) on any failure — lets the caller tell
+    "peer unreachable" apart from "peer reachable, reports zero models"
+    and fall back to a locally-synthesized offline row instead of
+    silently dropping the model from the list.
+    """
+    # Local import: remote_proxy imports this module, so a module-level
+    # import here would be circular.
+    from src.remote_proxy import remote_auth_token
+
+    address = await dial_address_async(owner)
+    if not address:
+        return None
+    base = f"http://{address}:{hub_port()}"
+    token = remote_auth_token(owner.id)
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    try:
+        # local_only=true: two bidirectionally cross-enabled hosts would
+        # otherwise recurse into each other's /api/models forever.
+        # Shared pooled client — see services.langfuse_health() (#165/#392).
+        r = await get_async_client().get(
+            f"{base}/admin/api/models",
+            params={"local_only": "true"},
+            headers=headers,
+            timeout=timeout_s,
+        )
+        if r.status_code >= 400:
+            return None
+        body = r.json()
+        rows = body.get("models") if isinstance(body, dict) else None
+        return rows if isinstance(rows, list) else None
+    except Exception:  # noqa: BLE001 — network / connection / DNS / bad JSON
+        return None
+
+
+async def peer_health(
+    host_id: str, timeout_s: float = REMOTE_HUB_PROBE_TIMEOUT_S
+) -> Dict[str, Any]:
+    """Probe any hub-running peer host's own hub `/health` endpoint (#179,
+    generalized from the Mac-Mini-only original in #372).
+
+    Clone of ``services.langfuse_health()``'s try/timeout shape, but the
+    address comes from :func:`dial_address_async` (the host's LAN
+    ``address:``, falling back to its ``tailscale:`` name when the LAN path
+    is dead — #396) + ``hub_port()`` — the same single source of truth
+    #178's remote proxy already resolves against, not a new env var. When
+    reachable, also compares build identity against the peer's
+    ``/admin/api/version`` (#181) — its own try/except so a
+    reachable-but-erroring version fetch never flips ``reachable`` back to
+    ``False``.
+    """
+    from src.build_info import git_sha
+    from src.host_profile import get_host
+
+    owner = get_host(host_id)
+    address = await dial_address_async(owner) if owner is not None else None
+    if owner is None or not address:
+        return {"reachable": False, "error": f"host {host_id!r} has no address configured", "address": None}
+    base = f"http://{address}:{hub_port()}"
+    try:
+        # Shared pooled client — see services.langfuse_health() (#165/#392).
+        r = await get_async_client().get(f"{base}/health", timeout=timeout_s)
+        result: Dict[str, Any] = {
+            "reachable": r.status_code < 500,
+            "status_code": r.status_code,
+            "error": "" if r.status_code < 500 else f"HTTP {r.status_code}",
+            "address": base,
+        }
+    except Exception as exc:  # noqa: BLE001 — network / connection / DNS
+        return {
+            "reachable": False,
+            "status_code": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+            "address": base,
+        }
+
+    local_sha = git_sha()
+    result["local_git_sha"] = local_sha
+    result["remote_git_sha"] = None
+    result["git_sha_match"] = None
+    if result["reachable"]:
+        try:
+            v = await get_async_client().get(f"{base}/admin/api/version", timeout=timeout_s)
+            remote_sha = v.json().get("git_sha") if v.status_code < 500 else None
+            result["remote_git_sha"] = remote_sha
+            result["git_sha_match"] = (
+                remote_sha is not None
+                and remote_sha != "unknown"
+                and local_sha != "unknown"
+                and remote_sha == local_sha
+            )
+        except Exception:  # noqa: BLE001 — version probe is best-effort
+            pass
+    return result
+
+
+async def hub_peers(active_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Every other hub-running host's reachability + build identity (#372).
+
+    Generalizes the old Mac-Mini-only Services-card probe into a peer list:
+    every declared host besides ``active_id`` that runs its own hub — has at
+    least one launchable local model, the same test the fleet placement grid
+    already applies per host row (``model_registry.hub_peer_ids``) — is
+    probed in parallel via :func:`peer_health`. Drives the Services card's
+    per-peer status/detail/Wake/Sync rows; a future satellite with a
+    non-empty ``enabled:`` list appears here automatically, no code change.
+    """
+    from src.host_profile import get_host, resolve as resolve_host
+    from src.model_registry import hub_peer_ids
+
+    active = active_id if active_id is not None else resolve_host().id
+    peer_ids = hub_peer_ids(active)
+
+    async def _one(host_id: str) -> Dict[str, Any]:
+        owner = get_host(host_id)
+        health = await peer_health(host_id)
+        return {
+            "host_id": host_id,
+            "display_name": (owner.display_name if owner else None) or host_id,
+            **health,
+        }
+
+    return list(await asyncio.gather(*(_one(hid) for hid in peer_ids)))

@@ -144,7 +144,7 @@ def test_placement_chain_marks_cpu_tier_on_remote_row(monkeypatch):
     async def _offline(profile, **kwargs):
         return None
 
-    monkeypatch.setattr(models_router.svc, "remote_models", _offline)
+    monkeypatch.setattr(models_router.remote_stats, "remote_models", _offline)
 
     body = _admin_client().get("/api/models").json()
     chain = _row(body, "whisper")["placement"]["chain"]
@@ -166,7 +166,7 @@ def test_placement_chain_marks_always_cpu_rows_everywhere(monkeypatch):
     async def _offline(profile, **kwargs):
         return None
 
-    monkeypatch.setattr(models_router.svc, "remote_models", _offline)
+    monkeypatch.setattr(models_router.remote_stats, "remote_models", _offline)
 
     body = _admin_client().get("/api/models").json()
     translate = _row(body, "whisper_translate")["placement"]["chain"]

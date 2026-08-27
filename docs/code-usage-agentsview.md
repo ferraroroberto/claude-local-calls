@@ -31,7 +31,8 @@ The install is a **dedicated venv at the repo root** — never the hub's own
 
 (`.venv-agentsview/` is gitignored. `pipx install agentsview` on PATH, or an
 explicit `AGENTSVIEW_EXE` path in `.env`, work too — that's the exe
-resolution order in `services.agentsview_exe()`, env → local venv → PATH.)
+resolution order in `agentsview_service.agentsview_exe()`, env → local venv →
+PATH.)
 
 Nothing else to start by hand: **the hub launches and monitors AgentsView
 itself.**

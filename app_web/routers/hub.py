@@ -1,4 +1,4 @@
-"""Hub tab API — status, control, live request stream, log tail, install.
+"""Hub tab API — status, control, live request stream, log tail.
 
 Endpoints (all under /admin/api/hub):
   * GET  /status            — pid, uptime, local/lan URLs, build identity
@@ -12,7 +12,13 @@ Endpoints (all under /admin/api/hub):
   * GET  /errors/recent     — non-2xx ring
   * GET  /counters          — per-backend counters since hub start
 
-Plus /admin/api/install/{status,fix-all} which fold in the old install tab.
+The old install tab's endpoints (``/admin/api/install/*``) split into their
+own ``install.py`` router (issue #533) — see that module. The platform
+process-supervision helpers behind /stop and /restart (self-signal,
+launchd/systemd, respawn-watchdog spawn) likewise moved to
+``src/hub_process_control.py`` — they raise no FastAPI ``HTTPException``, so
+per ``app_web/admin_forward.py``'s layering rule they don't belong in
+``app_web``.
 """
 
 from __future__ import annotations
@@ -20,30 +26,32 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import subprocess
 import sys
 import time
-from dataclasses import asdict
-from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
 
 from src.hub_log import HUB_LOG
 from src.hub_observability import OBS
-from src.server_process import WIN_NEW_GROUP, lan_ip
+from src.hub_process_control import (
+    _delayed_darwin_bootout,
+    _delayed_shutdown,
+    _delayed_systemctl,
+    _spawn_respawn_watchdog,
+    _under_systemd,
+)
+from src.server_process import lan_ip
 
-from ._helpers import maybe_json, sse_stream
+from ._helpers import sse_stream
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 # ----------------------------------------------------------------- helpers
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _hub_port() -> int:
@@ -74,146 +82,9 @@ async def hub_status(request: Request) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------- control
-
-def _delayed_shutdown(delay: float = 0.4) -> None:
-    """Signal ourselves to exit after ``delay`` seconds, so the HTTP
-    response can flush first. Uvicorn handles SIGINT/SIGTERM as a clean
-    shutdown on both Windows and POSIX."""
-
-    def _runner() -> None:
-        time.sleep(delay)
-        try:
-            if sys.platform == "win32":
-                # signal.raise_signal arrived in 3.8 and works under
-                # uvicorn's SIGINT handler.
-                signal.raise_signal(signal.SIGINT)
-            else:
-                os.kill(os.getpid(), signal.SIGTERM)
-        except Exception as exc:  # noqa: BLE001 — fall back
-            logger.error("⚠️ shutdown signal failed: %s — using os._exit", exc)
-            os._exit(0)
-
-    import threading
-    threading.Thread(target=_runner, daemon=True).start()
-
-
-def _delayed_darwin_bootout(label: str, delay: float = 0.4) -> None:
-    """Unload the LaunchAgent job entirely, so a deliberate stop actually
-    stays stopped (#181).
-
-    Confirmed empirically on this machine: launchd's ``KeepAlive`` respawns
-    the job after *any* signal-terminated exit — a plain self-SIGTERM
-    (``_delayed_shutdown``) and even an explicit ``launchctl stop`` both got
-    immediately relaunched. ``launchctl bootout`` is the only thing that
-    actually removes the job from launchd's active registry, so nothing is
-    left to respawn. Bringing it back requires ``launchctl bootstrap``
-    again — the ``bootstrap`` action in ``mac/bin/hub-remote-ctl.sh`` and
-    ``src/install.py``'s ``_fix_launchagent()`` both already do this.
-    """
-
-    def _runner() -> None:
-        time.sleep(delay)
-        subprocess.run(
-            ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
-            capture_output=True,
-        )
-
-    import threading
-    threading.Thread(target=_runner, daemon=True).start()
-
-
-def _under_systemd() -> bool:
-    """Are we running as a systemd unit? (#341/#368)
-
-    systemd sets ``INVOCATION_ID`` in every unit's environment — the standard
-    "am I supervised by systemd" signal. Only then do the stop/restart
-    endpoints drive ``systemctl`` (below): a dev running the hub by hand on
-    Linux falls through to the plain self-signal path, which is correct there
-    (nothing would respawn it). Gated on Linux so it never fires elsewhere.
-    """
-    return sys.platform.startswith("linux") and bool(os.environ.get("INVOCATION_ID"))
-
-
-def _delayed_systemctl(verb: str, delay: float = 0.4) -> None:
-    """Run ``sudo -n systemctl <verb> local-llm-hub`` after a short delay so the
-    HTTP response flushes first (#368).
-
-    ``stop``/``restart`` SIGTERM this very process (it lives in the unit's
-    cgroup) — which is the point: unlike the plain self-SIGTERM path,
-    ``Restart=always`` would immediately respawn a bare signal, so a *deliberate*
-    stop must go through systemd itself. ``sudo -n`` never prompts; a missing
-    passwordless-sudo rule is logged rather than hanging.
-    """
-    from src.install import SYSTEMD_UNIT_NAME
-
-    def _runner() -> None:
-        time.sleep(delay)
-        r = subprocess.run(
-            ["sudo", "-n", "systemctl", verb, SYSTEMD_UNIT_NAME],
-            capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            logger.error("⚠️ `sudo -n systemctl %s %s` failed: %s",
-                         verb, SYSTEMD_UNIT_NAME, (r.stderr or "").strip())
-
-    import threading
-    threading.Thread(target=_runner, daemon=True).start()
-
-
-def _restart_log_path() -> Path:
-    """File the detached watchdog redirects the relaunched server into.
-
-    The respawn is detached and outlives this process, so its stdout has
-    nowhere to go in-process — and under ``pythonw`` there is no console
-    at all. We give it a real file so (a) ``src.server``'s import-time
-    logging write doesn't crash a console-less child, and (b) a failed
-    restart leaves a diagnostic trail instead of vanishing silently.
-    """
-    return PROJECT_ROOT / "data" / "logs" / "restart.log"
-
-
-def _spawn_respawn_watchdog() -> None:
-    """Spawn a detached Python that waits for our PID to die then re-launches us.
-
-    The relaunch is made the way ``src/server_process.start()`` spawns the
-    hub — never a bare ``pythonw`` with no stdout. The actual wait/relaunch
-    logic lives in ``src/_respawn_watchdog.py`` (issue #198 — this used to
-    be a ~60-line string literal built up line-by-line and fed to
-    ``python -c``, invisible to lint/type-check and one quoting slip away
-    from a silently-failed restart). That module is deliberately
-    stdlib-only with no import from any other ``src.*`` module: it's the
-    thing recovering *from* a broken deploy, so it can't assume the rest
-    of the hub's package still imports cleanly — only its own module and
-    the empty ``src/__init__.py`` need to load.
-    """
-    parent_pid = os.getpid()
-    port = _hub_port()
-    log_path = _restart_log_path()
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("🔄 respawn watchdog: relaunch log → %s", log_path)
-    # Same flags src.server_process.start() uses for the hub itself —
-    # DETACHED_PROCESS is deliberately omitted, it's mutually exclusive
-    # with CREATE_NO_WINDOW per the Win32 CreateProcess docs (#282/#283).
-    creationflags = WIN_NEW_GROUP
-    # Capture the watchdog's own stdout/stderr to the same log so a
-    # failure *before* it opens its own handle (e.g. a bad argv) is still
-    # visible rather than swallowed by DEVNULL.
-    wd_log = open(log_path, "a", encoding="utf-8", errors="replace")
-    subprocess.Popen(
-        [
-            sys.executable, "-m", "src._respawn_watchdog",
-            "--parent-pid", str(parent_pid),
-            "--port", str(port),
-            "--log-path", str(log_path),
-            "--root", str(PROJECT_ROOT),
-        ],
-        cwd=str(PROJECT_ROOT),
-        stdin=subprocess.DEVNULL,
-        stdout=wd_log,
-        stderr=subprocess.STDOUT,
-        creationflags=creationflags,
-    )
-
+# The self-signal / launchd / systemd / respawn-watchdog helpers these two
+# endpoints drive now live in src/hub_process_control.py (issue #533) — pure
+# process supervision, no FastAPI.
 
 @router.post("/api/hub/stop")
 async def hub_stop() -> Dict[str, Any]:
@@ -333,72 +204,3 @@ async def stats() -> Dict[str, Any]:
     gpus = await asyncio.to_thread(system_stats.gpu_stats)
     history = OBS.stats_snapshot()
     return {"ram": ram, "cpu": cpu, "gpus": gpus, "history": history}
-
-
-# ----------------------------------------------------------------- install
-
-@router.get("/api/install/status")
-async def install_status() -> Dict[str, Any]:
-    """Run every install check off the event loop — many shell out to
-    ``claude --version`` / ``nvidia-smi`` / ``llama-server --version``
-    via blocking subprocess.run, which would otherwise pin the entire
-    uvicorn worker for seconds while other admin requests queue up."""
-    from src import install
-
-    report = await asyncio.to_thread(install.run_all_checks)
-    return {
-        "worst_status": report.worst_status,
-        "ok": report.ok,
-        "checks": [asdict(c) for c in report.checks],
-    }
-
-
-@router.post("/api/install/fix")
-async def install_fix(request: Request) -> Dict[str, Any]:
-    """Run a single fix by ``fix_id``.
-
-    Uses the brief use_cache=True report (issue #198): the admin UI always
-    calls install_status() — which populates that cache — moments before a
-    user clicks a fix button, so locating one check by fix_id doesn't need
-    to force a second full (expensive) battery run.
-    """
-    from src import install
-
-    body = await maybe_json(request)
-    fix_id = (body or {}).get("fix_id")
-    if not fix_id:
-        raise HTTPException(status_code=400, detail="fix_id is required")
-    report = await asyncio.to_thread(install.run_all_checks, use_cache=True)
-    target = next((c for c in report.checks if c.fix_id == fix_id), None)
-    if target is None:
-        raise HTTPException(status_code=404, detail=f"no fixable check with fix_id={fix_id!r}")
-    fn = install.fix_fn_for(target)
-    if fn is None:
-        raise HTTPException(status_code=400, detail=f"no fix function for {fix_id!r}")
-    try:
-        await asyncio.to_thread(fn)
-    except Exception as exc:  # noqa: BLE001 — surface the failure to the UI
-        raise HTTPException(status_code=500, detail=f"fix {fix_id!r} failed: {exc}")
-    return {"ok": True, "fix_id": fix_id}
-
-
-@router.post("/api/install/fix-all")
-async def install_fix_all() -> Dict[str, Any]:
-    """Run every currently-fixable check. Same brief use_cache=True reuse
-    as install_fix() — see its docstring."""
-    from src import install
-
-    report = await asyncio.to_thread(install.run_all_checks, use_cache=True)
-    ran: List[Dict[str, Any]] = []
-    for c in report.checks:
-        if c.status not in ("missing", "error"):
-            continue
-        fn = install.fix_fn_for(c)
-        if fn is None:
-            continue
-        try:
-            await asyncio.to_thread(fn)
-            ran.append({"fix_id": c.fix_id, "ok": True})
-        except Exception as exc:  # noqa: BLE001
-            ran.append({"fix_id": c.fix_id, "ok": False, "error": str(exc)})
-    return {"ran": ran}

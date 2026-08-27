@@ -1,7 +1,8 @@
-"""HTTP-level tests for app_web/routers/hub.py's install endpoints
+"""HTTP-level tests for app_web/routers/install.py's install endpoints
 (issue #198): install_fix/install_fix_all now call
 install.run_all_checks(use_cache=True) instead of forcing a second full
-battery run just to locate one check by fix_id.
+battery run just to locate one check by fix_id. (Router split out of
+hub.py in issue #533 — endpoint paths are unchanged.)
 """
 
 from __future__ import annotations

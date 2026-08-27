@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 
-from src import backend_process, model_registry, server_lifecycle as sl, services
+from src import agentsview_service, backend_process, model_registry, server_lifecycle as sl, services
 
 
 def _stub_real_ops(monkeypatch):
@@ -26,7 +26,7 @@ def _stub_real_ops(monkeypatch):
         return {"ok": True, "steps": []}
 
     monkeypatch.setattr(services, "launch_stack", _no_launch)
-    monkeypatch.setattr(services, "launch_agentsview", _no_launch)
+    monkeypatch.setattr(agentsview_service, "launch_agentsview", _no_launch)
 
 
 def test_wire_observatory_loop_tracks_its_tasks(monkeypatch):

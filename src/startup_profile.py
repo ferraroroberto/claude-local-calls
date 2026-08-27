@@ -5,8 +5,8 @@ every boot (tray, ``run_hub.bat``, or ``python -m src.run_backend hub``):
 
   * ``docker`` / ``langfuse`` — whether to run ``services.launch_stack()``
     (start Docker Desktop if down, then the Langfuse containers) at startup.
-  * ``agentsview`` — whether to run ``services.launch_agentsview()`` (the
-    optional AgentsView server feeding the Code tab's AGY vendor, #280).
+  * ``agentsview`` — whether to run ``agentsview_service.launch_agentsview()``
+    (the optional AgentsView server feeding the Code tab's AGY vendor, #280).
 
 Since #430 this file carries **service flags only**. The former ``models``
 autostart list (and the fleet-wide ``config/fleet_placement.json`` it

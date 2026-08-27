@@ -15,7 +15,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from src import backend_process, model_registry, server as server_mod, services
+from src import agentsview_service, backend_process, model_registry, server as server_mod, services
 from src.diagnostics import report, sampler, settings as diag_settings, store
 
 
@@ -39,7 +39,7 @@ def _stub_real_backend_ops(monkeypatch):
         return {"ok": True, "steps": []}
 
     monkeypatch.setattr(services, "launch_stack", _no_launch)
-    monkeypatch.setattr(services, "launch_agentsview", _no_launch)
+    monkeypatch.setattr(agentsview_service, "launch_agentsview", _no_launch)
 
 
 @pytest.fixture()

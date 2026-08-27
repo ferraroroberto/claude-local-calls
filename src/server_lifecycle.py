@@ -219,6 +219,7 @@ async def _autostart_services() -> None:
     ``hosts:`` chains + ``startup:`` policy) as the sole cross-host source of
     truth.
     """
+    from . import agentsview_service
     from . import services as svc
     from .startup_profile import load_startup_profile
 
@@ -237,7 +238,7 @@ async def _autostart_services() -> None:
 
     if profile.agentsview:
         try:
-            result = await svc.launch_agentsview()
+            result = await agentsview_service.launch_agentsview()
             logger.info(
                 "autostart: agentsview launch %s: %s",
                 "ok" if result["ok"] else "failed",

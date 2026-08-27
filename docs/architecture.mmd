@@ -30,7 +30,7 @@ flowchart TB
     REG["model_registry.py\nModel rows from config/models.yaml +\nhub_peer_ids() (hub-running peers, #372)"]
     HOSTP["host_profile.py\nresolve active host"]
     OTELRECV["server_otel_receiver.py\nPOST /v1/metrics (OTLP receiver, issue #68)"]
-    SVC["services.py\nDocker/Langfuse probe + launch_stack,\npeer health probe (issue #27, generalized #372)"]
+    SVC["services.py\nDocker/Langfuse probe + launch_stack\n(issue #27; peer probe -> remote_stats,\nagentsview -> agentsview_service, #533)"]
     CFGWRITE["config_write.py (issue #424)\nadmin placement edits write through to git:\nvalidate (#375 hard gate) -> ruamel comment-preserving\nmodels.yaml edit -> config-bot commit -> push origin main;\nsingle writer (hub.config_write_host) + drift sync loop"]
   end
   TRAY --> SRV
@@ -44,9 +44,10 @@ flowchart TB
   SRV --> REG
   REG --> HOSTP
   LIFECYCLE --> SVC
+  LIFECYCLE --> AGENTSVIEWSVC
   LIFECYCLE --> REMOTEBOOT
   SVC --> LANGFUSE
-  SVC -->|probe + launch| AGENTSVIEW
+  AGENTSVIEWSVC -->|probe + launch| AGENTSVIEW
 
   subgraph routing["Backend wrappers"]
     CLAUDECLI["claude_cli.py\nsubprocess.run claude -p"]
@@ -77,7 +78,7 @@ flowchart TB
     REMOTEPROXY["remote_proxy.py\nresolve owning host's own base_url\nfor a model this host doesn't own"]
     REMOTEBOOT["remote_bootstrap.py\nSSH forced-command verbs: bootstrap/sync\n(dead peer hub, #181; OS-agnostic tower side —\nmac/ + linux/ bin/hub-remote-ctl.sh dispatchers, #368)\n+ general-SSH reboot/shutdown (#309/#311)"]
     MACHINECON["machine_console.py\nMachines-tab console (#309): host inventory\n+ per-machine card assembly + RDP gen"]
-    REMOTESTATS["remote_stats.py\nTCP liveness (is the box on?) + general-SSH\nCPU/RAM/GPU/disk/uptime snapshot (#309)"]
+    REMOTESTATS["remote_stats.py\nTCP liveness (is the box on?) + general-SSH\nCPU/RAM/GPU/disk/uptime snapshot (#309);\npeer-probe trio: remote_models/peer_health/\nhub_peers (from services.py, #533)"]
     SSHTERM["ssh_terminal.py\nin-browser SSH terminal (#309): drives\napp-launcher's session-host over loopback"]
     SSHEXEC["ssh_exec.py (#470)\nthe one `ssh <user>@<host> <cmd>` builder:\nBatchMode + ConnectTimeout + accept-new,\nNO_WINDOW spawn; callers adapt the result shape"]
     DIAG["diagnostics/ (issue #315)\nsampler (in-hub asyncio task, no resident proc) ·\nattribution (process -> fleet app + ports, per-OS) ·\nrules (health verdict) · coverage (measured vs blind, #322) ·\nreport (summary/drift/md) · store (SQLite) ·\ningest (foreign portable capture, #316)"]
@@ -92,7 +93,7 @@ flowchart TB
   AUDIOR --> REMOTEPROXY
   REMOTEPROXY -->|effective owner of a hosts: chain| FAILOVER
   LIFECYCLE -->|probe/decide/act loop| FAILOVER
-  FAILOVER -->|peer reachability via services.peer_health| SVC
+  FAILOVER -->|peer reachability via remote_stats.peer_health| REMOTESTATS
   FAILOVER -->|start/stop local failover instance| BACKPROC
   LIFECYCLE -->|periodic reconcile| FLEETREC
   FLEETREC -->|skip host if under maintenance| FLEETMAINT
@@ -133,6 +134,8 @@ flowchart TB
     BACKPROC["backend_process.py\nper-model Popen: llama-server ·\nwhisper-server · tts_server shim ·\nparakeet_server · comfyui-server (#492)"]
     ONDEMAND["on_demand.py (issue #422)\nstartup: on_demand lifecycle:\nspawn-on-first-request (request waits for\nreadiness) + idle-unload watchdog +\nVRAM overcommit warning (#375 math)"]
     WATCHDOG["_respawn_watchdog.py\ndetached: wait for parent PID to die,\nthen relaunch (stdlib-only, issue #198)"]
+    HUBCTL["hub_process_control.py (#533)\nself stop/restart: SIGINT/SIGTERM,\nlaunchd bootout/kickstart, systemctl,\nrespawn-watchdog spawn"]
+    AGENTSVIEWSVC["agentsview_service.py (#533)\nAgentsView probe/launch/stop\n(split out of services.py)"]
   end
   RUNMODEL --> BACKPROC
   TRAY -->|Models submenu| BACKPROC
@@ -143,6 +146,7 @@ flowchart TB
   SRV -->|ensure_ready before dispatch (chat/messages/speech)| ONDEMAND
   LIFECYCLE -->|idle-unload loop| ONDEMAND
   ONDEMAND -->|start/stop + reachability| BACKPROC
+  HUBCTL -->|spawns| WATCHDOG
 
   subgraph ext["External processes / subscriptions"]
     CLAUDEBIN["claude -p CLI\n(Claude Code subscription)"]
@@ -175,14 +179,14 @@ flowchart TB
 
   subgraph admin["app_web/ — admin SPA, sub-app mounted at /admin"]
     WSRV["server.py\ncreate_app() + versioned static"]
-    WROUT["routers/\nhub · models · startup_profile · fleet_placement · roles ·\nplayground · services · telemetry · code_usage ·\nglossary · hosts · machines · diagnostics · auth ·\nwebauthn · version · misc"]
+    WROUT["routers/\nhub · install (#533) · models · startup_profile ·\nfleet_placement · roles · playground · services ·\ntelemetry · code_usage · glossary · hosts · machines ·\ndiagnostics · auth · webauthn · version · misc"]
     WSTATIC["static/\nindex.html SPA + per-tab JS/CSS"]
   end
   SRV -.mounts.-> WSRV
   WSRV --> WROUT
   WSRV --> WSTATIC
   WROUT -->|hub tab| SERVPROC
-  WROUT -->|hub restart| WATCHDOG
+  WROUT -->|hub stop/restart| HUBCTL
   WROUT -->|models tab| BACKPROC
   WROUT -->|fleet-placement tab: reconcile (read-only summary, #431)| FLEETREC
   WROUT -->|models tab: PUT placement (#424)| CFGWRITE

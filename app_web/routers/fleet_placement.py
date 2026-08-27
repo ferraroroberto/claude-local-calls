@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter
 
 from src import backend_process as bp
-from src import fleet_reconcile, remote_stats, services as svc, system_stats
+from src import fleet_reconcile, remote_stats, system_stats
 from src.host_profile import HostProfile, all_hosts, resolve as resolve_host
 from src.model_registry import (
     all_models,
@@ -188,7 +188,7 @@ async def _host_status(
     gpu = None
     if reachable and runs_hub:
         # Only a hub-running peer exposes a models API for live running badges.
-        rows = await svc.remote_models(profile, timeout_s=_GRID_PROBE_TIMEOUT_S) or []
+        rows = await remote_stats.remote_models(profile, timeout_s=_GRID_PROBE_TIMEOUT_S) or []
         running = [
             r["id"] for r in rows
             if isinstance(r, dict) and r.get("id") in eligible_set and r.get("reachable")

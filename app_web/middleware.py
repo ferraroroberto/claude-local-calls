@@ -13,6 +13,12 @@ websocket route must therefore call :func:`authorize_websocket`
 explicitly before ``accept()`` — the middleware cannot do it for you.
 Most live-ops streams use SSE (plain HTTP, covered here); the Machines
 tab's terminal proxy is the one websocket route, and it calls the guard.
+
+The loopback and allowlist bypasses trust a caller for *where it connected
+from*. A page served from off this machine can borrow those positions by having
+the user's browser make the request, so a request whose ``Origin`` is not local
+is held to the token instead — see :func:`_is_foreign_origin_request`, which
+draws that line with `src/cors_policy.py`'s own definition of a local origin.
 """
 
 from __future__ import annotations
@@ -20,12 +26,15 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import logging
+import re
 from typing import Any, FrozenSet, List, Optional, Tuple
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
+
+from src.cors_policy import LOOPBACK_ORIGIN_REGEX
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +85,70 @@ AUTH_EXEMPT_EXACT = frozenset(
 )
 
 
+# Methods with no side effects. A browser can already issue these at will
+# (an <img>/<script>/<link> tag is enough) and the CORS policy in
+# ``src/cors_policy.py`` is what stops another site from *reading* the answer,
+# so gating them here would add no protection and would break ordinary
+# same-origin asset loads.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# One definition of "a local origin", shared with the CORS policy so the set of
+# origins allowed to *read* a response and the set allowed to keep the
+# credential-free bypasses can never drift apart.
+_LOOPBACK_ORIGIN_RE = re.compile(LOOPBACK_ORIGIN_REGEX)
+
+
+def _is_loopback_origin(origin: str) -> bool:
+    return _LOOPBACK_ORIGIN_RE.fullmatch(origin.strip().lower()) is not None
+
+
+def _is_foreign_origin_request(headers, method: Optional[str]) -> bool:
+    """True when a browser reports this request was initiated off-box.
+
+    ``Origin`` is the signal. A browser attaches it to every request that can
+    change something (anything but GET/HEAD) and to every cross-origin one, and
+    a page cannot forge it. "Foreign" here means exactly what
+    :data:`~src.cors_policy.LOOPBACK_ORIGIN_REGEX` already defines as non-local,
+    so this stays the same boundary the CORS policy draws — a sister webapp
+    served from another loopback port is a first-class caller (that is the whole
+    point of `src/cors_policy.py`) and keeps the bypasses; a page from off the
+    machine does not.
+
+    ``Sec-Fetch-Site`` is consulted only when no ``Origin`` is present, to cover
+    a browser that omits it. A non-browser caller (curl, an SDK, the tray, a
+    peer hub's httpx client) sends neither header and is never foreign: it holds
+    no ambient credential for another site to borrow, so the trust rules apply
+    to it unchanged.
+
+    ``method`` is ``None`` for a websocket handshake, which is always checked —
+    a handshake is nominally a GET, but the route it opens is not read-only.
+    """
+    if method is not None and method.upper() in SAFE_METHODS:
+        return False
+    origin = (headers.get("origin", "") or "").strip()
+    if origin:
+        return not _is_loopback_origin(origin)
+    return (headers.get("sec-fetch-site", "") or "").strip().lower() == "cross-site"
+
+
+def _presented_credential(headers, query_params) -> str:
+    """The credential this request carries, from any of the accepted places."""
+    auth_header = headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        presented = auth_header[7:].strip()
+        if presented:
+            return presented
+    # ``x-api-key`` is how the Anthropic SDK authenticates (#461), so an SDK
+    # pointed at the hub the ordinary way — ``api_key=<hub token>``, no
+    # ``default_headers`` special-casing — presents its credential here.
+    # Accepted as an equal alternative to the bearer token: same constant-time
+    # compare, same 401 when it's wrong.
+    presented = (headers.get("x-api-key", "") or "").strip()
+    if presented:
+        return presented
+    return query_params.get("token", "").strip()
+
+
 def _client_in_allowlist(client_host: str, allowlist: List[str]) -> bool:
     try:
         ip = ipaddress.ip_address(client_host)
@@ -98,6 +171,7 @@ def _caller_is_trusted(
     query_params,
     app_state,
     get_token,
+    method: Optional[str] = None,
 ) -> bool:
     """Core caller-identity decision, independent of ASGI scope type.
 
@@ -108,13 +182,30 @@ def _caller_is_trusted(
     over a websocket must not be easier to reach than the same route over
     HTTP. Returns ``True`` when the caller may proceed.
 
-    Every ``True`` below is an independent OR — the *order* they're checked
-    in doesn't change the outcome, only whether a token check is reached.
+    The three source-based rules (no token configured, loopback,
+    ``extra_allowlist``) are independent ORs — the order they're checked in
+    doesn't change the outcome. The ``Origin`` check ahead of them is not: it
+    decides *whether they apply at all*, because a request a browser made on
+    behalf of an off-box page arrives from a trusted-looking source without
+    being a trusted caller.
+
     Exempt *paths* are deliberately not part of this: they're an HTTP-only
     concern (login/static must load before a token exists), and a websocket
     route is never exempt.
     """
     token = (get_token() or "").strip()
+    presented = _presented_credential(headers, query_params)
+
+    # The three trust rules below (no token configured, loopback, allowlisted
+    # peer) all key off *where the connection came from* rather than what it
+    # carries. That is the right call for the callers they exist for — the tray,
+    # a local script, a peer hub — but a page served from off this machine can
+    # make the user's own browser open a connection from exactly those places.
+    # Such a request names itself in ``Origin`` and has to present the token
+    # like any other unrecognised caller.
+    if _is_foreign_origin_request(headers, method):
+        return bool(token and presented and hmac.compare_digest(presented, token))
+
     if not token:
         return True
     if client_host in LOOPBACK_HOSTS and not _is_proxied(headers):
@@ -123,20 +214,6 @@ def _caller_is_trusted(
     extra = getattr(cfg, "extra_allowlist", []) if cfg else []
     if _client_in_allowlist(client_host, extra):
         return True
-
-    presented = ""
-    auth_header = headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        presented = auth_header[7:].strip()
-    if not presented:
-        # ``x-api-key`` is how the Anthropic SDK authenticates (#461), so an
-        # SDK pointed at the hub the ordinary way — ``api_key=<hub token>``,
-        # no ``default_headers`` special-casing — presents its credential
-        # here. Accepted as an equal alternative to the bearer token: same
-        # constant-time compare, same 401 when it's wrong.
-        presented = (headers.get("x-api-key", "") or "").strip()
-    if not presented:
-        presented = query_params.get("token", "").strip()
 
     return bool(presented and hmac.compare_digest(presented, token))
 
@@ -163,6 +240,7 @@ async def authorize_websocket(websocket, get_token) -> bool:
         query_params=websocket.query_params,
         app_state=websocket.app.state,
         get_token=get_token,
+        method=None,  # a handshake is a GET, but the route it opens is not read-only
     ):
         return True
     logger.warning("⚠️ websocket handshake refused for %s", client_host or "?")
@@ -194,6 +272,7 @@ def _authenticate(
         query_params=request.query_params,
         app_state=request.app.state,
         get_token=get_token,
+        method=request.method,
     ):
         return None
 

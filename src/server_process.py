@@ -233,7 +233,7 @@ def snapshot_listening_pids() -> dict[int, list[int]]:
         if sys.platform == "win32":
             out = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, encoding="oem", errors="replace", timeout=5,
                 creationflags=NO_WINDOW,
             ).stdout
             line_re = re.compile(
@@ -285,7 +285,7 @@ def find_port_pids(port: int) -> list[int]:
         if sys.platform == "win32":
             out = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, encoding="oem", errors="replace", timeout=5,
                 creationflags=NO_WINDOW,
             ).stdout
             pids: set[int] = set()
@@ -361,7 +361,7 @@ def kill_pid(target_pid: int) -> tuple[bool, str]:
         if sys.platform == "win32":
             r = subprocess.run(
                 ["taskkill", "/F", "/PID", str(target_pid)],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, encoding="oem", errors="replace", timeout=5,
                 creationflags=NO_WINDOW,
             )
             if r.returncode == 0:

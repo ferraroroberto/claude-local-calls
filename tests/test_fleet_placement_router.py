@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app_web.routers import fleet_placement as fpr  # noqa: E402
 from src import backend_process as bp  # noqa: E402
-from src import fleet_reconcile, remote_stats, services as svc, system_stats  # noqa: E402
+from src import fleet_reconcile, remote_stats, system_stats  # noqa: E402
 from src import server as server_mod  # noqa: E402
 
 
@@ -45,7 +45,7 @@ def _stub_status(monkeypatch, reachable=True):
         return [{"id": "parakeet", "reachable": True}]
 
     monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
-    monkeypatch.setattr(svc, "remote_models", remote_models)
+    monkeypatch.setattr(remote_stats, "remote_models", remote_models)
     _stub_collect(monkeypatch)
 
 
@@ -64,7 +64,7 @@ def test_get_lists_every_fleet_host_with_manageability(monkeypatch):
         return []
 
     monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
-    monkeypatch.setattr(svc, "remote_models", remote_models)
+    monkeypatch.setattr(remote_stats, "remote_models", remote_models)
     _stub_collect(monkeypatch)
 
     client = TestClient(server_mod.app)
@@ -137,7 +137,7 @@ def _stub_gaming_online(monkeypatch):
         return []  # no live-running badges — the desired set is what capacity sums
 
     monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
-    monkeypatch.setattr(svc, "remote_models", remote_models)
+    monkeypatch.setattr(remote_stats, "remote_models", remote_models)
     _stub_collect(monkeypatch)
 
 
@@ -249,7 +249,7 @@ def test_capacity_excludes_cpu_resident_rows(monkeypatch):
         return []
 
     monkeypatch.setattr(remote_stats, "is_reachable", is_reachable)
-    monkeypatch.setattr(svc, "remote_models", remote_models)
+    monkeypatch.setattr(remote_stats, "remote_models", remote_models)
     _stub_collect(monkeypatch)
     monkeypatch.setattr(
         fpr, "_vram_estimates",

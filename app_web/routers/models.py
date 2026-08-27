@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 
 from src import backend_process as bp
 from src import config_write
-from src import services as svc
+from src import remote_stats
 from src.host_profile import all_hosts, get_host, resolve as resolve_host
 from src.model_failover import effective_owner
 from src.model_registry import (
@@ -183,7 +183,7 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
 
     ``local_only=true`` skips the remote-merge step and returns just this
     host's own rows — used when a peer hub fetches *this* endpoint to
-    build its own merge (``svc.remote_models``). Without it, two
+    build its own merge (``remote_stats.remote_models``). Without it, two
     bidirectionally cross-enabled hosts recurse into each other forever:
     A's merge calls B's `/api/models`, which (unless told not to) tries to
     merge in A's rows by calling A's `/api/models` again, and so on.
@@ -289,7 +289,7 @@ async def list_models_for_admin(local_only: bool = False) -> Dict[str, Any]:
 
     for host_id, models_for_host in owners.items():
         owner_profile = get_host(host_id)
-        fetched = await svc.remote_models(owner_profile) if owner_profile else None
+        fetched = await remote_stats.remote_models(owner_profile) if owner_profile else None
         by_id = {r.get("id"): r for r in fetched if isinstance(r, dict)} if fetched is not None else None
         for m in models_for_host:
             remote_row = by_id.get(m.id) if by_id is not None else None

@@ -19,7 +19,7 @@ os.environ.setdefault("LOCAL_LLM_HUB_HOST", "tower")
 
 from src import backend_process as bp  # noqa: E402
 from src import fleet_maintenance, fleet_reconcile as fr, model_registry  # noqa: E402
-from src import remote_bootstrap, services  # noqa: E402
+from src import remote_bootstrap, remote_stats  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -68,7 +68,7 @@ def test_reachable_remote_starts_every_desired_model(monkeypatch):
     calls: list = []
     _stub_peer_transport(monkeypatch, calls)
     _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet", "qwen"]})
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": True}))
+    monkeypatch.setattr(remote_stats, "peer_health", _async_ret({"reachable": True}))
 
     results = _run(fr.reconcile_once())
 
@@ -85,7 +85,7 @@ def test_unreachable_can_ssh_host_is_woken(monkeypatch):
     _stub_wol(monkeypatch, [])
     woke = {"woke": []}
     _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
+    monkeypatch.setattr(remote_stats, "peer_health", _async_ret({"reachable": False}))
 
     async def fake_bootstrap(host_id):
         woke["woke"].append(host_id)
@@ -105,7 +105,7 @@ def test_woken_host_converges_in_same_pass(monkeypatch):
     _stub_peer_transport(monkeypatch, calls)
     _stub_wol(monkeypatch, [])
     _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
+    monkeypatch.setattr(remote_stats, "peer_health", _async_ret({"reachable": False}))
     monkeypatch.setattr(remote_bootstrap, "bootstrap_host", _async_ret({"ok": True}))
 
     _run(fr.reconcile_once())
@@ -123,7 +123,7 @@ def test_unreachable_mac_host_gets_wol_then_bootstrap_same_pass(monkeypatch):
     _stub_wol(monkeypatch, sent)
     bootstraps: list = []
     _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
+    monkeypatch.setattr(remote_stats, "peer_health", _async_ret({"reachable": False}))
 
     async def fake_bootstrap(host_id):
         bootstraps.append(host_id)
@@ -145,7 +145,7 @@ def test_unreachable_macless_host_sends_no_wol(monkeypatch):
     sent: list = []
     _stub_wol(monkeypatch, sent)
     _stub_desired(monkeypatch, {"openclaw": ["parakeet"]})  # no wired NIC, no mac
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
+    monkeypatch.setattr(remote_stats, "peer_health", _async_ret({"reachable": False}))
     monkeypatch.setattr(remote_bootstrap, "bootstrap_host", _async_ret({"ok": False}))
 
     results = _run(fr.reconcile_once())
@@ -161,7 +161,7 @@ def test_wol_send_failure_is_swallowed_and_pass_continues(monkeypatch):
     _stub_wol(monkeypatch, [], fail=True)
     bootstraps: list = []
     _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": False}))
+    monkeypatch.setattr(remote_stats, "peer_health", _async_ret({"reachable": False}))
 
     async def fake_bootstrap(host_id):
         bootstraps.append(host_id)
@@ -188,7 +188,7 @@ def test_empty_desired_host_is_skipped(monkeypatch):
     # desired_placement() omits empty hosts by construction; an explicit empty
     # entry must still be skipped without probing.
     _stub_desired(monkeypatch, {"mac-mini-m4": []})
-    monkeypatch.setattr(services, "peer_health", health)
+    monkeypatch.setattr(remote_stats, "peer_health", health)
 
     results = _run(fr.reconcile_once())
     assert results == {}          # nothing desired → nothing converged
@@ -226,7 +226,7 @@ def test_maintained_host_is_skipped_entirely(monkeypatch):
         return {"reachable": False}
 
     _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
-    monkeypatch.setattr(services, "peer_health", health)
+    monkeypatch.setattr(remote_stats, "peer_health", health)
     monkeypatch.setattr(remote_bootstrap, "bootstrap_host", _async_ret({"ok": True}))
     monkeypatch.setattr(fleet_maintenance, "is_under_maintenance", lambda host_id: True)
 
@@ -242,7 +242,7 @@ def test_expired_maintenance_host_converges_normally(monkeypatch):
     calls: list = []
     _stub_peer_transport(monkeypatch, calls)
     _stub_desired(monkeypatch, {"mac-mini-m4": ["parakeet"]})
-    monkeypatch.setattr(services, "peer_health", _async_ret({"reachable": True}))
+    monkeypatch.setattr(remote_stats, "peer_health", _async_ret({"reachable": True}))
     # A real (non-monkeypatched) call against an empty maintenance file — the
     # host has no marker at all, i.e. the equivalent of an expired one.
     monkeypatch.setattr(fleet_maintenance, "load_fleet_maintenance", lambda path=None: {})

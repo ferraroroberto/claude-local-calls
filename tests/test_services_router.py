@@ -3,7 +3,9 @@
 Verifies the status endpoint shape, the launch endpoint orchestration
 (with the heavy helpers monkeypatched out — we don't want to spawn
 Docker Desktop or run docker compose from a unit test), and a couple
-of pure-Python behaviours on the helpers module.
+of pure-Python behaviours on the helpers module. The peer-probe trio
+(``peer_health``/``hub_peers``) moved to ``src/remote_stats.py`` (#533) —
+patched there below, not on ``svc``.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import sys
 
 from fastapi.testclient import TestClient
 
+from src import remote_stats
 from src import server as server_mod
 from src import services as svc
 
@@ -149,7 +152,7 @@ def test_langfuse_health_unreachable_returns_clean_payload(monkeypatch):
 
 
 async def _fake_peer_health(host_id, timeout_s=None):
-    """Stub for svc.peer_health — no real network I/O against any peer."""
+    """Stub for remote_stats.peer_health — no real network I/O against any peer."""
     return {
         "reachable": host_id == "gaming",
         "status_code": 200 if host_id == "gaming" else 0,
@@ -162,7 +165,7 @@ async def _fake_peer_health(host_id, timeout_s=None):
 
 
 def test_services_status_endpoint_shape(monkeypatch):
-    monkeypatch.setattr(svc, "peer_health", _fake_peer_health)
+    monkeypatch.setattr(remote_stats, "peer_health", _fake_peer_health)
     r = _client().get("/admin/api/services/status")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -181,7 +184,7 @@ def test_services_status_peers_cover_every_hub_running_host(monkeypatch):
     and mac-mini-m4 both surface as peer rows; openclaw (managed-only, no
     `enabled:`) must not — same `runs_hub` test the fleet placement grid
     already applies per host (model_registry.hub_peer_ids)."""
-    monkeypatch.setattr(svc, "peer_health", _fake_peer_health)
+    monkeypatch.setattr(remote_stats, "peer_health", _fake_peer_health)
     r = _client().get("/admin/api/services/status")
     assert r.status_code == 200, r.text
     peers = r.json()["peers"]

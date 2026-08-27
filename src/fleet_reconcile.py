@@ -132,14 +132,14 @@ async def _reconcile_local(desired: List[str]) -> Dict[str, Any]:
 
 async def _reconcile_remote(host_id: str, desired: List[str]) -> Dict[str, Any]:
     """Wake (if needed) + start the desired models on a peer."""
-    from . import remote_bootstrap, services
+    from . import remote_bootstrap, remote_stats
     from .host_profile import get_host
 
     owner = get_host(host_id)
     if owner is None or not owner.address:
         return {"reachable": False, "error": "no address configured"}
 
-    health = await services.peer_health(host_id)
+    health = await remote_stats.peer_health(host_id)
     reachable = bool(health.get("reachable"))
     woke: Any = None
     wol_sent = False

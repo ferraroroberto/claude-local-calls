@@ -1107,7 +1107,9 @@ local-llm-hub/
 │   ├── host_profile.py       # pick active host row
 │   ├── remote_proxy.py       # resolve a non-local model row's owning host + forward verbatim
 │   ├── remote_bootstrap.py   # SSH-triggered remote hub bootstrap/sync (#181) + machine power (#309/#311)
-│   ├── remote_stats.py       # remote machine liveness + stats for the Machines console (#309)
+│   ├── remote_stats.py       # remote machine liveness + stats for the Machines console (#309);
+│   │                         #   + the cross-host peer-probe trio: remote_models/peer_health/
+│   │                         #   hub_peers (moved from services.py, #533)
 │   ├── machine_console.py    # Machines-tab data layer: per-machine CPU/RAM/GPU/disk/uptime (#309)
 │   ├── ssh_terminal.py       # in-browser SSH terminal, reusing app-launcher's session-host PTY (#309)
 │   ├── ssh_exec.py           # the one `ssh <user>@<host> <cmd>` builder (remote_stats + remote_bootstrap, #470)
@@ -1122,6 +1124,8 @@ local-llm-hub/
 │   ├── event_loop.py         # Windows proactor-loop shim so uvicorn survives client aborts (#222)
 │   ├── build_info.py         # single source of truth for "what commit is this process running"
 │   ├── services.py           # host-side service helpers: Docker engine + Langfuse stack (#27)
+│   ├── agentsview_service.py # optional AgentsView process lifecycle: probe/launch/stop
+│   │                         #   (moved from services.py, #533)
 │   ├── code_usage.py         # host-side Claude Code usage parser + get_summary aggregation API
 │   ├── usage_common.py       # shared vendor substrate: UsageRecord/FileStats + parsing helpers (#451)
 │   ├── usage_pricing.py      # per-vendor $/Mtok pricing tables + record_costs (#451)
@@ -1161,15 +1165,19 @@ local-llm-hub/
 │   ├── static_versioning.py  # ?v=<hash> stamping for /admin/static assets
 │   ├── hub_log.py            # in-memory log ring buffer (admin Hub tab streams it)
 │   ├── hub_observability.py  # live request ring, per-backend counters, SSE fan-out
+│   ├── hub_process_control.py  # self stop/restart: SIGINT/SIGTERM, launchd bootout/kickstart,
+│   │                         #   systemctl, respawn-watchdog spawn (moved from
+│   │                         #   app_web/routers/hub.py, #533)
 │   └── _respawn_watchdog.py  # detached watchdog for the hub's admin-triggered restart (#198)
 ├── app_web/                  # FastAPI sub-app at /admin (HTML/JS SPA — no bundler)
 │   ├── server.py             #   create_app() — middleware, routers, static mount
 │   ├── middleware.py         #   bearer-token gate (loopback bypasses)
 │   ├── admin_forward.py      #   forward a request into the /admin sub-app in-process
-│   ├── routers/              #   misc / version / auth / webauthn / hub / models /
-│   │                         #   startup_profile / fleet_placement / fleet_maintenance /
-│   │                         #   roles / playground / services / telemetry / code_usage /
-│   │                         #   glossary / hosts / machines / diagnostics
+│   ├── routers/              #   misc / version / auth / webauthn / hub / install (#533) /
+│   │                         #   models / startup_profile / fleet_placement /
+│   │                         #   fleet_maintenance / roles / playground / services /
+│   │                         #   telemetry / code_usage / glossary / hosts / machines /
+│   │                         #   diagnostics
 │   └── static/               #   index.html + main.js + state.js + tabs.js + api.js +
 │                             #   hub.js + models.js + startup.js + fleet_placement.js +
 │                             #   playground.js + code_usage.js/.css + diagnostics.js +

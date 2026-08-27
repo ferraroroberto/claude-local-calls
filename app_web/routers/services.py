@@ -1,6 +1,8 @@
 """Services tab API — Docker engine + Langfuse stack health & launch.
 
-Surfaces the host-side ``src.services`` helpers behind these endpoints:
+Surfaces the host-side ``src.services`` (Docker/Langfuse), ``src.remote_stats``
+(hub-peer probing, #533) and ``src.agentsview_service`` (AgentsView, #533)
+helpers behind these endpoints:
 
   * ``GET  /admin/api/services/status`` — quick combined probe used by
     the Hub tab's services card; polls every few seconds while the Hub
@@ -27,6 +29,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter
 
+from src import agentsview_service, remote_stats
 from src import services as svc
 from src.host_profile import resolve as resolve_host
 
@@ -43,12 +46,12 @@ async def services_status() -> Dict[str, Any]:
     """
     docker = await svc.docker_status()
     langfuse = await svc.langfuse_health()
-    agentsview = await svc.agentsview_health()
+    agentsview = await agentsview_service.agentsview_health()
     # Informational only (#179) — every other hub-running host (#372: was a
     # single hardcoded Mac Mini, now a generic peer list) gets probed in
     # parallel; the indicator exists to tell each peer's own story.
     active = resolve_host()
-    peers = await svc.hub_peers(active.id)
+    peers = await remote_stats.hub_peers(active.id)
 
     # The "launch" button is only meaningful on platforms where we know
     # how to spawn Docker Desktop. Surface that to the SPA so the card
@@ -72,7 +75,7 @@ async def services_status() -> Dict[str, Any]:
 async def services_agentsview_launch() -> Dict[str, Any]:
     """Start the optional AgentsView server (issue #280). Returns a step log."""
     logger.info("🚀 /admin/api/services/agentsview/launch")
-    result = await svc.launch_agentsview()
+    result = await agentsview_service.launch_agentsview()
     if result["ok"]:
         logger.info("✅ agentsview launch: %s", result["steps"])
     else:
@@ -96,7 +99,7 @@ async def services_launch() -> Dict[str, Any]:
 async def services_agentsview_stop() -> Dict[str, Any]:
     """Stop AgentsView (issue #284). Returns a step log."""
     logger.info("🛑 /admin/api/services/agentsview/stop")
-    result = await svc.stop_agentsview()
+    result = await agentsview_service.stop_agentsview()
     if result["ok"]:
         logger.info("✅ agentsview stop: %s", result["steps"])
     else:

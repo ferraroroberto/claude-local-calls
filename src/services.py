@@ -35,6 +35,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from src.http_client import get_async_client
 from src.no_window import NO_WINDOW
 from src.observability import langfuse_host
+from src.server_process import WIN_NEW_GROUP
 
 logger = logging.getLogger(__name__)
 
@@ -187,15 +188,12 @@ def _spawn_docker_desktop(exe: Path) -> None:
     Win32 CreateProcess docs, and combining them lets Windows Terminal
     (as the default terminal host) host a console window anyway.
     """
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW
     subprocess.Popen(
         [str(exe)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=creationflags,
+        creationflags=WIN_NEW_GROUP,
         close_fds=True,
     )
 

@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from src.http_client import get_async_client
-from src.no_window import NO_WINDOW
+from src.server_process import WIN_NEW_GROUP
 from src.services import PROJECT_ROOT, poll_until
 
 logger = logging.getLogger(__name__)
@@ -125,9 +125,6 @@ def _spawn_agentsview(exe: str) -> None:
     deliberately omitted from the creation flags — see
     ``services._spawn_docker_desktop`` for why.
     """
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW
     env = dict(os.environ)
     env.setdefault("AGENTSVIEW_TELEMETRY_ENABLED", "0")
     env.setdefault("AGENTSVIEW_DISABLE_UPDATE_CHECK", "1")
@@ -136,7 +133,7 @@ def _spawn_agentsview(exe: str) -> None:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=creationflags,
+        creationflags=WIN_NEW_GROUP,
         close_fds=True,
         env=env,
     )

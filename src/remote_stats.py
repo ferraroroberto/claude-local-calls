@@ -436,6 +436,10 @@ def _run_ssh(host: HostProfile, command: str) -> Optional[str]:
         logger.debug("remote stats ssh to %s failed: %s", host.id, result.error)
         return None
     if result.returncode != 0:
+        logger.info(
+            "remote stats ssh to %s exited %s: %s",
+            host.id, result.returncode, result.stderr.strip(),
+        )
         return None
     return result.stdout
 

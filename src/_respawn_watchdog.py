@@ -36,7 +36,11 @@ def is_alive(pid: int) -> bool:
     try:
         if sys.platform == "win32":
             r = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True,
+                ["tasklist", "/FI", f"PID eq {pid}"], capture_output=True,
+                # tasklist emits the OEM code page, not UTF-8 — pin decoding
+                # explicitly rather than inheriting text=True's ambient locale
+                # (global CLAUDE.md, "Windows Python: UTF-8 stdout under capture").
+                encoding="oem", errors="replace",
                 # Inline ternary, not src.no_window.NO_WINDOW — this module is
                 # deliberately stdlib-only (see module docstring), it can't
                 # assume any other src.* module still imports cleanly.

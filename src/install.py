@@ -267,7 +267,7 @@ def _whisper_enabled() -> bool:
     # Engine-specific, not just `backend == "whisper"` — a whisper-*shaped*
     # backend (e.g. Parakeet's `engine: parakeet-server`, #138) doesn't need
     # the whisper.cpp binary this check is actually gating.
-    return any(m.engine in ("whisper-server", "whisper-server-lazy") for m in local_models())
+    return any(m.engine == "whisper-server" for m in local_models())
 
 
 def _check_whisper_cpp() -> Check:

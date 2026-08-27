@@ -268,7 +268,9 @@ def test_whisper_entry(monkeypatch, write_config):
 
 
 def test_whisper_translate_lazy_entry(monkeypatch, write_config):
-    """Lazy translate slot lives next to turbo: same backend, different engine + port."""
+    """Lazy translate slot lives next to turbo: same engine + backend, on-demand
+    lifecycle instead (#530 retired the dedicated ``whisper-server-lazy``
+    engine in favor of the generic ``startup: on_demand`` mechanism)."""
     write_config({
         "hub": {"port": 8000},
         "hosts": {
@@ -286,10 +288,10 @@ def test_whisper_translate_lazy_entry(monkeypatch, write_config):
             "whisper_translate": {
                 "display_name": "whisper-medium-translate",
                 "backend": "whisper",
-                "engine": "whisper-server-lazy",
+                "engine": "whisper-server",
                 "port": 8091,
-                "internal_port": 18091,
-                "idle_seconds": 300,
+                "startup": "on_demand",
+                "idle_unload_minutes": 5,
                 "hf_repo": "ggerganov/whisper.cpp",
                 "hf_pattern": "ggml-medium.bin",
                 "model_path": "models/ggml-medium.bin",
@@ -311,10 +313,10 @@ def test_whisper_translate_lazy_entry(monkeypatch, write_config):
     assert lazy is not None
     assert lazy.id == "whisper_translate"
     assert lazy.backend == "whisper"
-    assert lazy.engine == "whisper-server-lazy"
+    assert lazy.engine == "whisper-server"
     assert lazy.port == 8091
-    assert lazy.internal_port == 18091
-    assert lazy.idle_seconds == 300
+    assert lazy.startup == model_registry.STARTUP_ON_DEMAND
+    assert lazy.idle_unload_minutes == 5
     assert "-ng" in lazy.args
     # External contract URL still matches whisper-server's shape.
     assert lazy.url == "http://127.0.0.1:8091/v1"

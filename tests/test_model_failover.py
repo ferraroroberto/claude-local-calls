@@ -119,7 +119,6 @@ def test_cpu_offload_args_rewrites_per_engine():
     assert f("llama-server", []) == ["-ngl", "0"]
     assert f("whisper-server", ["--threads", "4"]) == ["--threads", "4", "-ng"]
     assert f("whisper-server", ["-ng"]) == ["-ng"]           # already CPU-only
-    assert f("whisper-server-lazy", []) == ["-ng"]
     assert f("tts-server", ["--device", "auto"]) == ["--device", "cpu"]
     assert f("tts-server", []) == ["--device", "cpu"]
     assert f("parakeet-server", ["x"]) == ["x"]              # no notion of it

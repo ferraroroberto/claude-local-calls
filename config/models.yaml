@@ -194,9 +194,11 @@ hosts:
 # pre-#422 behavior). An on-demand model is never started eagerly: not by hub
 # autostart, not by the fleet reconcile loop, not by the failover engine. The
 # first request that routes to it spawns the backend and waits for readiness
-# (src/on_demand.py — the hub-level generalization of the whisper-server-lazy
-# proxy pattern); `idle_unload_minutes: <int>` then arms the idle watchdog,
-# which stops the backend after that many minutes without a request. A model
+# (src/on_demand.py — since #530 also the sole lazy-load mechanism for
+# whisper.cpp rows, superseding the retired `whisper-server-lazy` engine and
+# its dedicated proxy shim); `idle_unload_minutes: <int>` then arms the idle
+# watchdog, which stops the backend after that many minutes without a
+# request. A model
 # stopped that way (or by hand) STAYS down until the next request. Before an
 # on-demand load, the hub checks the #375 budget math (running est_vram_mb sum
 # + the candidate vs the host's vram_mb ceiling) and logs a loud warning on
@@ -727,11 +729,10 @@ models:
   # CPU-only (`-ng`) by design — leaves VRAM for gemma4_26b. Medium on
   # CPU is real-time-ish for short dictation clips.
   #
-  # To switch to lazy mode (spawn-on-request, idle-unload after
-  # `idle_seconds`): set `engine: whisper-server-lazy`, add
-  # `internal_port` (the real whisper-server port), and `idle_seconds`.
-  # Requests will route through `src/whisper_translate_proxy.py`.
-  # Use on RAM-constrained hosts; the active rotation runs eager.
+  # To switch to lazy mode (spawn-on-request, idle-unload after N minutes):
+  # add `startup: on_demand` and `idle_unload_minutes: <int>` — the generic
+  # on-demand lifecycle (src/on_demand.py, #530), same as `whisper_vanilla`
+  # below. Use on RAM-constrained hosts; the active rotation runs eager.
   #
   # Sister project (transcribe_voice / voice-transcriber) hits this on
   # 8091 with `task=translate` form-field. Same OpenAI-compatible shape.
@@ -779,18 +780,21 @@ models:
   #      request that omits `language` is still forced to English. Proven
   #      in #128: the launch-level --language flag does NOT change the
   #      per-request default — whisper-server's HTTP handler resets each
-  #      request to "en" unless the body carries a language. So the lazy
-  #      proxy (src/whisper_translate_proxy.py) reads this arg and injects
-  #      it as the request default when the caller omits `language`; a
-  #      caller that sends its own language always wins.
+  #      request to "en" unless the body carries a language. So
+  #      `server_audio_asr._dispatch_audio` reads this arg
+  #      (`audio_proxy.default_language_from_args`, #530 — folded in from the
+  #      now-retired lazy-load proxy shim) and injects it as the request
+  #      default when the caller omits `language`; a caller that sends its
+  #      own language always wins.
   # Callers that want unbiased auto-detect (e.g. whatsapp-radar transcribing
   # Spanish voice notes) select this row via model=whisper-vanilla on the
   # standard /v1/audio/transcriptions request — no custom endpoint needed.
   #
-  # Engine whisper-server-lazy (spawn-on-request, idle-unload after
-  # idle_seconds) saves GPU VRAM: the vanilla path is low-frequency and
-  # the turbo model is already resident on :8090 for dictation.
-  # External proxy port 8094; whisper-server child binds 18094 (loopback).
+  # startup: on_demand (spawn-on-request, idle-unload after
+  # idle_unload_minutes — src/on_demand.py, #530) saves GPU VRAM: the
+  # vanilla path is low-frequency and the turbo model is already resident
+  # on :8090 for dictation. Binds directly on the external port 8094, same
+  # as every other whisper-server row — no separate internal proxy port.
   #
   # --max-context 0 (strongest anti-hallucination, same as translate row):
   # no --carry-initial-prompt means no boosting trade-off, so there is no
@@ -803,14 +807,16 @@ models:
     # whisper_translate, mirroring whisper/orpheus's #323 move) — cross-enabled
     # on tower + mac-mini-m4, which proxy to gaming's hub.
     host: gaming
-    engine: whisper-server-lazy
+    engine: whisper-server
     port: 8094
-    internal_port: 18094
-    idle_seconds: 300
+    startup: on_demand
+    idle_unload_minutes: 5   # was idle_seconds: 300 under the retired lazy engine (#530)
     # Same large-v3-turbo weights as `whisper`, GPU-accelerated, but a SEPARATE
-    # process (own port) → counts its own ~2000 MB when resident. Lazy/idle-
-    # unload means it's not always loaded, but the placement estimate is a
-    # worst-case footprint, so it's counted whenever placed.
+    # process (own port) → counts its own ~2000 MB when resident. `startup:
+    # on_demand` (#530) means the fleet-placement grid's static desired-set
+    # sum excludes it, same as any other on-demand row (gemma4_26b etc.) —
+    # it only joins a host's est_vram_mb sum while actually running, not as
+    # a standing worst-case reservation.
     est_vram_mb: 2000
     aliases: ["whisper-vanilla"]
     hf_repo: "ggerganov/whisper.cpp"

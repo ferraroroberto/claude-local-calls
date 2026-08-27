@@ -7,13 +7,13 @@ the fleet reconcile loop (same derived set, #430), not by the failover
 engine (guards on ``Model.startup``). Instead:
 
 * **Load on first request** — the dispatch paths that reach a local backend
-  (chat completions, the Anthropic-shape ``/v1/messages`` translation, and
-  the ``/v1/audio/speech`` proxy) call :func:`ensure_ready` before
-  forwarding. When the backend isn't up, the request spawns it via
-  ``backend_process.start`` and blocks polling ``is_reachable`` until the
-  process answers — the same request-waits-for-readiness pattern as the
-  lazy whisper proxy (``src/whisper_translate_proxy._ChildSupervisor``),
-  lifted from a per-process shim into the hub itself.
+  (chat completions, the Anthropic-shape ``/v1/messages`` translation, the
+  ``/v1/audio/speech`` proxy, and — since #530 retired the dedicated
+  lazy-load whisper shim in favor of this generic mechanism — the
+  ``/v1/audio/transcriptions`` / ``/translations`` proxy) call
+  :func:`ensure_ready` before forwarding. When the backend isn't up, the
+  request spawns it via ``backend_process.start`` and blocks polling
+  ``is_reachable`` until the process answers.
 * **Idle unload** — ``idle_unload_minutes: <int>`` arms the watchdog loop
   (``server_lifecycle`` wires :func:`idle_unload_loop`): after that many
   minutes without a request the hub stops the backend. A model stopped this

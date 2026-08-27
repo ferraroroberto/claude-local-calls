@@ -106,6 +106,21 @@ class ProcessSupervisor:
                     proc.send_signal(signal.CTRL_BREAK_EVENT)
                 except (OSError, ValueError):
                     pass
+                else:
+                    # Give the child's own graceful-shutdown handler a
+                    # chance to run before escalating — terminate() is an
+                    # immediate hard TerminateProcess on Windows, so calling
+                    # it right away (the pre-#530 behavior here) never let a
+                    # just-sent CTRL_BREAK actually land. tray/tray.py's
+                    # HubProcess.stop always waited at this point; every
+                    # other stop_popen caller escalated instantly instead —
+                    # a divergence that made this the *worse* of two
+                    # duplicate stop sequences (#530).
+                    try:
+                        proc.wait(timeout=terminate_timeout)
+                        return True, "stopped"
+                    except subprocess.TimeoutExpired:
+                        pass
             proc.terminate()
             try:
                 proc.wait(timeout=terminate_timeout)

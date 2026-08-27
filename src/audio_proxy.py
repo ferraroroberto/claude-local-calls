@@ -1,29 +1,31 @@
-"""Shared multipart bridging for the whisper audio-translate proxy paths.
+"""Shared multipart bridging for the hub's whisper audio proxy paths.
 
-Two code paths accept an OpenAI-shaped multipart audio request and must hand
-``whisper-server`` a byte-identical upstream request:
-
-* the hub's ``_proxy_audio`` (``src/server.py``) — the observable :8000 proxy;
-* the lazy-load shim (``src/whisper_translate_proxy.py``) — owns the on-demand
-  translate child process.
+``server_audio_asr.py``'s ``_dispatch_audio`` accepts an OpenAI-shaped
+multipart audio request on both the transcribe and translate roles and must
+hand ``whisper-server`` a byte-identical upstream request:
 
 ``whisper-server`` exposes a single inference path
 (``/v1/audio/transcriptions``) and honors whisper.cpp's own ``translate=true``
-boolean rather than OpenAI's ``task=translate`` string. Both paths therefore
-have to pick the single ``file`` upload (dropping any extra file parts —
-whisper-server takes exactly one), bridge ``task`` → ``translate``, forward
-every other field untouched, and rebuild the httpx ``files=`` / ``data=``
-request. This module is the single home for that contract so the two callers
+boolean rather than OpenAI's ``task=translate`` string, and (#128) resets each
+request's language to ``en`` unless the body carries one — a row configured
+with a non-default ``-l``/``--language`` launch flag needs that value injected
+into requests that omit ``language``. :func:`build_whisper_upstream_request`
+picks the single ``file`` upload (dropping any extra file parts — whisper-server
+takes exactly one), bridges ``task`` → ``translate``, and forwards every other
+field untouched; :func:`default_language_from_args` reads a row's configured
+default off its launch ``args`` so the caller can inject it. This module is
+the single home for both so ``_dispatch_audio``'s translate and transcribe
+branches (and, before #530, the now-retired lazy-load whisper-translate shim)
 cannot silently diverge (issue #132).
 
 Per-caller concerns stay at the call site: each parses the form with its own
-error shape, the lazy shim injects its row's default language (#128), and each
-owns its upstream URL, timeout, observability stashing and error responses.
+error shape and owns its upstream URL, timeout, observability stashing and
+error responses.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from starlette.datastructures import FormData, UploadFile
 
@@ -72,3 +74,25 @@ async def build_whisper_upstream_request(
             )
         }
     return upload, data, files
+
+
+def default_language_from_args(args: Optional[List[str]]) -> Optional[str]:
+    """Pull a whisper-server row's configured spoken-language launch flag
+    (``-l``/``--language``) out of its ``args`` (#128).
+
+    whisper-server takes ``--language`` at launch but its HTTP handler resets
+    each request's language to ``en`` unless the request body carries one —
+    the launch flag does *not* change the per-request default. So a row that
+    wants a non-``en`` default (e.g. ``--language auto`` for unbiased
+    detection, ``whisper_vanilla``) must have this value injected into every
+    request that omits ``language``; a caller that sends its own ``language``
+    always wins. Rows without the flag (e.g. ``whisper``, ``whisper_translate``)
+    return ``None`` and are left untouched — the caller only pays the form-parse
+    cost when this is non-``None``.
+    """
+    if not args:
+        return None
+    for i, a in enumerate(args):
+        if a in ("-l", "--language") and i + 1 < len(args):
+            return args[i + 1]
+    return None

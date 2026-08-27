@@ -30,7 +30,7 @@ backends are "drop a binary on a port". The good local TTS engines don't:
 So instead of a binary we run a thin in-repo FastAPI shim
 [src/tts_server.py](../src/tts_server.py) launched as
 `python -m src.tts_server --model-id <id>` — the same pattern as
-[whisper_translate_proxy.py](../src/whisper_translate_proxy.py). The engine
+[parakeet_server.py](../src/parakeet_server.py). The engine
 implementations live behind one common interface
 ([src/tts_engines/common.py](../src/tts_engines/common.py)) in the
 [src/tts_engines/](../src/tts_engines/) package, one module per engine

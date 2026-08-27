@@ -392,6 +392,3 @@ Sessions that hit neither path show "—" in the panel's Project column.
   token counts at all.
 - **Single-host Langfuse** — distinguished by `service.instance.id`
   (hostname-PID). Multiple hubs pointing at one Langfuse works fine.
-- **`whisper_translate_proxy.py` is its own process** — it does not
-  call `init_otel()`, so its internal `whisper_translate.proxy` span is
-  only present when the proxy lives inside the hub (most setups).

@@ -105,15 +105,7 @@ def comfyui_python() -> Path:
 
 
 def _is_whisper(model: Model) -> bool:
-    return (
-        model.engine == "whisper-server"
-        or model.engine == "whisper-server-lazy"
-        or model.backend == "whisper"
-    )
-
-
-def _is_lazy_whisper(model: Model) -> bool:
-    return model.engine == "whisper-server-lazy"
+    return model.engine == "whisper-server" or model.backend == "whisper"
 
 
 def _is_comfyui(model: Model) -> bool:
@@ -264,7 +256,7 @@ def is_reachable(model: Model, timeout: float = 1.5) -> bool:
         # fallthrough below tries. Its own readiness signal is /system_stats.
         from .comfyui_client import is_reachable as comfyui_reachable
         return comfyui_reachable(base, timeout=timeout)
-    if model.engine in ("whisper-server", "whisper-server-lazy"):
+    if model.engine == "whisper-server":
         # whisper.cpp server has no /health; GET / returns 200 once loaded.
         # Engine-specific, not `_is_whisper` (backend == "whisper") — a
         # whisper-*shaped* backend on a different engine (e.g. Parakeet's
@@ -430,24 +422,6 @@ def build_command(model: Model) -> list[str]:
         ]
         cmd.extend(model.args or [])
         return cmd
-
-    if _is_lazy_whisper(model):
-        # The proxy itself doesn't need the model on disk to start — it
-        # only needs whisper-server present. We still surface a clear
-        # error if the model is missing, since the first POST would fail.
-        bin_path = whisper_server_binary()
-        if not bin_path.exists():
-            raise RuntimeError(
-                f"whisper-server not found at {bin_path} - run scripts/install_whisper_cpp.py"
-            )
-        if not model_path.exists():
-            raise RuntimeError(
-                f"whisper model not found at {model_path} - run scripts/download_models.py --only {model.id}"
-            )
-        return [
-            sys.executable, "-m", "src.whisper_translate_proxy",
-            "--model-id", model.id,
-        ]
 
     if _is_whisper(model):
         bin_path = whisper_server_binary()
@@ -651,7 +625,7 @@ def _looks_like_backend_binary(
     reclaim the VRAM.
     """
     exe = (exe or "").lower()
-    if model.engine in ("whisper-server", "whisper-server-lazy") or model.backend == "whisper":
+    if model.engine == "whisper-server" or model.backend == "whisper":
         return "whisper-server" in exe or exe.endswith("whisper-server.exe")
     if _is_comfyui(model):
         # ComfyUI runs as a plain python.exe, so the generic "python" test below
@@ -663,11 +637,11 @@ def _looks_like_backend_binary(
             str(VENDOR_COMFYUI).lower() in joined
             or exe == str(comfyui_python()).lower()
         )
-    # Default: llama.cpp's llama-server. The lazy-whisper proxy runs as
-    # ``python -m src.whisper_translate_proxy`` — recognise pythonw too.
+    # Default: llama.cpp's llama-server. tts-server and parakeet-server run
+    # as ``python -m src.<module>`` — recognise pythonw too.
     return (
         "llama-server" in exe
-        or "python" in exe  # whisper_translate_proxy.py path
+        or "python" in exe  # tts_server.py / parakeet_server.py path
     )
 
 
@@ -684,8 +658,7 @@ def resolve_model_for_engine(model_id: str, expected_engine: str) -> Model:
 
     Shared by the shim servers each of which handles exactly one engine —
     ``parakeet_server.py`` (``parakeet-server``), ``tts_server.py``
-    (``tts-server``), ``whisper_translate_proxy.py``
-    (``whisper-server-lazy``). ``SystemExit`` (not a plain exception) because
+    (``tts-server``). ``SystemExit`` (not a plain exception) because
     every caller is a ``build_app(model_id)`` bring-up path meant to abort
     the process on a config mismatch, not to be caught and handled.
     """

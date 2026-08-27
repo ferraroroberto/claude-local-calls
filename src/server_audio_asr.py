@@ -20,6 +20,7 @@ onto the parent hub app by ``server.py`` via ``include_router``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import List, Optional, Tuple
@@ -27,7 +28,8 @@ from typing import List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
-from .audio_proxy import build_whisper_upstream_request
+from . import on_demand as _on_demand
+from .audio_proxy import build_whisper_upstream_request, default_language_from_args
 from .http_client import get_async_client
 from .model_registry import Model
 from .remote_proxy import remote_base_url
@@ -39,7 +41,12 @@ from .server_audio_common import (
     _header_safe,
     _remote_audio_headers,
 )
-from .server_common import current_otel_span, safe_span, stash_trace_id_on_ctx
+from .server_common import (
+    current_otel_span,
+    ensure_backend_ready_or_503,
+    safe_span,
+    stash_trace_id_on_ctx,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -361,8 +368,9 @@ async def _dispatch_audio(
     if default_role == "audio_translate":
         # whisper-server exposes a single inference path and wants whisper.cpp's
         # `translate=true` boolean, not OpenAI's `task=translate` string. Parse +
-        # rewrite via the shared helper (the lazy-load shim in
-        # whisper_translate_proxy.py calls the same one — issue #132).
+        # rewrite via the shared helper (the transcribe branch below calls the
+        # same one when a candidate needs its default language injected —
+        # issue #132).
         try:
             form = await request.form()
         except Exception as exc:
@@ -373,11 +381,31 @@ async def _dispatch_audio(
         send = {"files": files, "data": data}
         upstream_path = "/v1/audio/transcriptions"
     else:
-        fwd_headers = {
-            k: v for k, v in request.headers.items()
-            if k.lower() in {"content-type", "accept"}
-        }
-        send = {"content": body, "headers": fwd_headers}
+        # Skip form-parsing for the common case: only a row with a
+        # configured non-default ``--language`` launch flag (e.g.
+        # ``whisper_vanilla``'s ``--language auto``, #128) needs its default
+        # injected, and an explicit ``model=`` request — the only way #128's
+        # unbiased-detect row is normally addressed — resolves to a
+        # one-element chain, so ``chain[0]`` is the only candidate that will
+        # ever actually receive this request.
+        default_language = default_language_from_args(chain[0].args)
+        if default_language:
+            try:
+                form = await request.form()
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"invalid multipart body: {exc}")
+            upload, data, files = await build_whisper_upstream_request(form)
+            if upload is None:
+                raise HTTPException(status_code=400, detail="missing required form field: file")
+            if not data.get("language"):
+                data["language"] = default_language
+            send = {"files": files, "data": data}
+        else:
+            fwd_headers = {
+                k: v for k, v in request.headers.items()
+                if k.lower() in {"content-type", "accept"}
+            }
+            send = {"content": body, "headers": fwd_headers}
         upstream_path = ctx_path
 
     span = current_otel_span()
@@ -471,10 +499,25 @@ async def _forward_to_candidate(
     else:
         post_kwargs["content"] = send["content"]
 
+    # On-demand lifecycle (#422, #530): a cold ``startup: on_demand`` local
+    # whisper row (e.g. ``whisper_vanilla``, since #530's retirement of the
+    # dedicated lazy-load shim) is spawned here and this request blocks until
+    # it answers — a no-op for eager rows and remote-owned models
+    # (``ensure_backend_ready_or_503`` decides). A spawn/readiness failure
+    # is a *backend-unavailable* condition exactly like a dead port, so it
+    # feeds the same failover path as a connection error (#348) rather than
+    # propagating straight to the caller.
     try:
-        upstream = await client.post(url, **post_kwargs)
-    except _httpx.HTTPError as exc:
-        raise _BackendUnavailable(_audio_upstream_error(exc, backend="whisper-server", port=port))
+        if remote is None:
+            await asyncio.to_thread(ensure_backend_ready_or_503, target)
+    except HTTPException as exc:
+        raise _BackendUnavailable(exc)
+
+    with _on_demand.tracking(target, remote):
+        try:
+            upstream = await client.post(url, **post_kwargs)
+        except _httpx.HTTPError as exc:
+            raise _BackendUnavailable(_audio_upstream_error(exc, backend="whisper-server", port=port))
     if upstream.status_code in (502, 503, 504):
         raise _BackendUnavailable(HTTPException(
             status_code=upstream.status_code,

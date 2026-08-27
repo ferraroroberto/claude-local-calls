@@ -7,7 +7,7 @@ orpheus :8093 / kokoro :8095) and exposes ``POST /v1/audio/speech`` accepting th
 
 Launched by ``backend_process.build_command`` for any ``engine: tts-server``
 row as ``python -m src.tts_server --model-id <id>`` — the same in-repo-shim
-pattern as ``whisper_translate_proxy``. The hub proxies ``/v1/audio/speech``
+pattern as ``parakeet_server``. The hub proxies ``/v1/audio/speech``
 to this port so requests land in the observability ring (``src/server.py``).
 
 The synthesis engine loads in a **background

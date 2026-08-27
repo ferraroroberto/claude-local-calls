@@ -44,7 +44,8 @@ import yaml
 from src.host_profile import CONFIG_PATH, hub_port
 from src.model_registry import SPAWNABLE_BACKENDS, Model, local_models
 from src.no_window import NO_WINDOW
-from src.server_process import WIN_NEW_GROUP
+from src.process_supervisor import ProcessSupervisor, SpawnSpec
+from src.server_process import WIN_NEW_GROUP, lan_ip
 from src.webapp_config import append_auth_token, ensure_auth_token, load_webapp_config
 
 from .icon import COLOR_RUNNING, COLOR_STARTING, COLOR_STOPPED, make_icon_image
@@ -95,7 +96,15 @@ def load_tray_config() -> TrayConfig:
 class HubProcess:
     """Owns the hub subprocess. Adopt-or-spawn semantics — same as the
     legacy :mod:`src.server_process` but here in the tray so the hub
-    *is* a child of the tray."""
+    *is* a child of the tray.
+
+    Drives the shared :class:`src.process_supervisor.ProcessSupervisor`
+    (#530) rather than a second hand-rolled start/stop, which had already
+    measurably diverged from it — the tray's ``stop`` correctly waited
+    between the graceful signal and the hard kill; ``ProcessSupervisor.
+    stop_popen`` didn't, until #530 folded that fix back into the one
+    shared implementation.
+    """
 
     def __init__(self) -> None:
         self.proc: Optional[subprocess.Popen] = None
@@ -115,36 +124,48 @@ class HubProcess:
     def adopted(self) -> bool:
         return (not self.is_running()) and self.is_reachable(0.3)
 
+    def _set_proc(self, proc: Optional[subprocess.Popen]) -> None:
+        with self._lock:
+            self.proc = proc
+
+    def _build_spawn_spec(self) -> SpawnSpec:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        return SpawnSpec(
+            cmd=[sys.executable, "-m", "src.server"],
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            creationflags=WIN_NEW_GROUP,
+        )
+
     def start(self) -> Tuple[bool, str]:
         # Race-safe adopt-or-spawn (project-scaffolding#39): serialize the
         # is_running/is_reachable check-then-Popen across processes so two trays
-        # can't both spawn the hub. The loser re-checks inside the lock and
-        # adopts the now-listening hub. self._lock is in-process only;
+        # can't both spawn the hub. self._lock is in-process only;
         # cross_process_lock adds the cross-process guarantee and fails open so
         # it never blocks startup. Primitive vendored byte-identical from scaffold.
         with cross_process_lock(rf"Global\local-llm-hub-hub-start-{hub_port()}"):
-            if self.is_running():
-                return True, "already running"
-            if self.is_reachable(0.3):
-                return True, "adopted external hub"
-
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            env["PYTHONUTF8"] = "1"
-            creationflags = WIN_NEW_GROUP
-            try:
-                with self._lock:
-                    self.proc = subprocess.Popen(
-                        [sys.executable, "-m", "src.server"],
-                        cwd=str(PROJECT_ROOT),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        env=env,
-                        creationflags=creationflags,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                return False, f"failed to launch: {exc}"
-            return True, f"started (pid={self.proc.pid})"
+            ok, msg = ProcessSupervisor(
+                already_running=self.is_running,
+                reachable=lambda: self.is_reachable(0.3),
+                external_pid=lambda: None,
+                build_spawn_spec=self._build_spawn_spec,
+                set_process=self._set_proc,
+                adopt_message="adopted external hub",
+            ).start()
+            # The supervisor reports "already running" as ok=False — the
+            # convention every other caller in this repo applies at its own
+            # boundary (on_demand.ensure_ready, server_lifecycle, fleet_reconcile)
+            # is to treat that message as a benign no-op, not a failure; the
+            # tray's two callers (_autostart_worker / _restart_worker) only
+            # branch on ``ok``, so translate it here rather than teaching the
+            # shared supervisor a tray-only rule.
+            if not ok and msg == "already running":
+                return True, msg
+            return ok, msg
 
     def stop(self) -> Tuple[bool, str]:
         with self._lock:
@@ -159,31 +180,10 @@ class HubProcess:
                 # "restarted" once start() re-adopts the same stale process.
                 return False, "adopted (not ours to stop)"
             return False, "not running"
-        try:
-            if sys.platform == "win32":
-                try:
-                    import signal
-                    p.send_signal(signal.CTRL_BREAK_EVENT)
-                    # Give uvicorn's own shutdown handler (src/server.py's
-                    # "shutdown" event) a chance to run before escalating —
-                    # terminate() is an immediate hard TerminateProcess on
-                    # Windows, so calling it right away never lets the
-                    # graceful signal land.
-                    p.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-                except Exception:
-                    pass
-            if p.poll() is None:
-                p.terminate()
-                try:
-                    p.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    p.kill()
-                    p.wait(timeout=5)
-        except Exception as exc:  # noqa: BLE001
-            return False, f"error stopping: {exc}"
-        self.proc = None
+        ok, msg = ProcessSupervisor.stop_popen(p, terminate_timeout=5, kill_timeout=5)
+        if not ok:
+            return ok, msg
+        self._set_proc(None)
         return True, "stopped"
 
     def wait_ready(self, timeout_s: float = 30.0) -> bool:
@@ -358,7 +358,7 @@ class TrayApp:
         elif kind == EVT_COPY_LOCAL:
             self._copy_url(self.hub.base_url() + "/admin/")
         elif kind == EVT_COPY_LAN:
-            lan = _lan_ip()
+            lan = lan_ip()
             if lan:
                 self._copy_url(f"http://{lan}:{hub_port()}/admin/")
             else:
@@ -520,7 +520,7 @@ class TrayApp:
             self._notify("Admin", f"⚠️ webbrowser.open failed: {exc}")
         # Always also push the LAN+token URL to the clipboard so the user
         # can paste it on their phone right after clicking.
-        lan = _lan_ip()
+        lan = lan_ip()
         if lan and token:
             lan_url = append_auth_token(f"http://{lan}:{hub_port()}/admin/", token)
             try:
@@ -581,17 +581,6 @@ class TrayApp:
 
 
 # --------------------------------------------------------------- helpers
-
-
-def _lan_ip() -> str:
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    except OSError:
-        return ""
-    finally:
-        s.close()
 
 
 def _tcp_reachable(host: str, port: int, timeout: float = 0.5) -> bool:

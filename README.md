@@ -132,9 +132,10 @@ regardless (see [Multi-host: the Mac Mini](#multi-host-the-mac-mini)):
   `task=translate` (turbo is transcription-only — its decoder distill
   drops translation). Eager-loaded (~1.5 GB RAM, 0 MB VRAM, always ready).
   Fills the `audio_translate` role; address it through this hub's
-  `:8000/v1/audio/translations`. A lazy-load mode is also available — see
-  [src/whisper_translate_proxy.py](src/whisper_translate_proxy.py) — for
-  hosts that need to reclaim RAM when translate is rare.
+  `:8000/v1/audio/translations`. A lazy-load mode is also available —
+  add `startup: on_demand` + `idle_unload_minutes` to the row (the same
+  generic mechanism `whisper-vanilla` below uses, #530) — for hosts that
+  need to reclaim RAM when translate is rare.
 - **`whisper-vanilla`** — the same `ggml-large-v3-turbo.bin` as the turbo
   row, configured for **unbiased language auto-detection**. The escape
   hatch for callers transcribing general multilingual audio (e.g. Spanish
@@ -143,15 +144,15 @@ regardless (see [Multi-host: the Mac Mini](#multi-host-the-mac-mini)):
   standard `:8000/v1/audio/transcriptions` request — no `language` needed.
   Two things make detection unbiased, **both required** (proven in #128):
   it carries **no** dictation glossary (`--carry-initial-prompt`/`--prompt`
-  bias detection toward English), **and** the lazy proxy injects
-  `language=auto` into every request that omits one — because
-  whisper-server otherwise forces `language=en` per request regardless of
-  its launch-level `--language` flag, so dropping the glossary alone is not
-  enough. A caller that sends its own `language` always wins. Lazy-loaded
-  (spawn-on-request via
-  [src/whisper_translate_proxy.py](src/whisper_translate_proxy.py),
-  idle-unload after 300 s) so it costs no VRAM when idle, and **owned by
-  `gaming`** alongside the other two whisper slots (#370). See issue #128.
+  bias detection toward English), **and** the hub's audio-transcribe
+  dispatch (`server_audio_asr.py`) injects `language=auto` into every
+  request that omits one — because whisper-server otherwise forces
+  `language=en` per request regardless of its launch-level `--language`
+  flag, so dropping the glossary alone is not enough. A caller that sends
+  its own `language` always wins. Lazy-loaded (`startup: on_demand`,
+  spawn-on-request via `src/on_demand.py`, idle-unload after 5 min, #530)
+  so it costs no VRAM when idle, and **owned by `gaming`** alongside the
+  other two whisper slots (#370). See issue #128.
 - **`piper-tts`** — fast local text-to-speech (the inverse of whisper),
   served by the in-repo FastAPI shim [src/tts_server.py](src/tts_server.py)
   on `127.0.0.1:8096`. OpenAI-compatible `POST /v1/audio/speech`. POST to
@@ -527,7 +528,11 @@ backends at all:
 Gaming's estimated VRAM footprint with the whisper trio resident: whisper
 2000 + whisper_translate 0 + whisper_vanilla 2000 = 4000 MB (plus orpheus
 2200 MB only while acting as failover tenant), against an 8192 MB ceiling
-(`vram_mb` in `config/models.yaml`, #375) — comfortably under.
+(`vram_mb` in `config/models.yaml`, #375) — comfortably under. The
+fleet-placement grid's own static estimate is lower by default: `startup:
+on_demand` rows (whisper_vanilla, gemma4_26b, …) only join a host's sum
+while actually running, not as a standing worst-case reservation — see
+"On-demand model lifecycle" below.
 
 The Windows hub's admin UI Services card shows a live reachability pill for
 every other hub-running peer (mac-mini-m4, gaming — any future satellite
@@ -806,9 +811,10 @@ gemma4_26b:
 
 An **on-demand** model is never started eagerly — not by hub autostart, not
 by the fleet reconcile loop, not by the failover engine. The **first request**
-that routes to it (chat, `/v1/messages`, or `/v1/audio/speech`) spawns the
-backend via `src/on_demand.py` and waits for readiness — the hub-level
-generalization of the `whisper-server-lazy` proxy pattern — so the first
+that routes to it (chat, `/v1/messages`, `/v1/audio/speech`, or —
+since #530 retired the dedicated lazy-load whisper proxy in favor of this
+one generic mechanism — `/v1/audio/transcriptions`/`/translations`) spawns
+the backend via `src/on_demand.py` and waits for readiness, so the first
 call pays the load (tens of seconds for a big GGUF) and everything after is
 warm. After `idle_unload_minutes` with no requests (in-flight requests hold
 the window open), the idle watchdog stops the backend, and it **stays down**
@@ -1088,7 +1094,7 @@ local-llm-hub/
 │   ├── server_audio_asr.py   # /v1/audio/{transcriptions,translations,health} — whisper proxy + failover (#451)
 │   ├── server_audio_tts.py   # /v1/audio/speech — TTS proxy, routes onto server_audio_asr's router (#451)
 │   ├── server_audio_common.py  # header-safety + upstream-error helpers shared by the two above (#451)
-│   ├── audio_proxy.py        # shared multipart bridging for the whisper translate-proxy paths
+│   ├── audio_proxy.py        # shared multipart bridging + default-language lookup for the whisper transcribe/translate paths
 │   ├── server_images.py      # /v1/images/* handlers (generations, edits)
 │   ├── comfyui_client.py     # ComfyUI prompt API client — local FLUX.1 [dev] (#492)
 │   ├── image_sizes.py        # size presets + native/upscale split, one source for API + UI (#497)
@@ -1154,7 +1160,6 @@ local-llm-hub/
 │   ├── backend_process.py    # per-model Popen (llama-server + whisper-server);
 │   │                         #   stdout/stderr → data/logs/backend-<id>.log (child-owned)
 │   ├── parakeet_server.py    # OpenAI-shape ASR server wrapping the FluidAudio Parakeet CoreML worker
-│   ├── whisper_translate_proxy.py  # FastAPI shim for optional lazy-load mode
 │   ├── tts_server.py            # FastAPI shim for /v1/audio/speech (engine: tts-server)
 │   ├── tts_engines/             # TTS engines: piper + chatterbox + orpheus + kokoro
 │   │   ├── common.py                #   shared TTSEngine interface, SpeechRequest, audio helpers

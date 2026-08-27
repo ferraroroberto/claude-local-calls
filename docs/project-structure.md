@@ -260,11 +260,15 @@ use this path; it stays on the gemini backend.
 - **Admin SPA runs inside the hub.** The `app_web/` sub-app is mounted
   at `/admin` in the same process as the public `/v1` surface, so its
   routers call the process managers in-process: `app_web/routers/hub.py`
-  drives `src/server_process.py` and `app_web/routers/models.py` drives
-  `src/backend_process.py` to start/stop/tail each backend, while the
-  Play tab proxies through the hub's own `/v1/messages`. Both process
-  modules expose module-level singletons so the long-lived hub keeps
-  one handle per child across requests.
+  drives `src/hub_process_control.py` for self stop/restart and reads
+  `src/server_process.py` for port/PID + ownership lookups, while
+  `app_web/routers/models.py` drives `src/backend_process.py` to
+  start/stop/tail each model backend, and the Play tab proxies through
+  the hub's own `/v1/messages`. `backend_process.py` exposes a
+  module-level singleton so the long-lived hub keeps one handle per
+  child across requests; `server_process.py` holds no process handle of
+  its own — the hub process is owned by whatever spawned it (the tray's
+  own `HubProcess`, launchd, or systemd), not by this in-process module.
 - **Tests don't touch Claude or the GPU.**
   [`tests/test_server.py`](../tests/test_server.py) and
   [`tests/test_router.py`](../tests/test_router.py) monkeypatch both

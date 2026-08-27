@@ -130,7 +130,7 @@ flowchart TB
 
   subgraph procmgr["Process managers"]
     SUPERVISOR["process_supervisor.py\nshared subprocess start/stop workflow"]
-    SERVPROC["server_process.py\nhub's own Popen + kill-port"]
+    SERVPROC["server_process.py\nport/PID lookup + ownership tri-state\n(no Popen of its own, #531)"]
     BACKPROC["backend_process.py\nper-model Popen: llama-server ·\nwhisper-server · tts_server shim ·\nparakeet_server · comfyui-server (#492)"]
     ONDEMAND["on_demand.py (issue #422)\nstartup: on_demand lifecycle:\nspawn-on-first-request (request waits for\nreadiness) + idle-unload watchdog +\nVRAM overcommit warning (#375 math)"]
     WATCHDOG["_respawn_watchdog.py\ndetached: wait for parent PID to die,\nthen relaunch (stdlib-only, issue #198)"]
@@ -139,8 +139,6 @@ flowchart TB
   end
   RUNMODEL --> BACKPROC
   TRAY -->|Models submenu| BACKPROC
-  TRAY -->|Restart hub| SERVPROC
-  SERVPROC --> SUPERVISOR
   BACKPROC --> SUPERVISOR
   BACKPROC -.spawns.-> PARAKEETSRV
   SRV -->|ensure_ready before dispatch (chat/messages/speech)| ONDEMAND

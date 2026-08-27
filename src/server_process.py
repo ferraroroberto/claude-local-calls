@@ -1,28 +1,26 @@
-"""Manage the FastAPI hub as a subprocess, for the tray and the admin SPA.
+"""Port/PID utilities for the hub's own listening port, plus the tri-state
+ownership check shared with per-model backend tracking.
 
-Keeps a singleton `Popen` + a background reader thread that drains
-stdout/stderr into a thread-safe ring buffer. State lives on a
-module-level singleton so it survives across calls: the tray imports
-this module once and drives the hub for its whole lifetime, and the
-admin SPA — mounted in-process at ``/admin`` inside the hub — imports
-it to read ownership state and adopt/force-stop the running hub across
-many requests. There is no per-interaction script rerun; one long-lived
-import owns one handle.
+**Ownership model.** A single hub process binds :8000; whoever spawned it
+owns it. Callers that want to know who currently holds a port — the admin
+SPA's hub/models routers, ``backend_process.py`` for per-model ports —
+call :func:`resolve_ownership` with their own ``running`` flag (they track
+their own process handle; this module doesn't):
 
-**Ownership model.** A single hub process binds :8000; whoever spawned
-it owns it. Other observers (the SPA's own hub router talking to the
-hub it lives inside, the tray, ``run_hub.bat`` invoked while the tray
-is up) can *adopt* the running hub: they see it as reachable but don't
-try to start a duplicate and don't tear it down on their own exit.
-Three states:
-
-* ``OWNERSHIP_OURS`` — we hold a live ``Popen``; ``stop()`` will tear
-  it down and our log ring has its stdout.
+* ``OWNERSHIP_OURS`` — the caller reports it holds the process itself.
 * ``OWNERSHIP_EXTERNAL`` — port is held by someone else's process. We
-  can talk to it through the network and we can force-kill it via
-  :func:`force_stop_external`, but we have no log tail (Windows can't
-  attach to another process's stdout post-hoc).
-* ``OWNERSHIP_NONE`` — nothing on the port; safe to ``start()``.
+  can talk to it through the network and force-kill it via
+  :func:`kill_pid`, but we have no log tail (Windows can't attach to
+  another process's stdout post-hoc).
+* ``OWNERSHIP_NONE`` — nothing on the port.
+
+This module does not spawn or own the hub process itself — the tray
+drives the hub through its own ``HubProcess`` (``tray/tray.py``) and the
+admin restart goes through ``src/hub_process_control.py``'s
+``_respawn_watchdog``. What's left here is the cross-platform PID/port
+lookup (``find_port_pids``, ``snapshot_listening_pids``, ``kill_pid``) and
+the ownership tri-state, both still used by ``backend_process.py`` and the
+admin routers.
 """
 
 from __future__ import annotations
@@ -34,26 +32,20 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
-from collections import deque
-from pathlib import Path
-from typing import Deque, Optional
+from typing import Optional
 
 from .host_profile import hub_bind_host, hub_port
 from .http_client import get_sync_client
 from .no_window import NO_WINDOW
-from .process_supervisor import ProcessSupervisor, SpawnSpec
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Uvicorn binds on all interfaces so other machines on the LAN can reach
 # the server. Health checks + the canonical "self" URL still use loopback.
 BIND_HOST = hub_bind_host()
 LOCAL_HOST = "127.0.0.1"
 PORT = hub_port()
 BASE_URL = f"http://{LOCAL_HOST}:{PORT}"
-RING_MAX = 1000
 
 OWNERSHIP_OURS = "ours"
 OWNERSHIP_EXTERNAL = "external"
@@ -91,106 +83,12 @@ def lan_url() -> Optional[str]:
     return f"http://{ip}:{PORT}" if ip else None
 
 
-class _ServerState:
-    def __init__(self) -> None:
-        self.proc: Optional[subprocess.Popen] = None
-        self.log: Deque[str] = deque(maxlen=RING_MAX)
-        self.lock = threading.Lock()
-        self.reader: Optional[threading.Thread] = None
-
-
-_STATE = _ServerState()
-
-
-def is_running() -> bool:
-    p = _STATE.proc
-    return p is not None and p.poll() is None
-
-
 def is_reachable(timeout: float = 1.5) -> bool:
     try:
         r = get_sync_client().get(f"{BASE_URL}/health", timeout=timeout)
         return r.status_code == 200
     except Exception:
         return False
-
-
-def log_lines() -> list[str]:
-    with _STATE.lock:
-        return list(_STATE.log)
-
-
-def clear_log() -> None:
-    with _STATE.lock:
-        _STATE.log.clear()
-
-
-def _reader(proc: subprocess.Popen) -> None:
-    assert proc.stdout is not None
-    for raw in proc.stdout:
-        line = raw.rstrip("\n")
-        with _STATE.lock:
-            _STATE.log.append(line)
-
-
-def start() -> tuple[bool, str]:
-    def build_spawn_spec() -> SpawnSpec:
-        clear_log()
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-        return SpawnSpec(
-            cmd=[sys.executable, "-m", "src.server"],
-            cwd=PROJECT_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            env=env,
-            creationflags=WIN_NEW_GROUP,
-        )
-
-    def on_spawned(proc: subprocess.Popen) -> None:
-        t = threading.Thread(target=_reader, args=(proc,), daemon=True)
-        t.start()
-        _STATE.reader = t
-
-    return ProcessSupervisor(
-        already_running=is_running,
-        reachable=lambda: is_reachable(timeout=0.4),
-        external_pid=external_pid,
-        build_spawn_spec=build_spawn_spec,
-        set_process=lambda proc: setattr(_STATE, "proc", proc),
-        on_spawned=on_spawned,
-        adopt_message="adopted external hub",
-    ).start()
-
-
-def stop() -> tuple[bool, str]:
-    p = _STATE.proc
-    if p is None or p.poll() is not None:
-        _STATE.proc = None
-        return False, "not running"
-
-    ok, msg = ProcessSupervisor.stop_popen(
-        p,
-        terminate_timeout=5,
-        kill_timeout=5,
-    )
-    if not ok:
-        return ok, msg
-
-    _STATE.proc = None
-    return True, "stopped"
-
-
-def pid() -> Optional[int]:
-    p = _STATE.proc
-    if p is None or p.poll() is not None:
-        return None
-    return p.pid
 
 
 def snapshot_listening_pids() -> dict[int, list[int]]:
@@ -312,10 +210,11 @@ def find_port_pids(port: int) -> list[int]:
 def resolve_ownership(running: bool, port: int) -> str:
     """Shared tri-state (``OURS``/``EXTERNAL``/``NONE``) check for one port.
 
-    Factored out of :func:`ownership` so :mod:`backend_process` — which
-    tracks a *dict* of per-model states instead of one singleton — can
-    reuse the identical decision instead of reimplementing it per model
-    (issue #242).
+    Shared so :mod:`backend_process` — which tracks a *dict* of per-model
+    states instead of a single process handle — reuses the identical
+    decision instead of reimplementing it per model (issue #242). This
+    module has no process handle of its own for the hub's port, so its
+    own callers always pass ``running=False`` (see :func:`external_pid`).
     """
     if running:
         return OWNERSHIP_OURS
@@ -332,27 +231,15 @@ def resolve_external_pid(running: bool, port: int) -> Optional[int]:
     return pids[0] if pids else None
 
 
-def ownership() -> str:
-    """Return ``OWNERSHIP_OURS`` / ``EXTERNAL`` / ``NONE`` for the hub port."""
-    return resolve_ownership(is_running(), PORT)
-
-
 def external_pid() -> Optional[int]:
-    """PID of the external port-holder, or ``None`` if we own it / port is free."""
-    return resolve_external_pid(is_running(), PORT)
+    """PID currently holding the hub's own port, if any.
 
-
-def force_stop_external() -> tuple[bool, str]:
-    """Force-kill whoever currently holds :8000, if it's not us.
-
-    Use this when the user wants to reclaim the port — e.g. clicking
-    "Stop & take over" in the Server tab, or after a tray crash left a
-    detached pythonw owning the hub.
-    """
-    target = external_pid()
-    if target is None:
-        return False, f"no external process on port {PORT}"
-    return kill_pid(target)
+    This module doesn't spawn or track the hub process itself (see the
+    module docstring), so this is always a lookup of *someone else's*
+    process — equivalent to ``resolve_external_pid(False, PORT)``. Used by
+    ``run_backend.py``'s manual/verification hub launcher to report who
+    already owns :8000 when adopting instead of spawning."""
+    return resolve_external_pid(False, PORT)
 
 
 def kill_pid(target_pid: int) -> tuple[bool, str]:

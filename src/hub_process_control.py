@@ -10,9 +10,10 @@ respawn-watchdog spawn) with no FastAPI in them at all, unlike the
 the non-web ``src`` layer must stay framework-free"), none of these
 four qualify to live in ``app_web``.
 
-Sibling to ``server_process.py`` (external Popen ownership, driven by the
-tray) — this module instead is the process talking to *itself* (or to the
-supervisor — launchd/systemd — that owns it) to stop or restart in place.
+Sibling to ``server_process.py`` (port/PID lookup for whoever else holds
+the hub's port) — this module instead is the process talking to *itself*
+(or to the supervisor — launchd/systemd — that owns it) to stop or
+restart in place.
 """
 
 from __future__ import annotations
@@ -130,12 +131,11 @@ def _restart_log_path() -> Path:
 def _spawn_respawn_watchdog() -> None:
     """Spawn a detached Python that waits for our PID to die then re-launches us.
 
-    The relaunch is made the way ``src/server_process.start()`` spawns the
-    hub — never a bare ``pythonw`` with no stdout. The actual wait/relaunch
-    logic lives in ``src/_respawn_watchdog.py`` (issue #198 — this used to
-    be a ~60-line string literal built up line-by-line and fed to
-    ``python -c``, invisible to lint/type-check and one quoting slip away
-    from a silently-failed restart). That module is deliberately
+    The relaunch never uses a bare ``pythonw`` with no stdout. The actual
+    wait/relaunch logic lives in ``src/_respawn_watchdog.py`` (issue #198
+    — this used to be a ~60-line string literal built up line-by-line and
+    fed to ``python -c``, invisible to lint/type-check and one quoting
+    slip away from a silently-failed restart). That module is deliberately
     stdlib-only with no import from any other ``src.*`` module: it's the
     thing recovering *from* a broken deploy, so it can't assume the rest
     of the hub's package still imports cleanly — only its own module and
@@ -148,7 +148,7 @@ def _spawn_respawn_watchdog() -> None:
     log_path = _restart_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("🔄 respawn watchdog: relaunch log → %s", log_path)
-    # Same flags src.server_process.start() uses for the hub itself —
+    # Same flags used for the hub's own subprocess spawns —
     # DETACHED_PROCESS is deliberately omitted, it's mutually exclusive
     # with CREATE_NO_WINDOW per the Win32 CreateProcess docs (#282/#283).
     creationflags = WIN_NEW_GROUP

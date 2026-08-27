@@ -13,8 +13,8 @@ This hub binds ``0.0.0.0`` (LAN-wide -- ``tower`` and a Mac Mini dial
 each other's hub over the LAN) and proxies long-running audio/LLM
 streaming traffic, so the exposure here is broader than a single-host,
 phone-facing webapp: any LAN client dropping a connection mid-request can
-trigger the wedge on any of this repo's four uvicorn-served processes
-(the main hub plus the whisper/tts/parakeet proxy servers).
+trigger the wedge on any of this repo's three uvicorn-served processes
+(the main hub plus the tts/parakeet shim servers).
 
 The selector event loop's accept path has no such failure mode -- verified
 empirically (in the sister app-launcher repo, issue #388): 800 concurrent
@@ -26,8 +26,7 @@ in-process (backends are launched via plain ``subprocess.Popen`` in
 selector loop's lack of subprocess support is a non-issue here.
 
 Wired into every ``uvicorn.run(...)`` call in this repo -- ``src/server.py``
-(the main hub), ``src/whisper_translate_proxy.py``,
-``src/tts_server.py``, and ``src/parakeet_server.py`` -- via
+(the main hub), ``src/tts_server.py``, and ``src/parakeet_server.py`` -- via
 ``loop=LOOP_FACTORY``. Each of those is a programmatic ``uvicorn.run()``
 call (not a CLI ``-m uvicorn`` invocation), so this is the only wiring
 point needed; ``src/backend_process.py::build_command()`` just launches

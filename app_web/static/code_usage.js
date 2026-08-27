@@ -12,7 +12,7 @@
  */
 
 import { els, state } from './state.js';
-import { jsonApi, fmtTok, fmtCost, tokPair, escapeHtml } from './api.js';
+import { jsonApi, fmtTok, fmtCost, tokPair, escapeHtml, renderTable } from './api.js';
 
 // ---------------------------------------------------------------------------
 // Chart constants (issue #50)
@@ -164,35 +164,25 @@ function renderCopilotBilling(body) {
       ? 'as of ' + new Date(body.as_of).toLocaleTimeString() : '';
   }
 
-  const rows = body.daily || [];
-  const tbody = els.cldCopilotBillingTable && els.cldCopilotBillingTable.querySelector('tbody');
-
-  if (!body.available || !rows.length) {
-    if (tbody) tbody.innerHTML = '';
-    set(els.cldCopilotBillingTotal, '—');
-    if (els.cldCopilotBillingEmpty) els.cldCopilotBillingEmpty.hidden = false;
-    if (els.cldCopilotBillingEmptyMsg) {
-      els.cldCopilotBillingEmptyMsg.textContent = body.available === false
-        ? (body.reason || 'Not available.')
-        : 'No billing data for this window.';
-    }
-    return;
+  // `available: false` forces the empty treatment regardless of `daily` —
+  // there's no billing data worth showing, just a reason.
+  const rows = (body.available && body.daily) || [];
+  if (els.cldCopilotBillingEmptyMsg) {
+    els.cldCopilotBillingEmptyMsg.textContent = body.available === false
+      ? (body.reason || 'Not available.')
+      : 'No billing data for this window.';
   }
-  if (els.cldCopilotBillingEmpty) els.cldCopilotBillingEmpty.hidden = true;
-
   const totalCredits = rows.reduce(function (sum, r) { return sum + (Number(r.credits) || 0); }, 0);
-  set(els.cldCopilotBillingTotal, totalCredits.toFixed(2));
+  set(els.cldCopilotBillingTotal, rows.length ? totalCredits.toFixed(2) : '—');
 
-  if (tbody) {
-    tbody.innerHTML = rows.map(function (r) {
-      return '<tr>' +
-        '<td>' + escapeHtml(r.date) + '</td>' +
-        '<td>' + escapeHtml(r.model) + '</td>' +
-        '<td>' + (Number(r.credits) || 0).toFixed(2) + '</td>' +
-        '<td>' + (fmtCost(r.usd) || '—') + '</td>' +
-        '</tr>';
-    }).join('');
-  }
+  renderTable(els.cldCopilotBillingTable, els.cldCopilotBillingEmpty, rows, function (r) {
+    return '<tr>' +
+      '<td>' + escapeHtml(r.date) + '</td>' +
+      '<td>' + escapeHtml(r.model) + '</td>' +
+      '<td>' + (Number(r.credits) || 0).toFixed(2) + '</td>' +
+      '<td>' + (fmtCost(r.usd) || '—') + '</td>' +
+      '</tr>';
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -235,15 +225,7 @@ function renderCldCounters(body) {
 function renderVendorTable(rows) {
   // Per-vendor card only makes sense when viewing every vendor at once.
   if (els.cldVendorCard) els.cldVendorCard.hidden = state.cldVendor !== 'all';
-  const tbody = els.cldVendorTable && els.cldVendorTable.querySelector('tbody');
-  if (!tbody) return;
-  if (!rows.length) {
-    tbody.innerHTML = '';
-    if (els.cldVendorEmpty) els.cldVendorEmpty.hidden = false;
-    return;
-  }
-  if (els.cldVendorEmpty) els.cldVendorEmpty.hidden = true;
-  tbody.innerHTML = rows.map(function (r) {
+  renderTable(els.cldVendorTable, els.cldVendorEmpty, rows, function (r) {
     const totalIn = (r.input_tokens || 0) + (r.cache_creation_tokens || 0);
     const cost = (r.input_cost || 0) + (r.output_cost || 0) + (r.cache_read_cost || 0);
     return '<tr>' +
@@ -253,7 +235,7 @@ function renderVendorTable(rows) {
       '<td class="muted">' + fmtTok(r.cache_read_tokens) + '</td>' +
       '<td>' + (fmtCost(cost) || '—') + '</td>' +
       '</tr>';
-  }).join('');
+  });
 }
 
 function vendorLabel(v) {
@@ -292,15 +274,7 @@ function syncAgentsviewVendors(av) {
 }
 
 function renderModelTable(rows) {
-  const tbody = els.cldModelTable && els.cldModelTable.querySelector('tbody');
-  if (!tbody) return;
-  if (!rows.length) {
-    tbody.innerHTML = '';
-    if (els.cldModelEmpty) els.cldModelEmpty.hidden = false;
-    return;
-  }
-  if (els.cldModelEmpty) els.cldModelEmpty.hidden = true;
-  tbody.innerHTML = rows.map(function (r) {
+  renderTable(els.cldModelTable, els.cldModelEmpty, rows, function (r) {
     const totalIn = (r.input_tokens || 0) + (r.cache_creation_tokens || 0);
     return '<tr>' +
       '<td class="td-trunc" title="' + escapeHtml(r.model) + '">' + escapeHtml(r.model) + '</td>' +
@@ -308,19 +282,11 @@ function renderModelTable(rows) {
       '<td>' + tokPair(totalIn, r.output_tokens) + '</td>' +
       '<td class="muted">' + fmtTok(r.cache_read_tokens) + '</td>' +
       '</tr>';
-  }).join('');
+  });
 }
 
 function renderProjectTable(rows) {
-  const tbody = els.cldProjectTable && els.cldProjectTable.querySelector('tbody');
-  if (!tbody) return;
-  if (!rows.length) {
-    tbody.innerHTML = '';
-    if (els.cldProjectEmpty) els.cldProjectEmpty.hidden = false;
-    return;
-  }
-  if (els.cldProjectEmpty) els.cldProjectEmpty.hidden = true;
-  tbody.innerHTML = rows.map(function (r) {
+  renderTable(els.cldProjectTable, els.cldProjectEmpty, rows, function (r) {
     const totalIn = (r.input_tokens || 0) + (r.cache_creation_tokens || 0);
     const name = r.project || r.project_key;
     return '<tr>' +
@@ -328,7 +294,7 @@ function renderProjectTable(rows) {
       '<td>' + fmtNum(r.requests) + '</td>' +
       '<td>' + tokPair(totalIn, r.output_tokens) + '</td>' +
       '</tr>';
-  }).join('');
+  });
 }
 
 function renderSessions(sessions) {

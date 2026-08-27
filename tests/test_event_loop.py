@@ -2,7 +2,7 @@
 
 asyncio's default Windows proactor event loop closes its listening socket
 on any aborted client connection (WinError 64); the selector loop's accept
-path doesn't. These tests cover the wiring (all 4 of this repo's
+path doesn't. These tests cover the wiring (all 3 of this repo's
 ``uvicorn.run()`` call sites pick the shim) and the actual accept-loop
 resilience the shim buys.
 """
@@ -63,10 +63,6 @@ def _wires_loop_factory(relpath: str) -> None:
 
 def test_hub_server_wires_loop_factory():
     _wires_loop_factory("src/server.py")
-
-
-def test_whisper_translate_proxy_wires_loop_factory():
-    _wires_loop_factory("src/whisper_translate_proxy.py")
 
 
 def test_tts_server_wires_loop_factory():

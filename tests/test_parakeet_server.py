@@ -2,10 +2,9 @@
 
 Regression for issue #297: `_start_worker` used to block forever on
 `proc.stdout.readline()` waiting for "READY", with no wall-clock deadline
-— unlike its sibling process wrappers (`whisper_translate_proxy._wait_ready`,
-`tts_engines.orpheus._wait_llama_ready`), which both bound the wait. The
-worker binary itself is darwin-only, so these tests fake `subprocess.Popen`
-rather than driving the real Swift process.
+— unlike its sibling process wrapper (`tts_engines.orpheus._wait_llama_ready`),
+which bounds the wait. The worker binary itself is darwin-only, so these
+tests fake `subprocess.Popen` rather than driving the real Swift process.
 """
 
 from __future__ import annotations

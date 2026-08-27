@@ -10,7 +10,7 @@
  */
 
 import { els, state } from './state.js';
-import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtTok, fmtCost, tokPair, renderCounterTable, modelLabel, modelLabelText } from './api.js';
+import { jsonApi, postJson, eventStream, toast, escapeHtml, fmtClock, fmtTok, fmtCost, tokPair, renderCounterTable, renderTable, modelLabel, modelLabelText } from './api.js';
 import { icon } from './_vendored/icons/icons.js';
 
 const HEALTH_POLL_MS = 8000;
@@ -103,17 +103,9 @@ export async function fetchClaudeCodeUsage() {
 }
 
 function renderClaudeCodeUsage(body) {
-  const tbl = els.telCcTable;
-  const empty = els.telCcEmpty;
-  if (!tbl) return;
-  const tbody = tbl.querySelector('tbody');
-  if (!tbody) return;
   const rows = (body && body.rows) || [];
-  tbody.innerHTML = '';
-  if (empty) empty.hidden = rows.length > 0;
-  rows.forEach(function (r) {
-    const tr = document.createElement('tr');
-    tr.innerHTML =
+  renderTable(els.telCcTable, els.telCcEmpty, rows, function (r) {
+    return '<tr>' +
       '<td>' + escapeHtml(r.date || '—') + '</td>' +
       '<td>' + escapeHtml(r.project || '—') + '</td>' +
       '<td>' + escapeHtml(r.model) + '</td>' +
@@ -122,8 +114,8 @@ function renderClaudeCodeUsage(body) {
       '<td>' + fmtTok(r.output) + '</td>' +
       '<td>' + fmtTok(r.cache_read) + '</td>' +
       '<td>' + fmtTok(r.cache_creation) + '</td>' +
-      '<td>' + (fmtCost(r.cost_usd) || '—') + '</td>';
-    tbody.appendChild(tr);
+      '<td>' + (fmtCost(r.cost_usd) || '—') + '</td>' +
+      '</tr>';
   });
   if (els.telCcSummary) {
     const totals = (body && body.totals) || {};

@@ -242,6 +242,23 @@ export function tokPair(inTok, outTok) {
   return one(inTok) + ' / ' + one(outTok);
 }
 
+/* Shared plumbing behind every table-render function in this file (and, as
+ * of #530, in code_usage.js / telemetry.js too): resolve `table`'s
+ * <tbody>, bail silently (-1) if either isn't in the DOM, else fill it from
+ * `rows` via `cellsFn` — one row's full '<tr>...</tr>' markup — and return
+ * the row count so the caller can drive its own empty-state UI (an inline
+ * colspan row here, a sibling "no data" block in `renderTable` below —
+ * different tables want different empty treatments, so this only owns the
+ * fill, never the emptiness decision). */
+function fillTableBody(table, rows, cellsFn) {
+  if (!table) return -1;
+  const tbody = table.querySelector('tbody');
+  if (!tbody) return -1;
+  const list = rows || [];
+  tbody.innerHTML = list.map(cellsFn).join('');
+  return list.length;
+}
+
 /* Fill a per-backend counter table's <tbody>: one empty-state row, else one
  * row per record with the same Backend/Model · Req · Err · p50 · p95 ·
  * I/O-tok cells. Shared by the Hub tab's /hub/counters table and the
@@ -249,28 +266,37 @@ export function tokPair(inTok, outTok) {
  * copy-pasted even though their cell formatters were already deduped here
  * (#470). No-op when the table (or its tbody) isn't in the DOM. */
 export function renderCounterTable(table, rows) {
-  if (!table) return;
-  const tbody = table.querySelector('tbody');
-  if (!tbody) return;
-  const list = rows || [];
-  tbody.innerHTML = '';
-  if (!list.length) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="6" class="muted small">No requests yet.</td>';
-    tbody.appendChild(tr);
-    return;
-  }
-  list.forEach(function (r) {
-    const tr = document.createElement('tr');
-    tr.innerHTML =
+  const count = fillTableBody(table, rows, function (r) {
+    return '<tr>' +
       '<td class="td-trunc" title="' + escapeHtml(r.key) + '">' + escapeHtml(r.key) + '</td>' +
       '<td>' + r.requests + '</td>' +
       '<td>' + r.errors + '</td>' +
       '<td>' + fmtSecs(r.p50_ms) + '</td>' +
       '<td>' + fmtSecs(r.p95_ms) + '</td>' +
-      '<td>' + tokPair(r.in_tok, r.out_tok) + '</td>';
-    tbody.appendChild(tr);
+      '<td>' + tokPair(r.in_tok, r.out_tok) + '</td>' +
+      '</tr>';
   });
+  if (count === 0) {
+    table.querySelector('tbody').innerHTML =
+      '<tr><td colspan="6" class="muted small">No requests yet.</td></tr>';
+  }
+}
+
+/* Fill a <table>'s <tbody> from `rows`, toggling a sibling "no data" element
+ * on emptiness — the scaffold five different panels (code_usage.js's
+ * vendor/model/project/Copilot-billing tables, telemetry.js's Claude Code
+ * usage table) each re-derived by hand: resolve tbody, bail if absent,
+ * clear + fill, toggle `emptyEl.hidden` on `rows.length`. `renderCounterTable`
+ * above was already the deduplicated version of this exact shape for the two
+ * counter tables; #530 widens it into this general form so newer tables stop
+ * walking past it. `cellsFn(row)` returns one row's full '<tr>...</tr>'
+ * markup. `emptyEl` is optional — pass a falsy value to skip the toggle
+ * (e.g. a caller that drives its own empty-state text). No-op when `table`
+ * (or its tbody) isn't in the DOM. */
+export function renderTable(table, emptyEl, rows, cellsFn) {
+  const count = fillTableBody(table, rows, cellsFn);
+  if (count < 0) return;
+  if (emptyEl) emptyEl.hidden = count > 0;
 }
 
 /* Equivalent metered-API dollar cost — "≈ $1.23" / "≈ <$0.01" / "" when

@@ -6,10 +6,9 @@ Binds the registry row's external ``port`` and exposes ``POST
 
 Launched by ``backend_process.build_command`` for any ``engine:
 parakeet-server`` row as ``python -m src.parakeet_server --model-id
-<id>`` — the same in-repo-shim pattern as ``tts_server``/
-``whisper_translate_proxy``. The hub proxies ``/v1/audio/transcriptions``
-to this port so requests land in the observability ring
-(``src/server_audio_asr.py``).
+<id>`` — the same in-repo-shim pattern as ``tts_server``. The hub proxies
+``/v1/audio/transcriptions`` to this port so requests land in the
+observability ring (``src/server_audio_asr.py``).
 
 darwin-only: keeps one long-lived ``mac/parakeet-worker`` Swift subprocess
 warm (the CoreML model loads once) and serializes requests through its
@@ -47,10 +46,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WORKER_BIN = PROJECT_ROOT / "mac" / "parakeet-worker" / ".build" / "release" / "ParakeetWorker"
 
 DEFAULT_MODEL_ID = "parakeet"
-# Mirrors whisper_translate_proxy.STARTUP_DEADLINE_S / orpheus.LLAMA_READY_DEADLINE_S
-# — this worker's sibling process-wrapper modules both bound their startup
-# wait; _start_worker previously blocked forever on a wedged CoreML load
-# (issue #297).
+# Mirrors orpheus.LLAMA_READY_DEADLINE_S — this worker's sibling
+# process-wrapper module also bounds its startup wait; _start_worker
+# previously blocked forever on a wedged CoreML load (issue #297).
 STARTUP_DEADLINE_S = 60.0
 # Bound the per-request worker round-trip too. The startup wait was already
 # bounded (#297); the request path was not — and a subtler bug made every

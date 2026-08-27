@@ -210,11 +210,10 @@ use this path; it stays on the gemini backend.
     The `piper` / `chatterbox` / `orpheus` / `kokoro` slots use the `tts-server` engine —
     the in-repo FastAPI shim `src/tts_server.py` (Orpheus runs a
     loopback `llama-server` child for its GGUF + SNAC decode).
-    A lazy-load alternative exists — set
-    `engine: whisper-server-lazy` + `internal_port` + `idle_seconds`
-    to route through `src/whisper_translate_proxy.py`, which
-    spawns/unloads the child around an idle window — but the active
-    rotation runs eager.
+    A lazy-load alternative exists — add `startup: on_demand` +
+    `idle_unload_minutes` to the row (`src/on_demand.py`, #530: also the
+    mechanism `whisper_vanilla` uses), which spawns/unloads the child
+    around an idle window — but the active rotation runs eager.
   - `python -m src.install [--fix]` — runs every health check, fixes
     the fixable (CLI-only).
   - **Admin UI** — the `app_web/` SPA is a FastAPI sub-app mounted at

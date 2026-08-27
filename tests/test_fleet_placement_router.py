@@ -91,7 +91,9 @@ def test_get_lists_every_fleet_host_with_manageability(monkeypatch):
 def test_get_returns_registry_derived_placement(monkeypatch):
     """The placement map is derived from the committed config/models.yaml
     (#430): eager rows on their preferred chain host; on_demand rows
-    (gemma4_26b, gemma4_e4b, chatterbox, kokoro) never appear."""
+    (gemma4_26b, gemma4_e4b, chatterbox, kokoro, and — since #530 flipped it
+    off the retired ``whisper-server-lazy`` engine onto the generic
+    ``startup: on_demand`` lifecycle — whisper_vanilla) never appear."""
     _stub_status(monkeypatch)
     client = TestClient(server_mod.app)
     r = client.get("/admin/api/fleet-placement")
@@ -100,7 +102,7 @@ def test_get_returns_registry_derived_placement(monkeypatch):
     assert body["placement"] == {
         "tower": ["qwen35_4b", "piper", "orpheus"],
         "mac-mini-m4": ["qwen", "parakeet"],
-        "gaming": ["whisper", "whisper_translate", "whisper_vanilla"],
+        "gaming": ["whisper", "whisper_translate"],
     }
     hosts = {h["id"]: h for h in body["hosts"]}
     assert hosts["tower"]["local"] is True
@@ -144,31 +146,37 @@ def _stub_gaming_online(monkeypatch):
 def test_capacity_warning_when_over_ceiling(monkeypatch):
     """A host whose desired models' est_vram_mb sum exceeds its declared
     ``vram_mb`` ceiling carries capacity_warning=True (advisory, #375). gaming
-    declares an 8192 MB ceiling; two stubbed 5000 MB estimates overcommit it."""
+    declares an 8192 MB ceiling; a stubbed 9000 MB estimate on its one
+    eager GPU row (``whisper``) overcommits it on its own. Can't use a second
+    id to build the sum the way this test used to (stubbing two 5000 MB
+    halves): ``whisper_translate`` is CPU-only (excluded from the VRAM sum
+    by device, not just by desired-set membership) and ``whisper_vanilla``
+    is on_demand since #530, so neither lands in gaming's desired set here."""
     _stub_gaming_online(monkeypatch)
-    monkeypatch.setattr(
-        fpr, "_vram_estimates", lambda: {"whisper": 5000, "whisper_vanilla": 5000}
-    )
+    monkeypatch.setattr(fpr, "_vram_estimates", lambda: {"whisper": 9000})
 
     client = TestClient(server_mod.app)
     hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
     g = hosts["gaming"]
     assert g["vram_mb"] == 8192
-    assert g["est_vram_mb"] == 10000
+    assert g["est_vram_mb"] == 9000
     assert g["capacity_warning"] is True
 
 
 def test_no_capacity_warning_from_committed_config(monkeypatch):
-    """gaming's derived desired set (the whisper trio: 2000 + 0 + 2000 =
-    4000 MB from the committed config) sits under its 8192 MB ceiling — the
-    real config must not raise a false positive."""
+    """gaming's derived desired set (the two *eager* whisper rows: whisper
+    2000 + whisper_translate 0 = 2000 MB from the committed config) sits
+    under its 8192 MB ceiling — the real config must not raise a false
+    positive. whisper_vanilla (on_demand since #530) only joins this sum
+    while actually running, same as any other on-demand row (gemma4_26b
+    etc.) — this test stubs nothing as running, so it stays out."""
     _stub_gaming_online(monkeypatch)
 
     client = TestClient(server_mod.app)
     hosts = {h["id"]: h for h in client.get("/admin/api/fleet-placement").json()["hosts"]}
     g = hosts["gaming"]
     assert g["vram_mb"] == 8192
-    assert g["est_vram_mb"] == 4000  # 2000 + 0 + 2000, from config/models.yaml
+    assert g["est_vram_mb"] == 2000  # 2000 (whisper) + 0 (whisper_translate, CPU-only)
     assert g["capacity_warning"] is False
 
 

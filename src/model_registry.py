@@ -38,11 +38,14 @@ class Model:
     hf_pattern: Optional[str] = None
     model_path: Optional[str] = None
     args: List[str] = field(default_factory=list)
-    # Lazy-loaded engines (e.g. whisper-server-lazy) wrap the real
-    # backend in a proxy that owns the child process. ``port`` stays the
-    # external contract; ``internal_port`` is where the wrapped child
-    # actually binds (loopback only). ``idle_seconds`` is how long the
-    # child stays loaded after the last request before it's torn down.
+    # ``internal_port``: the loopback port a hub-owned child process binds
+    # when ``port`` is the *external*, hub-proxied contract — e.g. the
+    # Orpheus TTS engine's own llama-server child (``src/tts_engines/
+    # orpheus.py``). ``idle_seconds`` was the retired ``whisper-server-lazy``
+    # engine's idle-unload window (#530 replaced it with the generic
+    # ``startup: on_demand`` lifecycle — see ``STARTUP_ON_DEMAND`` /
+    # ``idle_unload_minutes`` below); no row sets it any more, kept only so
+    # a stray old config value parses instead of raising ``AttributeError``.
     internal_port: Optional[int] = None
     idle_seconds: Optional[int] = None
     # A *virtual* model is an alias of another backend: it shares an existing
@@ -235,8 +238,8 @@ def _row_to_model(model_id: str, row: Dict) -> Model:
 # in a model's chain runs it degraded-but-up. Kept as pure list-in/list-out
 # so it is directly unit-testable and shared by every spawn path (the
 # transform is baked into ``Model.args`` in ``all_models()``, so
-# ``backend_process.build_command``, the lazy whisper proxy's child command,
-# and ``run_backend`` all inherit it without knowing it exists).
+# ``backend_process.build_command`` and ``run_backend`` both inherit it
+# without knowing it exists).
 _LLAMA_GPU_LAYER_FLAGS = ("-ngl", "--n-gpu-layers", "--gpu-layers")
 
 
@@ -249,7 +252,7 @@ def cpu_offload_args(engine: Optional[str], args: List[str]) -> List[str]:
                 out[i + 1] = "0"
                 return out
         return [*out, "-ngl", "0"]
-    if engine in ("whisper-server", "whisper-server-lazy"):
+    if engine == "whisper-server":
         if "-ng" in out or "--no-gpu" in out:
             return out
         return [*out, "-ng"]

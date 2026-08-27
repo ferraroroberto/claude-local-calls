@@ -244,20 +244,30 @@ async def wait_for_langfuse(
     return await poll_until(_check, timeout_s, poll_s)
 
 
-def _run_langfuse_start_script_sync() -> Dict[str, Any]:
-    """Blocking half of :func:`_run_langfuse_start_script`, run off-thread.
+LANGFUSE_START_TIMEOUT_S = 120.0
+
+
+def _run_script_sync(script: Path, timeout_s: float, verb: str) -> Dict[str, Any]:
+    """Blocking run of a start/stop shell script, off-thread (#530: was two
+    ~40-line near-clones — :func:`_run_langfuse_start_script_sync` and
+    :func:`_run_langfuse_stop_script_sync` — identical down to the
+    ``cmd.exe /c`` vs ``/bin/sh`` branch and the three-arm try/except,
+    differing only in which script-path helper they called, the timeout,
+    and the word in the timeout message).
 
     Same ``SelectorEventLoop``-has-no-Windows-subprocess-support issue as
     :func:`_docker_info_sync` — a blocking ``subprocess.run`` in a worker
-    thread avoids the event loop's subprocess transport entirely.
+    thread avoids the event loop's subprocess transport entirely. ``verb``
+    (``"start"``/``"stop"``) only shapes the "not found" message; the
+    timeout message uses the script's own filename stem so it always names
+    the actual script that hung.
     """
-    script = langfuse_start_script()
     if not script.exists():
         return {
             "ok": False,
             "returncode": -1,
             "stdout": "",
-            "stderr": f"start script not found: {script}",
+            "stderr": f"{verb} script not found: {script}",
         }
     if sys.platform == "win32":
         cmd = ["cmd.exe", "/c", str(script)]
@@ -265,7 +275,7 @@ def _run_langfuse_start_script_sync() -> Dict[str, Any]:
         cmd = ["/bin/sh", str(script)]
     try:
         proc = subprocess.run(
-            cmd, cwd=str(PROJECT_ROOT), capture_output=True, timeout=120.0,
+            cmd, cwd=str(PROJECT_ROOT), capture_output=True, timeout=timeout_s,
             creationflags=NO_WINDOW,
         )
         return {
@@ -279,7 +289,7 @@ def _run_langfuse_start_script_sync() -> Dict[str, Any]:
             "ok": False,
             "returncode": -1,
             "stdout": "",
-            "stderr": "start_langfuse script timed out after 120 s",
+            "stderr": f"{script.stem} script timed out after {timeout_s:.0f}s",
         }
     except OSError as exc:
         return {
@@ -288,6 +298,11 @@ def _run_langfuse_start_script_sync() -> Dict[str, Any]:
             "stdout": "",
             "stderr": f"{type(exc).__name__}: {exc}",
         }
+
+
+def _run_langfuse_start_script_sync() -> Dict[str, Any]:
+    """Blocking half of :func:`_run_langfuse_start_script`, run off-thread."""
+    return _run_script_sync(langfuse_start_script(), LANGFUSE_START_TIMEOUT_S, "start")
 
 
 async def _run_langfuse_start_script() -> Dict[str, Any]:
@@ -473,44 +488,8 @@ async def stop_docker_desktop(timeout_s: float = DOCKER_STOP_TIMEOUT_S) -> Dict[
 
 def _run_langfuse_stop_script_sync() -> Dict[str, Any]:
     """Blocking half of :func:`stop_langfuse`, run off-thread. Sibling of
-    :func:`_run_langfuse_start_script_sync`."""
-    script = langfuse_stop_script()
-    if not script.exists():
-        return {
-            "ok": False,
-            "returncode": -1,
-            "stdout": "",
-            "stderr": f"stop script not found: {script}",
-        }
-    if sys.platform == "win32":
-        cmd = ["cmd.exe", "/c", str(script)]
-    else:
-        cmd = ["/bin/sh", str(script)]
-    try:
-        proc = subprocess.run(
-            cmd, cwd=str(PROJECT_ROOT), capture_output=True, timeout=LANGFUSE_STOP_TIMEOUT_S,
-            creationflags=NO_WINDOW,
-        )
-        return {
-            "ok": proc.returncode == 0,
-            "returncode": proc.returncode,
-            "stdout": (proc.stdout or b"").decode("utf-8", errors="replace"),
-            "stderr": (proc.stderr or b"").decode("utf-8", errors="replace"),
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "ok": False,
-            "returncode": -1,
-            "stdout": "",
-            "stderr": f"stop_langfuse script timed out after {LANGFUSE_STOP_TIMEOUT_S:.0f}s",
-        }
-    except OSError as exc:
-        return {
-            "ok": False,
-            "returncode": -1,
-            "stdout": "",
-            "stderr": f"{type(exc).__name__}: {exc}",
-        }
+    :func:`_run_langfuse_start_script_sync` — both drive :func:`_run_script_sync`."""
+    return _run_script_sync(langfuse_stop_script(), LANGFUSE_STOP_TIMEOUT_S, "stop")
 
 
 async def stop_langfuse() -> Dict[str, Any]:

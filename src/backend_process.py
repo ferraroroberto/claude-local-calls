@@ -502,21 +502,7 @@ def start(model_id: str) -> tuple[bool, str]:
             "start it there, or via the admin API which proxies this "
             "call automatically"
         )
-    if is_running(model_id):
-        return False, "already running"
-
-    # Adopt an external instance already listening on this model's port.
-    if is_reachable(model, timeout=0.4):
-        ext = external_pid(model_id)
-        suffix = f" (PID {ext})" if ext else ""
-        return True, f"adopted external instance{suffix}"
-
     state = _state_for(model_id)
-
-    try:
-        cmd = build_command(model)
-    except Exception as e:
-        return False, str(e)
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -525,14 +511,23 @@ def start(model_id: str) -> tuple[bool, str]:
     if sys.platform == "win32":
         env["PATH"] = str(vendor_dir_for(model)) + os.pathsep + env.get("PATH", "")
 
+    # ``build_command`` (may raise on a missing binary/model file) and the
+    # log roll both stay lazy, deferred to ``build_spawn_spec`` — that
+    # callback only runs once the supervisor's own already-running/reachable
+    # checks below have both come back negative, so an already-running or
+    # adopted backend neither pays a bogus "binary not found" from a stale
+    # path nor rolls its log on the way to being told it is already running.
     # Redirect stdout/stderr to a child-owned log file instead of a hub-owned
-    # pipe. The child keeps its own fd, so the log survives a hub restart and
+    # pipe: the child keeps its own fd, so the log survives a hub restart and
     # an inherited backend never writes into a closed pipe (the [Errno 22]
     # class that made #104 possible). The file is also readable on disk and
-    # via ``log_lines`` / the admin log endpoint. Roll first for a fresh log.
-    log_file = _roll_log(model_id).open("ab")
+    # via ``log_lines`` / the admin log endpoint.
+    log_file: Optional[Any] = None
 
     def build_spawn_spec() -> SpawnSpec:
+        nonlocal log_file
+        cmd = build_command(model)
+        log_file = _roll_log(model_id).open("ab")
         return SpawnSpec(
             cmd=cmd,
             cwd=PROJECT_ROOT,
@@ -559,7 +554,7 @@ def start(model_id: str) -> tuple[bool, str]:
             adopt_message="adopted external instance",
         ).start()
     finally:
-        if not log_file.closed:
+        if log_file is not None and not log_file.closed:
             log_file.close()
 
 

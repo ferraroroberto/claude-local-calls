@@ -1150,7 +1150,7 @@ local-llm-hub/
 │   ├── install.py            # first-run checks + --fix
 │   ├── run_backend.py        # hub|qwen35_4b|gemma4_26b|whisper|… dispatcher
 │   ├── process_supervisor.py # shared subprocess start/stop lifecycle workflow (hub + model backends)
-│   ├── server_process.py     # hub Popen + ownership / adopt-or-spawn (used by the tray)
+│   ├── server_process.py     # hub port/PID lookup + ownership tri-state (used by backend_process.py, admin routers)
 │   ├── backend_process.py    # per-model Popen (llama-server + whisper-server);
 │   │                         #   stdout/stderr → data/logs/backend-<id>.log (child-owned)
 │   ├── parakeet_server.py    # OpenAI-shape ASR server wrapping the FluidAudio Parakeet CoreML worker

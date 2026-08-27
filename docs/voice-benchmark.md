@@ -151,11 +151,11 @@ regressing the fast HA-voice path (piper stays put and stays instant).
 ```bash
 # STT — same clip set, any host
 python scripts/bench_voice.py stt --base-url http://127.0.0.1:8000  --model whisper  --clips-dir .scratch/voice-bench --json .scratch/stt-tower.json
-python scripts/bench_voice.py stt --base-url http://192.168.1.13:8000 --model whisper  --clips-dir .scratch/voice-bench --json .scratch/stt-gaming.json
-python scripts/bench_voice.py stt --base-url http://192.168.1.11:8000 --model parakeet --clips-dir .scratch/voice-bench
+python scripts/bench_voice.py stt --base-url http://<gaming address>:8000 --model whisper  --clips-dir .scratch/voice-bench --json .scratch/stt-gaming.json
+python scripts/bench_voice.py stt --base-url http://<mac-mini-m4 address>:8000 --model parakeet --clips-dir .scratch/voice-bench
 
 # TTS — any model/host
 python scripts/bench_voice.py tts --base-url http://127.0.0.1:8000  --model piper   --voice amy
 python scripts/bench_voice.py tts --base-url http://127.0.0.1:8000  --model orpheus --voice tara
-python scripts/bench_voice.py tts --base-url http://192.168.1.13:8000 --model orpheus --voice tara
+python scripts/bench_voice.py tts --base-url http://<gaming address>:8000 --model orpheus --voice tara
 ```

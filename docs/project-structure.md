@@ -223,10 +223,14 @@ use this path; it stays on the gemini backend.
     there); no separate launcher.
 - **Image generation.** `POST /v1/images/generations` and `/edits`
   (OpenAI Images shape) are handled by
-  [`src/server_images.py`](../src/server_images.py), which calls
-  `call_gemini_image()` in `src/gemini_cli.py`. The only reachable image
-  backend is Google **Imagen**, hosted as an agentic tool inside an `agy`
-  Gemini text session (there is no Nano Banana / picker image model) — see
+  [`src/server_images.py`](../src/server_images.py), which routes by
+  backend: `gemini` rows call `call_gemini_image()` in `src/gemini_cli.py`
+  (Google **Imagen**, hosted as an agentic tool inside an `agy` Gemini
+  text session — there is no Nano Banana / picker image model), and
+  `comfyui` rows (`flux1_local`, `flux2_klein`, #492/#498) generate
+  **entirely locally** on this host's own GPU via
+  [`src/comfyui_client.py`](../src/comfyui_client.py). Editing
+  (`/v1/images/edits`) stays on the `gemini` backend only — see
   [docs/image-generation.md](image-generation.md) for the full rationale.
 - **Multi-host.** A model row can declare an owning `host:` (or an ordered
   `hosts:` preference chain) in `config/models.yaml`; when the active

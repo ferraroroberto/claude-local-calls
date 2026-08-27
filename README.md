@@ -60,9 +60,9 @@ Subscription-backed cloud routes (no GPU, no API keys, no Cloud project):
   transformer / text encoder / VAE, paired with Qwen3-4B) using FLUX.2's own
   ComfyUI nodes. In a controlled comparison it beats FLUX.1 on texture and
   typography but **systematically miscounts** — if the prompt says "three of
-  X", use `flux1_local`. A FLUX.2 [dev] 32B row was added in #498 and removed
-  in #501: it needs ~4 hours per image on a 16 GB card, which is not a model
-  but a science experiment. The measurement is kept in
+  X", use `flux1_local`. FLUX.2 [dev] 32B is deliberately not offered as a
+  row: it needs ~4 hours per image on a 16 GB card, which is not a model but
+  a science experiment. The measurement is kept in
   [docs/image-generation.md](docs/image-generation.md).
 
 Self-hosted entries in active use as of the May 2026 frontier reading. A row
@@ -445,16 +445,16 @@ satellite (#323/#370) and parakeet lives on the Mac Mini; the tower is only
 whisper's degraded `cpu: true` last rung. Callers still POST to this hub's
 :8000 and it proxies to the owner — but weights, builds, and `enabled:` rows
 belong on the owning machine:
-  whisper / whisper_translate / whisper_vanilla  → gaming      (192.168.1.13)
-  parakeet (transcribe primary)                  → mac-mini-m4 (192.168.1.11)
+  whisper / whisper_translate / whisper_vanilla  → gaming      (address: config/machines.local.yaml)
+  parakeet (transcribe primary)                  → mac-mini-m4 (address: config/machines.local.yaml)
 
 Demoted (defined in config/models.yaml, not in any host's enabled list):
   glm-4.5-air — bring up via launchers/run_model.bat glm
 Replaced as agentic_light on 2026-05-10 (still enabled on tower for fallback):
   gemma4-e4b-it — bring up via launchers/run_model.bat gemma4_e4b
 Mac Mini (mac-mini-m4), proxied through this hub's own base_url — see below:
-  qwen3.5-9b  → this hub 127.0.0.1:8000  → mac hub 192.168.1.11:8000 → llama-server :8081
-  parakeet    → this hub 127.0.0.1:8000  → mac hub 192.168.1.11:8000 → parakeet-server :8098
+  qwen3.5-9b  → this hub 127.0.0.1:8000  → mac hub <mac-mini-m4 address>:8000 → llama-server :8081
+  parakeet    → this hub 127.0.0.1:8000  → mac hub <mac-mini-m4 address>:8000 → parakeet-server :8098
 ```
 
 Which machine owns which row is [`config/models.yaml`](config/models.yaml)'s
@@ -488,7 +488,8 @@ own `:8000` (not its raw backend port) — so the proxied call still lands in
 the owning hub's own observability ring. This is symmetric: the Mac Mini's
 own hub can equally proxy to a Windows-owned model.
 
-Today this powers the `mac-mini-m4` host (`192.168.1.11`, Apple M4):
+Today this powers the `mac-mini-m4` host (Apple M4; address in
+`config/machines.local.yaml`):
 
 - **`qwen3.5-9b`** — moved here from `tower` (see
   [Demoted candidates](#demoted-candidates-kept-defined-not-in-active-rotation)
@@ -504,24 +505,24 @@ Today this powers the `mac-mini-m4` host (`192.168.1.11`, Apple M4):
   measurement + trade-off writeup:
   [docs/parakeet-asr-evaluation.md](docs/parakeet-asr-evaluation.md).
 
-The same pattern powers the **`gaming`** satellite (`192.168.1.13`, Ryzen 9
-5900X, GTX 1070 8 GB, headless Ubuntu — #323), which owns the whisper STT
-trio moved off the tower, so tower carries no whisper backends at all:
+The same pattern powers the **`gaming`** satellite (Ryzen 9 5900X, GTX 1070
+8 GB, headless Ubuntu, address in `config/machines.local.yaml` — #323), which
+owns the whisper STT trio moved off the tower, so tower carries no whisper
+backends at all:
 
 - **`whisper-large-v3-turbo`** — the transcribe role's *fallback* (parakeet on
   the Mac stays primary); CUDA-built whisper-server for `sm_61`, ~9.1 RTFx
   there vs ~33.6 on the tower's 5060 Ti — slower, but a failover path, not the
   daily-dictation primary.
-- **`whisper-medium-translate`** and **`whisper-vanilla`** — moved to gaming
-  in #370, alongside `whisper`'s earlier #323 move. `translate`
-  stays CPU-only (0 MB VRAM); `vanilla` is GPU/lazy (~2000 MB when resident).
-  voice-transcriber retains its own local `:8090` escape-hatch spawner for
-  transport failures.
-- **`orpheus-tts`** — moved here in #323, moved **back to tower** in #422: the
-  1070 synthesizes at 0.71x real-time with the GPU pegged (measured
-  2026-07-25), starving every streamed playback. Gaming stays second in
-  orpheus's `hosts: [tower, gaming]` chain as the degraded-but-up fallback,
-  so it keeps the weights staged and the id in `enabled:`.
+- **`whisper-medium-translate`** and **`whisper-vanilla`** — both live on
+  gaming alongside `whisper`. `translate` stays CPU-only (0 MB VRAM);
+  `vanilla` is GPU/lazy (~2000 MB when resident). voice-transcriber retains
+  its own local `:8090` escape-hatch spawner for transport failures.
+- **`orpheus-tts`** — runs on tower: the 1070 synthesizes at 0.71x
+  real-time with the GPU pegged (measured 2026-07-25), starving every
+  streamed playback, so gaming stays second in orpheus's
+  `hosts: [tower, gaming]` chain as the degraded-but-up fallback and keeps
+  the weights staged and the id in `enabled:`.
 
 Gaming's estimated VRAM footprint with the whisper trio resident: whisper
 2000 + whisper_translate 0 + whisper_vanilla 2000 = 4000 MB (plus orpheus
@@ -536,7 +537,7 @@ Docker/Langfuse. Cross-host auth reuses `extra_allowlist` in
 IP is allowlisted on the other, the same bypass the bearer-token middleware
 already grants loopback callers.
 
-### Mac Mini lifecycle: autostart, remote bootstrap, sync (#181)
+### Mac Mini lifecycle: autostart, remote bootstrap, sync
 
 The Mac Mini's hub has no tray-equivalent process supervisor — a
 `~/Library/LaunchAgents/com.ferraroroberto.local-llm-hub.plist`
@@ -566,9 +567,9 @@ gives `gaming` the same two verbs since #368). An **out-of-sync** badge
 appears on a peer's pill when the two hubs' `git_sha` (from
 `/admin/api/version`) differ — `sync` is the fix.
 
-Automatic peer wake/sync on the tower's own boot is no longer a separate
-per-service toggle (the old `mac_mini_sync` flag was retired in #374). It is
-owned entirely by the **fleet reconcile loop** (see the next section): on boot,
+Automatic peer wake/sync on the tower's own boot is not a separate
+per-service toggle; it is owned entirely by the **fleet reconcile loop**
+(see the next section): on boot,
 the loop wakes + syncs + starts every peer that carries fleet placement. A peer
 with **no** placement is deliberately left asleep (nothing to run means no
 reason to wake it) — the manual **Wake**/**Sync** buttons above stay available
@@ -619,7 +620,7 @@ sha, also on `/admin/api/version` as `config_sha`), so drift between hubs is
 visible by comparing their `/admin` pages. Non-write hosts render the cards
 read-only and 403 the write endpoint.
 
-### Fleet placement: registry-derived desired state (#353, #430)
+### Fleet placement: registry-derived desired state
 
 The per-machine service autostart above (`startup_profile.json`) answers
 *"which services should this box bring up when it boots?"*. **Fleet
@@ -719,7 +720,7 @@ the single cross-host source of placement truth — a model desired on a
 machine that's powered *off* is simply started when the box next reports in
 (or by the box itself, from its own registry, when it boots).
 
-### Dynamic model fallback: ordered host chains (#342)
+### Dynamic model fallback: ordered host chains
 
 Fleet placement above answers *"what should run where"*; **dynamic
 fallback** answers *"and what if that host is down?"*. A `models:` row may
@@ -793,7 +794,7 @@ there, not a compromise. `orpheus` joined in #422 with
 degraded fallback (0.71x — audible but slower than real-time). Every other
 row still carries a bare `host:`.
 
-### On-demand model lifecycle: `startup` + `idle_unload_minutes` (#422)
+### On-demand model lifecycle: `startup` + `idle_unload_minutes`
 
 A `models:` row may declare a lifecycle policy:
 
@@ -823,7 +824,7 @@ fleet's desired-state source (see *Fleet placement* above), and the
 out-of-rotation rows (`gemma4_e4b`, `chatterbox`, `kokoro`, `glm`) are
 explicitly `on_demand` so the derived desired set matches what actually runs.
 
-### Linux satellite lifecycle: systemd (#323, #368)
+### Linux satellite lifecycle: systemd
 
 A headless Linux satellite (`gaming`, later `openclaw`) has no
 tray-equivalent and no LaunchAgent — a **systemd unit** fills that role,
@@ -869,7 +870,7 @@ command="/home/<user>/local-llm-hub/linux/bin/hub-remote-ctl.sh",no-port-forward
 the repo lives at `~/local-llm-hub` — the same convention the Mac dispatcher
 uses.
 
-### Machines console (#309)
+### Machines console
 
 The **Machines** tab turns the hub into a fleet machine console — one place
 to see the health of every box and act on it. It reads the host inventory
@@ -1401,9 +1402,8 @@ Starts a resident system-tray icon (silent — no terminal window) that:
     `true` (via the same `launch_stack()` the Services card's manual launch
     button uses), and AgentsView if `agentsview` is `true`. Toggle any service
     off from the admin SPA's Models tab **Service startup** card, or hand-edit the
-    JSON. Peer wake/sync is *not* a startup-profile toggle (the
-    `mac_mini_sync` flag was retired in #374) — it is owned by the fleet
-    reconcile loop, driven by the registry-derived desired state.
+    JSON. Peer wake/sync is *not* a startup-profile toggle — it is owned by
+    the fleet reconcile loop, driven by the registry-derived desired state.
 - Lets you toggle any other enabled local model on/off from the
   **🧠 Models** submenu (multiple may run concurrently).
 - Surfaces the admin webapp via **🚀 Open admin** — same `:8000/admin/`
@@ -1436,7 +1436,7 @@ persisted to `config/webapp_config.json`. Loopback callers bypass it;
 anyone reaching the hub over the tunnel must present
 `Authorization: Bearer <token>` or `?token=…` on the URL.
 
-### Passkey (WebAuthn) gate — parked, server-side only (not planned: #247)
+### Passkey (WebAuthn) gate — parked, server-side only (not planned)
 
 `src/webauthn_gate.py` and `app_web/routers/webauthn.py` implement a
 tested, working passkey (WebAuthn) second factor for `/admin` —
@@ -1671,7 +1671,7 @@ the real API (issue #460):
 `/v1/chat/completions` and the `/admin` API deliberately keep FastAPI's
 `{"detail": …}` shape — OpenAI-shape callers parse a different envelope.
 
-### Counting input tokens (issue #463)
+### Counting input tokens
 
 `POST /v1/messages/count_tokens` takes the same body as `/v1/messages`
 (`model` + `messages` + optional `system`; `max_tokens` is ignored) and
@@ -1842,7 +1842,7 @@ only controls the engine supports. The language selector is UI metadata: calls
 still use the same `model` and `voice` fields as Home Automation, App Launcher,
 and WhatsApp Radar.
 
-## API headers (issue #461)
+## API headers
 
 What the hub reads off a request and what it writes back, so an
 `anthropic`-SDK client sees the header vocabulary it expects.
@@ -1896,7 +1896,7 @@ curl -is -X POST http://127.0.0.1:8000/v1/messages \
   | findstr /i "request-id x-trace-id anthropic- warning"
 ```
 
-## CORS — calling the hub from a browser (issue #462)
+## CORS — calling the hub from a browser
 
 Page JavaScript can call the hub directly. A sister webapp on this
 machine does **not** need to proxy `/v1/messages` through its own backend
@@ -1971,7 +1971,7 @@ curl -is -X OPTIONS http://127.0.0.1:8000/v1/messages \
   -H "Access-Control-Request-Method: POST"
 ```
 
-## Observability (issue #4)
+## Observability
 
 The hub emits OpenTelemetry traces + metrics via OTLP/gRPC into a local
 Langfuse stack started by `start_langfuse.bat`. The admin SPA's
@@ -1983,7 +1983,7 @@ localhost hub, but flip `OTEL_HASH_PROMPTS=true` (in `.env`) any time
 the hub binds beyond loopback. `OTEL_SDK_DISABLED=true` turns
 telemetry off entirely.
 
-## Self-hosted SearXNG (home-automation#321, #438)
+## Self-hosted SearXNG
 
 A self-hosted [SearXNG](https://docs.searxng.org/) meta-search instance,
 started by `start_searxng.bat` / stopped by `stop_searxng.bat`
@@ -2001,7 +2001,7 @@ default in SearXNG, so `start_searxng.bat` runs
 patch `search.formats` on the generated file (never touching `secret_key`),
 restarting the container only the one time it actually changes something.
 
-## Coding agent usage (issues #20, #71, #231, #280)
+## Coding agent usage
 
 The **Code** tab is a passive, multi-vendor view of host-side coding-agent
 activity.  It parses each agent's local session logs server-side — zero

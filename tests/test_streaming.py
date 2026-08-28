@@ -194,6 +194,30 @@ def test_iter_cleaned_sse_passes_blank_lines():
     assert out == ["", "data: [DONE]"]
 
 
+def test_iter_cleaned_sse_flushes_trailing_tag_lookalike_before_done():
+    """#529: a stream whose last content delta ends near a ``<`` leaves
+    ``ThinkStripper`` holding back that tail as a possible split open-tag.
+    Without a flush before ``[DONE]``, that tail is silently dropped."""
+    raw = _sse_lines(
+        _delta("Answer: done."),
+        _delta("</p>"),
+    )
+    cleaned: List[str] = list(iter_cleaned_sse(iter(raw)))
+    assert cleaned[-1] == "data: [DONE]"
+
+    seen_content = ""
+    for line in cleaned:
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload == "[DONE]":
+            continue
+        obj = json.loads(payload)
+        delta = obj["choices"][0].get("delta", {})
+        seen_content += delta.get("content") or ""
+    assert seen_content == "Answer: done.</p>"
+
+
 # ---- end-to-end against /v1/chat/completions ----
 
 def test_chat_completions_strips_think_non_stream(monkeypatch):

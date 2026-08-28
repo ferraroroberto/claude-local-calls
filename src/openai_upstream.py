@@ -332,14 +332,42 @@ def iter_cleaned_sse(raw_lines: Iterator[str]) -> Iterator[str]:
     Yields cleaned SSE lines (without trailing newline). The caller is
     responsible for joining lines back with ``\\n`` (each line + ``\\n``
     is the wire format).
+
+    Each choice's :class:`ThinkStripper` retains a short lookahead tail
+    (see its docstring) that is never emitted by ``feed()`` alone. Before
+    forwarding ``data: [DONE]``, every stripper is flushed and any
+    held-back text is emitted as one final synthetic delta per choice —
+    otherwise a stream whose last content delta happens to end near a
+    ``<`` silently loses that tail.
     """
     strippers: Dict[int, ThinkStripper] = {}
+    last_meta: Dict[str, Any] = {}
     for line in raw_lines:
         if not line.startswith("data:"):
             yield line
             continue
         payload = line[len("data:"):].lstrip()
-        if payload == "[DONE]" or payload == "":
+        if payload == "":
+            yield line
+            continue
+        if payload == "[DONE]":
+            for idx in sorted(strippers):
+                tail = strippers[idx].flush()
+                if not tail:
+                    continue
+                yield "data: " + json.dumps(
+                    {
+                        **last_meta,
+                        "choices": [
+                            {
+                                "index": idx,
+                                "delta": {"content": tail},
+                                "finish_reason": None,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
             yield line
             continue
         try:
@@ -350,6 +378,7 @@ def iter_cleaned_sse(raw_lines: Iterator[str]) -> Iterator[str]:
             yield line
             continue
         clean_openai_chunk(obj, strippers)
+        last_meta = {k: v for k, v in obj.items() if k != "choices"}
         yield "data: " + json.dumps(obj, ensure_ascii=False)
 
 

@@ -50,8 +50,12 @@ _UNAVAILABLE_TTL_SECS = 300  # don't hammer a broken PAT/endpoint every poll
 
 _username_cache: Optional[str] = None
 
-# One entry per (year, month, day); {"items": [...], "fetched_at": epoch}.
-# Days strictly before "today" (UTC) are cached forever once populated.
+# One entry per (year, month, day); {"items": [...], "fetched_at": epoch,
+# "settled": bool}. "settled" is True only once a fetch for that day has
+# happened after its own UTC date was already in the past — i.e. the data
+# is guaranteed immutable. A day cached while it was still "today" gets one
+# forced re-fetch after the date rolls over (see `needs_settle_refresh`
+# below) before it is cached forever.
 _day_cache: Dict[date, Dict[str, Any]] = {}
 
 # Sticky "the whole feature is unavailable" state, so a missing/broken PAT
@@ -152,7 +156,16 @@ async def get_daily_credits(days: int = 14) -> Dict[str, Any]:
         stale = cached is not None and is_today and (
             time.time() - cached["fetched_at"] > _TODAY_REFRESH_SECS
         )
-        if cached is None or stale:
+        # A day cached while it was still "today" is not yet immutable —
+        # `settled` is only set once a fetch happens after that day's UTC
+        # date has passed. Force one final re-fetch the first time we see
+        # such an entry with the date rolled over, so spend from the last
+        # `_TODAY_REFRESH_SECS` before midnight isn't cached forever with
+        # a gap (#529).
+        needs_settle_refresh = (
+            cached is not None and not is_today and not cached.get("settled", False)
+        )
+        if cached is None or stale or needs_settle_refresh:
             try:
                 items = await _fetch_day(client, pat, _username_cache, d)
             except httpx.HTTPStatusError as exc:
@@ -167,7 +180,11 @@ async def get_daily_credits(days: int = 14) -> Dict[str, Any]:
             except httpx.HTTPError as exc:
                 _log.warning("⚠️ copilot_billing: network error fetching %s: %s", d, exc)
                 continue
-            _day_cache[d] = {"items": items, "fetched_at": time.time()}
+            _day_cache[d] = {
+                "items": items,
+                "fetched_at": time.time(),
+                "settled": not is_today,
+            }
             cached = _day_cache[d]
 
         rows.extend(_aggregate_day(d, cached["items"]))

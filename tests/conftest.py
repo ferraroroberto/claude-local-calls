@@ -24,6 +24,26 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_diagnostics_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test's diagnostics writes off the real store.
+
+    The diagnostics tests already call ``store.set_db_path()``, but that is
+    opt-in: anything that builds the app (whose startup kicks off
+    ``_init_diagnostics``) wrote into the developer's actual database. That was
+    invisible while the default sat at ``data/diagnostics.db`` inside the repo;
+    with the default in the shared fleet runtime-data root, a stray write lands
+    beside every other app's live data.
+
+    Patching ``DEFAULT_DB_PATH`` rather than ``_db_path`` is deliberate — the
+    existing tests reset ``set_db_path(None)`` in their teardown, which falls
+    back to the default, so the default is the layer that has to be safe.
+    """
+    from src.diagnostics import store
+
+    monkeypatch.setattr(store, "DEFAULT_DB_PATH", tmp_path / "diagnostics.db")
+
+
 def pytest_collection_modifyitems(items: list) -> None:
     """Run ``tests/e2e`` last in a combined run (issue #493).
 

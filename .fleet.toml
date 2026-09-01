@@ -70,3 +70,9 @@ extensions = ["md"]
 [[e2e.rule]]             # this file itself -> none
 tier = "none"
 path = ".fleet.toml"
+
+# Components vendored byte-for-byte from project-scaffolding. Re-vendored by
+# `/propagate-vendored <key>`; never edit a copy here — fix it in the scaffold
+# and propagate. `sha` is the scaffold commit the current bytes came from.
+[vendored]
+runtime_data = { src = "src/runtime_data.py", sha = "346765f7c14af0ec61e960333c055974e4e9e1db", dest = "src/runtime_data.py" }

@@ -1,9 +1,11 @@
 """SQLite persistence for diagnostics captures (issue #315).
 
-The repo's first SQLite store. ``data/diagnostics.db`` is gitignored runtime
-state like everything else under ``data/``; the schema is versioned through
-``PRAGMA user_version`` with a forward-only migration ladder so it can evolve
-without hand-editing shipped tables.
+The repo's first SQLite store. The database lives in the fleet runtime-data
+root (``C:\sqlite\local-llm-hub\diagnostics.db`` on Windows — see
+``src/runtime_data.py``), off whichever drive this repo happens to be cloned
+onto; it is per-machine runtime state, never committed. The schema is versioned
+through ``PRAGMA user_version`` with a forward-only migration ladder so it can
+evolve without hand-editing shipped tables.
 
 Connection policy: one short-lived connection per operation, WAL journal. The
 sampler writes once per tick (~15 s) and readers are user-driven, so pooling
@@ -26,10 +28,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
+from src.runtime_data import runtime_db_path
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "diagnostics.db"
+# The hub is on around the clock and writes a diagnostics row per request, so
+# its default belongs on a fast local drive rather than on whichever drive this
+# repo was cloned onto — a spinning HDD here (project-scaffolding#243).
+# ``LLM_HUB_DIAGNOSTICS_DB_PATH`` (env) overrides it for a single process;
+# :func:`set_db_path` still wins over both for tests.
+DEFAULT_DB_PATH = runtime_db_path(
+    "local-llm-hub", "diagnostics.db", env_var="LLM_HUB_DIAGNOSTICS_DB_PATH"
+)
 
 SCHEMA_VERSION = 2
 

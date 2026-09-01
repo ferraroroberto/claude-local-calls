@@ -1,7 +1,7 @@
 """SQLite persistence for diagnostics captures (issue #315).
 
 The repo's first SQLite store. The database lives in the fleet runtime-data
-root (``C:\sqlite\local-llm-hub\diagnostics.db`` on Windows — see
+root (``<root>/local-llm-hub/diagnostics.db`` — see
 ``src/runtime_data.py``), off whichever drive this repo happens to be cloned
 onto; it is per-machine runtime state, never committed. The schema is versioned
 through ``PRAGMA user_version`` with a forward-only migration ladder so it can

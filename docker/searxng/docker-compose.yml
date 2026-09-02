@@ -24,7 +24,13 @@ services:
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
-    restart: unless-stopped
+    # always, not unless-stopped: the latter treats a graceful stop as
+    # permanent (Docker's "manually stopped" flag), so a stray `docker stop`
+    # or an unclean shutdown leaves this always-on backend down forever
+    # (issue #548). stop_searxng.bat runs `compose down`, which removes the
+    # container rather than leaving it parked, so the deliberate-stop path
+    # is unaffected.
+    restart: always
     ports:
       - "8085:8080"
     volumes:

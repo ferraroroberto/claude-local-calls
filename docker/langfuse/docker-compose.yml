@@ -26,11 +26,18 @@
 # First-run: open http://localhost:3000, create a user, create a project,
 # copy the public + secret keys into the project root .env so the hub's
 # OTel exporter can authenticate.
+#
+# All services use `restart: always`, not `unless-stopped` — the latter
+# treats a graceful stop as permanent (Docker's "manually stopped" flag),
+# which silently disabled the sister searxng stack for 8 days (issue #548).
+# There is no dedicated stop_langfuse.bat; the documented stop path is
+# `compose down`, which removes the containers rather than leaving them
+# parked, so the deliberate-stop path is unaffected by this change.
 
 services:
   langfuse-web:
     image: langfuse/langfuse:3
-    restart: unless-stopped
+    restart: always
     depends_on:
       langfuse-worker:
         condition: service_started
@@ -89,7 +96,7 @@ services:
 
   langfuse-worker:
     image: langfuse/langfuse-worker:3
-    restart: unless-stopped
+    restart: always
     depends_on:
       postgres:
         condition: service_healthy
@@ -129,7 +136,7 @@ services:
 
   postgres:
     image: postgres:16
-    restart: unless-stopped
+    restart: always
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -142,7 +149,7 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
-    restart: unless-stopped
+    restart: always
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -159,7 +166,7 @@ services:
 
   redis:
     image: redis:7
-    restart: unless-stopped
+    restart: always
     command: >
       --requirepass ${REDIS_AUTH:-langfuse-redis}
     healthcheck:
@@ -170,7 +177,7 @@ services:
 
   minio:
     image: minio/minio
-    restart: unless-stopped
+    restart: always
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
     environment:

@@ -84,6 +84,8 @@ from .chat_translation import (
     iter_buffered_anthropic_sse,
     iter_claude_anthropic_sse,
     iter_openai_anthropic_sse,
+    openai_tool_params,
+    reject_tools_on_cli_backend,
 )
 from .claude_cli import ClaudeCLIError, call_claude, call_claude_stream
 from .cors_policy import install_cors
@@ -148,11 +150,15 @@ init_otel("local-llm-hub")
 def _envelope_to_anthropic(env: Dict[str, Any], requested_model: str) -> Dict[str, Any]:
     text = env.get("result") or ""
     usage_raw = env.get("usage") or {}
+    # Backends that can return structured content (the openai path, which may
+    # emit tool_use blocks — #552) supply "content"; the CLI backends return
+    # text only and fall back to a single text block.
+    content = env.get("content") or [{"type": "text", "text": text}]
     return {
         "id": f"msg_{uuid.uuid4().hex[:24]}",
         "type": "message",
         "role": "assistant",
-        "content": [{"type": "text", "text": text}],
+        "content": content,
         "model": requested_model,
         "stop_reason": env.get("stop_reason") or "end_turn",
         "stop_sequence": None,
@@ -391,10 +397,14 @@ def _stream_anthropic_response(
         raise HTTPException(status_code=400, detail="messages must not be empty")
     if (reject := _reject_non_chat_backend(model, req.model)) is not None:
         raise reject
+    # Raised here, before the StreamingResponse begins, so an unsupported
+    # request fails as a real 400 rather than an in-band SSE error event.
+    reject_tools_on_cli_backend(model, req)
 
     remote: Optional[str] = None
     base_url: Optional[str] = None
     openai_messages: List[Dict[str, Any]] = []
+    openai_extra: Dict[str, Any] = {}
     if model.backend == "openai":
         if any(
             isinstance(message.content, list)
@@ -418,6 +428,9 @@ def _stream_anthropic_response(
             [message.model_dump() for message in req.messages],
             _system_to_text(req.system),
         )
+        # Translated up here too: a malformed tool definition must 400 before
+        # the response starts, not mid-stream.
+        openai_extra = openai_tool_params(req)
     elif model.backend not in ("claude", "gemini"):
         raise HTTPException(status_code=500, detail=f"unknown backend {model.backend!r}")
 
@@ -459,6 +472,7 @@ def _stream_anthropic_response(
                 track = _on_demand.tracking(model, remote).start()
                 extra = dict(model.inject_extra or {})
                 extra["stream_options"] = {"include_usage": True}
+                extra.update(openai_extra)
                 with ExitStack() as streams:
                     raw = call_openai_chat_stream(
                         str(base_url),
@@ -653,7 +667,12 @@ def messages(req: MessagesRequest, request: Request) -> Response:
         prompt_preview = _flatten_messages(req.messages)
     except Exception:  # noqa: BLE001
         prompt_preview = ""
-    completion_preview = payload["content"][0].get("text", "") if payload.get("content") else ""
+    # Text blocks only — a tool_use block's arguments aren't the completion.
+    completion_preview = "".join(
+        block.get("text") or ""
+        for block in payload.get("content") or []
+        if block.get("type") == "text"
+    )
     set_genai_payload(span, prompt_preview, completion_preview)
     record_genai_metrics(
         model=req.model, backend=model.backend, route="/v1/messages",

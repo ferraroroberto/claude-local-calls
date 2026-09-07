@@ -274,12 +274,11 @@ use this path; it stays on the gemini backend.
   `call_claude` and `call_openai_chat`. The real end-to-end check
   lives in [`scripts/smoke_test.py`](../scripts/smoke_test.py) and
   needs the hub plus the relevant backends running.
-- **Intentional gaps.** Partial streaming — OpenAI-shape
-  `/v1/chat/completions` proxies upstream SSE through; Anthropic-shape
-  `/v1/messages` still single JSON. No tool-use translation between
-  Anthropic ↔ OpenAI shapes (OpenAI-shape callers get tool calls
-  natively from `llama-server --jinja`; Anthropic-shape callers to
-  qwen/glm are text-only for now). Image and document content blocks
+- **Intentional gaps.** Streaming and tool use both reach the Anthropic
+  shape now: `/v1/messages` emits Anthropic SSE (#550) and translates
+  `tools` / `tool_use` / `tool_result` against llama-server's OpenAI
+  function calling (#552, refused with a 400 on the CLI backends, which
+  flatten to one text prompt). Image and document content blocks
   (PDF plus text/data files) land on the `claude-*` / `gemini-*` paths;
   extended-thinking blocks are still dropped at the shape boundary. See
   [issue #453](https://github.com/ferraroroberto/local-llm-hub/issues/453)

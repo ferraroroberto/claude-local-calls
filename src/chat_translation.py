@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -38,15 +39,26 @@ from .model_registry import Model
 from .openai_upstream import (
     UpstreamError,
     anthropic_to_openai_messages,
+    anthropic_tool_choice_to_openai,
+    anthropic_tools_to_openai,
     call_openai_chat,
     openai_to_anthropic_envelope,
 )
 from .remote_proxy import remote_auth_token_for_model, remote_base_url
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class AnthropicStreamState:
-    """Mutable result accumulated while translating one Anthropic SSE stream."""
+    """Mutable result accumulated while translating one Anthropic SSE stream.
+
+    ``next_index`` / ``open_index`` / ``text_index`` track content-block
+    allocation. Anthropic keeps exactly one block open at a time and numbers
+    them in emission order, so indices are handed out as blocks are opened
+    rather than fixed in advance — a text-only stream still gets a single
+    block at index 0, unchanged from before tool support (#552).
+    """
 
     requested_model: str
     message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:24]}")
@@ -57,9 +69,14 @@ class AnthropicStreamState:
     cache_write_tokens: int = 0
     stop_reason: str = "end_turn"
     message_started: bool = False
-    content_started: bool = False
     message_delta_sent: bool = False
     message_stopped: bool = False
+    next_index: int = 0
+    open_index: Optional[int] = None
+    text_index: Optional[int] = None
+    # Upstream tool-call fragments keyed by OpenAI ``tool_calls[].index``:
+    # ``{"id": str, "name": str, "args": [fragment, ...]}``.
+    tool_calls: Dict[int, Dict[str, Any]] = field(default_factory=dict)
 
     @property
     def text(self) -> str:
@@ -116,37 +133,124 @@ def _start_anthropic_stream(state: AnthropicStreamState) -> List[str]:
     return [_anthropic_sse(event)]
 
 
+def _close_open_block(state: AnthropicStreamState) -> List[str]:
+    """Close whichever content block is currently open, if any."""
+    if state.open_index is None:
+        return []
+    index = state.open_index
+    state.open_index = None
+    return [_anthropic_sse({"type": "content_block_stop", "index": index})]
+
+
 def _start_text_block(state: AnthropicStreamState) -> List[str]:
     events = _start_anthropic_stream(state)
-    if state.content_started:
+    if state.text_index is not None and state.open_index == state.text_index:
         return events
-    state.content_started = True
+    # Text arriving after a tool block opens a *new* text block rather than
+    # reopening the old one — Anthropic allows several text blocks per
+    # message, and a closed block cannot take further deltas.
+    events += _close_open_block(state)
+    state.text_index = state.next_index
+    state.next_index += 1
+    state.open_index = state.text_index
     events.append(_anthropic_sse({
         "type": "content_block_start",
-        "index": 0,
+        "index": state.text_index,
         "content_block": {"type": "text", "text": ""},
     }))
     return events
 
 
 def _text_delta(state: AnthropicStreamState, text: str) -> List[str]:
+    if not text:
+        return []
     events = _start_text_block(state)
-    if text:
-        state.text_parts.append(text)
+    state.text_parts.append(text)
+    events.append(_anthropic_sse({
+        "type": "content_block_delta",
+        "index": state.text_index,
+        "delta": {"type": "text_delta", "text": text},
+    }))
+    return events
+
+
+def _emit_tool_blocks(state: AnthropicStreamState) -> List[str]:
+    """Replay accumulated upstream tool calls as Anthropic ``tool_use`` blocks.
+
+    Buffered to the end of the stream rather than forwarded live. Anthropic's
+    wire format keeps exactly one content block open at a time, while OpenAI
+    may interleave fragments from several ``tool_calls[].index`` values in any
+    order — replaying at the end is the only translation that stays valid for
+    both. Nothing incremental is lost in practice: llama-server parses tool
+    calls out of the completed generation, so it has no partial arguments to
+    stream in the first place.
+
+    The accumulated fragments are emitted as a single ``input_json_delta``,
+    which is a complete JSON object by construction — the caller's accumulator
+    sees exactly what the buffered route would have returned.
+    """
+    events: List[str] = []
+    emitted = 0
+    for openai_index in sorted(state.tool_calls):
+        entry = state.tool_calls[openai_index]
+        name = entry.get("name") or ""
+        partial = "".join(entry.get("args") or []) or "{}"
+        if not name:
+            logger.warning(
+                "dropping upstream tool call at index %s: no function name "
+                "(id=%r args=%r)",
+                openai_index, entry.get("id"), partial[:200],
+            )
+            continue
+        events += _close_open_block(state)
+        index = state.next_index
+        state.next_index += 1
+        state.open_index = index
+        events.append(_anthropic_sse({
+            "type": "content_block_start",
+            "index": index,
+            "content_block": {
+                "type": "tool_use",
+                "id": entry.get("id") or f"toolu_{uuid.uuid4().hex[:24]}",
+                "name": name,
+                "input": {},
+            },
+        }))
         events.append(_anthropic_sse({
             "type": "content_block_delta",
-            "index": 0,
-            "delta": {"type": "text_delta", "text": text},
+            "index": index,
+            "delta": {"type": "input_json_delta", "partial_json": partial},
         }))
+        emitted += 1
+    if emitted:
+        # Authoritative over the upstream's finish_reason, which llama-server
+        # does not always set to "tool_calls" when it emits one.
+        state.stop_reason = "tool_use"
+    elif state.stop_reason == "tool_use":
+        # The upstream reported "tool_calls" but every call was unusable and
+        # got dropped above. A "tool_use" stop reason with no tool_use block
+        # is not a valid Anthropic message — and it would send an agent loop
+        # hunting for a call that isn't there.
+        logger.warning(
+            "upstream finished with tool_calls but emitted no usable tool "
+            "call; reporting stop_reason=end_turn instead"
+        )
+        state.stop_reason = "end_turn"
     return events
 
 
 def _finish_anthropic_stream(state: AnthropicStreamState) -> List[str]:
     if state.message_stopped:
         return []
-    events = _start_text_block(state)
+    if state.next_index == 0 and not state.tool_calls:
+        # Nothing was ever emitted (empty upstream response) — an Anthropic
+        # message always carries at least one content block.
+        events = _start_text_block(state)
+    else:
+        events = _start_anthropic_stream(state)
+    events += _emit_tool_blocks(state)
+    events += _close_open_block(state)
     if not state.message_delta_sent:
-        events.append(_anthropic_sse({"type": "content_block_stop", "index": 0}))
         events.append(_anthropic_sse({
             "type": "message_delta",
             "delta": {
@@ -248,12 +352,39 @@ def iter_openai_anthropic_sse(
             content = delta.get("content")
             if isinstance(content, str) and content:
                 yield from _text_delta(state, content)
+            _accumulate_tool_calls(state, delta.get("tool_calls"))
             finish = choice.get("finish_reason")
             if finish:
                 state.stop_reason = _OPENAI_STOP_TO_ANTHROPIC.get(
                     str(finish), "end_turn"
                 )
     yield from _finish_anthropic_stream(state)
+
+
+def _accumulate_tool_calls(
+    state: AnthropicStreamState,
+    tool_calls: Optional[List[Dict[str, Any]]],
+) -> None:
+    """Fold one chunk's ``delta.tool_calls`` into ``state.tool_calls``.
+
+    OpenAI spreads a single call across chunks: the first carries ``id`` and
+    ``function.name``, later ones append ``function.arguments`` fragments that
+    are only valid JSON once concatenated. ``index`` is what ties them
+    together, so it keys the accumulator rather than list position.
+    """
+    for call in tool_calls or []:
+        if not isinstance(call, dict):
+            continue
+        index = int(call.get("index", 0) or 0)
+        entry = state.tool_calls.setdefault(index, {"id": "", "name": "", "args": []})
+        if call.get("id"):
+            entry["id"] = str(call["id"])
+        function = call.get("function") or {}
+        if function.get("name"):
+            entry["name"] = str(function["name"])
+        arguments = function.get("arguments")
+        if isinstance(arguments, str) and arguments:
+            entry["args"].append(arguments)
 
 
 def iter_buffered_anthropic_sse(
@@ -285,6 +416,16 @@ class ContentBlock(BaseModel):
     # "media_type": "image/png", "data": "<b64>"}} or {"type": "url",
     # "url": "https://..."}. Kept loose to forward fields we don't model.
     source: Optional[Dict[str, Any]] = None
+    # tool_use block (assistant turn): {"type": "tool_use", "id": "toolu_...",
+    # "name": "get_weather", "input": {...}}.
+    id: Optional[str] = None
+    name: Optional[str] = None
+    input: Optional[Dict[str, Any]] = None
+    # tool_result block (user turn): {"type": "tool_result", "tool_use_id":
+    # "toolu_...", "content": str | [block, ...], "is_error": bool}.
+    tool_use_id: Optional[str] = None
+    content: Optional[Union[str, List[Dict[str, Any]]]] = None
+    is_error: Optional[bool] = None
 
 
 class Message(BaseModel):
@@ -300,6 +441,67 @@ class MessagesRequest(BaseModel):
     stream: bool = False
     temperature: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None
+    # Anthropic tool definitions ({"name", "description", "input_schema"}) and
+    # tool_choice ({"type": "auto"|"any"|"none"|"tool", "name": ...}). Served
+    # by the local `openai` backends; refused on the CLI backends (#552).
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
+
+
+# Content-block types that only mean anything on a tool-capable backend.
+_TOOL_BLOCK_TYPES = ("tool_use", "tool_result")
+
+
+def openai_tool_params(req: MessagesRequest) -> Dict[str, Any]:
+    """Extra upstream parameters carrying this request's tool definitions.
+
+    Empty when the caller sent no ``tools``, so a plain chat request reaches
+    llama-server byte-identical to before. Translation errors are the
+    caller's (a malformed tool definition), so they surface as 400 rather
+    than ``UpstreamError``'s 502.
+    """
+    if not req.tools:
+        return {}
+    try:
+        extra: Dict[str, Any] = {"tools": anthropic_tools_to_openai(req.tools)}
+        choice = anthropic_tool_choice_to_openai(req.tool_choice)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if choice is not None:
+        extra["tool_choice"] = choice
+    return extra
+
+
+def reject_tools_on_cli_backend(model: Model, req: MessagesRequest) -> None:
+    """400 when tool use is asked of a backend that cannot serve it.
+
+    The ``claude`` / ``gemini`` dispatch flattens a conversation into one text
+    prompt (``_flatten_messages``), so ``tools`` and ``tool_use`` /
+    ``tool_result`` blocks have nowhere to go. Dropping them silently would
+    answer in prose a caller that asked for a tool call — the well-formed
+    wrong answer #474 refused for non-text parts on the OpenAI shape.
+    """
+    if model.backend not in ("claude", "gemini"):
+        return
+    if req.tools:
+        unsupported = "a 'tools' parameter"
+    elif any(
+        isinstance(m.content, list)
+        and any(b.type in _TOOL_BLOCK_TYPES for b in m.content)
+        for m in req.messages
+    ):
+        unsupported = "tool_use / tool_result content blocks"
+    else:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"backend {model.id!r} ({model.display_name}) cannot serve "
+            f"{unsupported}: the CLI backends flatten a conversation into a "
+            "single text prompt. Route tool-use requests to a local "
+            "openai-backend model instead."
+        ),
+    )
 
 
 def _content_to_text(content: Union[str, List[ContentBlock]]) -> str:
@@ -503,6 +705,7 @@ def _openai_messages_to_anthropic(
 def _run_claude_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
     if not req.messages:
         raise HTTPException(status_code=400, detail="messages must not be empty")
+    reject_tools_on_cli_backend(model, req)
     system = _system_to_text(req.system)
     with _extract_media_blocks(req.messages) as (msgs, attachments):
         prompt = _flatten_messages(msgs)
@@ -520,6 +723,7 @@ def _run_claude_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
 def _run_gemini_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
     if not req.messages:
         raise HTTPException(status_code=400, detail="messages must not be empty")
+    reject_tools_on_cli_backend(model, req)
     system = _system_to_text(req.system)
     with _extract_media_blocks(req.messages) as (msgs, attachments):
         prompt = _flatten_messages(msgs)
@@ -543,6 +747,9 @@ def _remote_headers(model: Model) -> Optional[Dict[str, str]]:
 
 
 def _run_openai_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
+    # Validated before the on-demand spin-up below: a malformed tool
+    # definition is a 400 and shouldn't cold-start a model to discover it.
+    extra = openai_tool_params(req)
     # On-demand lifecycle (#422): a cold ``startup: on_demand`` local backend
     # is spawned here and the request blocks until it answers (503 on load
     # failure) — same hook the OpenAI-shape route applies in server.py.
@@ -578,6 +785,7 @@ def _run_openai_backend(model: Model, req: MessagesRequest) -> Dict[str, Any]:
                 messages=messages,
                 max_tokens=req.max_tokens,
                 temperature=req.temperature,
+                extra=extra or None,
                 headers=_remote_headers(model) if remote else None,
             )
     except UpstreamError as e:

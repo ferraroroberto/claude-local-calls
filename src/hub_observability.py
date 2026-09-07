@@ -313,14 +313,9 @@ class ObservatoryMiddleware(BaseHTTPMiddleware):
 
         status = 500
         error_detail = ""
-        try:
-            response = await call_next(request)
-            status = response.status_code
-            return response
-        except Exception as exc:  # noqa: BLE001 — log + re-raise
-            error_detail = f"{type(exc).__name__}: {exc}"
-            raise
-        finally:
+        deferred_record = False
+
+        def _record() -> None:
             latency_ms = (time.monotonic_ns() - ctx.start_ns) / 1e6
             OBS.record_request(
                 RequestRecord(
@@ -342,3 +337,31 @@ class ObservatoryMiddleware(BaseHTTPMiddleware):
                     trace_id=ctx.trace_id,
                 )
             )
+
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            content_type = response.headers.get("content-type", "")
+            if content_type.startswith("text/event-stream"):
+                # ``call_next`` returns as soon as a StreamingResponse starts,
+                # before its body iterator has run. Defer the ring write until
+                # that iterator closes so stream-populated usage, stop reason,
+                # latency, and errors are not permanently recorded as zero.
+                original_body = response.body_iterator
+
+                async def _observed_body():
+                    try:
+                        async for chunk in original_body:
+                            yield chunk
+                    finally:
+                        _record()
+
+                response.body_iterator = _observed_body()
+                deferred_record = True
+            return response
+        except Exception as exc:  # noqa: BLE001 — log + re-raise
+            error_detail = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            if not deferred_record:
+                _record()

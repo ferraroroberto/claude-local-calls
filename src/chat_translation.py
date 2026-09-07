@@ -1,6 +1,7 @@
 """Chat-shape translation: request/response schemas, media-block extraction,
-prompt flattening, and per-backend dispatch shared by the ``/v1/messages``
-and ``/v1/chat/completions`` routes in ``server.py``.
+prompt flattening, Anthropic SSE event adapters, and per-backend dispatch
+shared by the ``/v1/messages`` and ``/v1/chat/completions`` routes in
+``server.py``.
 
 Split out of ``server.py`` (issue #245) — the Pydantic schemas, the
 Anthropic content-block media extractor, the multi-turn prompt flattener, and
@@ -20,8 +21,11 @@ can import each other without a circular import back into ``server.py``.
 from __future__ import annotations
 
 import base64
+import json
 import tempfile
+import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -38,6 +42,238 @@ from .openai_upstream import (
     openai_to_anthropic_envelope,
 )
 from .remote_proxy import remote_auth_token_for_model, remote_base_url
+
+
+@dataclass
+class AnthropicStreamState:
+    """Mutable result accumulated while translating one Anthropic SSE stream."""
+
+    requested_model: str
+    message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:24]}")
+    text_parts: List[str] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    stop_reason: str = "end_turn"
+    message_started: bool = False
+    content_started: bool = False
+    message_delta_sent: bool = False
+    message_stopped: bool = False
+
+    @property
+    def text(self) -> str:
+        return "".join(self.text_parts)
+
+
+def _anthropic_sse(event: Dict[str, Any]) -> str:
+    """Encode one Anthropic event with both its SSE name and JSON body."""
+    return (
+        f"event: {event['type']}\n"
+        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+    )
+
+
+def _set_anthropic_usage(state: AnthropicStreamState, usage: Dict[str, Any]) -> None:
+    state.input_tokens = max(
+        state.input_tokens, int(usage.get("input_tokens", 0) or 0)
+    )
+    state.output_tokens = max(
+        state.output_tokens, int(usage.get("output_tokens", 0) or 0)
+    )
+    state.cache_read_tokens = max(
+        state.cache_read_tokens,
+        int(usage.get("cache_read_input_tokens", 0) or 0),
+    )
+    state.cache_write_tokens = max(
+        state.cache_write_tokens,
+        int(usage.get("cache_creation_input_tokens", 0) or 0),
+    )
+
+
+def _start_anthropic_stream(state: AnthropicStreamState) -> List[str]:
+    if state.message_started:
+        return []
+    state.message_started = True
+    event = {
+        "type": "message_start",
+        "message": {
+            "id": state.message_id,
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": state.requested_model,
+            "stop_reason": None,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": state.input_tokens,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": state.cache_write_tokens,
+                "cache_read_input_tokens": state.cache_read_tokens,
+            },
+        },
+    }
+    return [_anthropic_sse(event)]
+
+
+def _start_text_block(state: AnthropicStreamState) -> List[str]:
+    events = _start_anthropic_stream(state)
+    if state.content_started:
+        return events
+    state.content_started = True
+    events.append(_anthropic_sse({
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "text", "text": ""},
+    }))
+    return events
+
+
+def _text_delta(state: AnthropicStreamState, text: str) -> List[str]:
+    events = _start_text_block(state)
+    if text:
+        state.text_parts.append(text)
+        events.append(_anthropic_sse({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text},
+        }))
+    return events
+
+
+def _finish_anthropic_stream(state: AnthropicStreamState) -> List[str]:
+    if state.message_stopped:
+        return []
+    events = _start_text_block(state)
+    if not state.message_delta_sent:
+        events.append(_anthropic_sse({"type": "content_block_stop", "index": 0}))
+        events.append(_anthropic_sse({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": state.stop_reason,
+                "stop_sequence": None,
+            },
+            "usage": {"output_tokens": state.output_tokens},
+        }))
+        state.message_delta_sent = True
+    events.append(_anthropic_sse({"type": "message_stop"}))
+    state.message_stopped = True
+    return events
+
+
+def iter_claude_anthropic_sse(
+    records: Iterator[Dict[str, Any]],
+    state: AnthropicStreamState,
+) -> Iterator[str]:
+    """Filter Claude Code JSONL records into a text-only Anthropic stream.
+
+    Claude Code's wrapper emits native Anthropic events nested under
+    ``stream_event`` plus its own lifecycle records. Its current models may
+    also emit implicit thinking blocks. Those are intentionally filtered here:
+    explicit extended-thinking support is a separate API contract, while this
+    route has historically exposed only final assistant text.
+    """
+    for record in records:
+        if record.get("type") == "result":
+            if record.get("is_error"):
+                raise ClaudeCLIError(
+                    f"claude -p returned is_error=true: {str(record)[:300]}"
+                )
+            _set_anthropic_usage(state, record.get("usage") or {})
+            if not state.text_parts and record.get("result"):
+                yield from _text_delta(state, str(record["result"]))
+            continue
+        if record.get("type") != "stream_event":
+            continue
+        event = record.get("event") or {}
+        event_type = event.get("type")
+        if event_type == "message_start":
+            message = event.get("message") or {}
+            if message.get("id"):
+                state.message_id = str(message["id"])
+            _set_anthropic_usage(state, message.get("usage") or {})
+            yield from _start_anthropic_stream(state)
+        elif event_type == "content_block_delta":
+            delta = event.get("delta") or {}
+            if delta.get("type") == "text_delta":
+                yield from _text_delta(state, str(delta.get("text") or ""))
+        elif event_type == "message_delta":
+            delta = event.get("delta") or {}
+            if delta.get("stop_reason"):
+                state.stop_reason = str(delta["stop_reason"])
+            _set_anthropic_usage(state, event.get("usage") or {})
+        elif event_type == "message_stop":
+            # Wait for Claude Code's following ``result`` record before
+            # closing the downstream stream. It carries the authoritative
+            # success/error bit and final usage; emitting message_stop first
+            # could otherwise produce an invalid error-after-stop sequence.
+            continue
+    yield from _finish_anthropic_stream(state)
+
+
+_OPENAI_STOP_TO_ANTHROPIC = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "function_call": "tool_use",
+    "content_filter": "end_turn",
+}
+
+
+def iter_openai_anthropic_sse(
+    lines: Iterator[str],
+    state: AnthropicStreamState,
+) -> Iterator[str]:
+    """Translate cleaned OpenAI SSE lines into Anthropic Messages events."""
+    yield from _start_anthropic_stream(state)
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        usage = chunk.get("usage") or {}
+        state.input_tokens = max(
+            state.input_tokens, int(usage.get("prompt_tokens", 0) or 0)
+        )
+        state.output_tokens = max(
+            state.output_tokens, int(usage.get("completion_tokens", 0) or 0)
+        )
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                yield from _text_delta(state, content)
+            finish = choice.get("finish_reason")
+            if finish:
+                state.stop_reason = _OPENAI_STOP_TO_ANTHROPIC.get(
+                    str(finish), "end_turn"
+                )
+    yield from _finish_anthropic_stream(state)
+
+
+def iter_buffered_anthropic_sse(
+    envelope: Dict[str, Any],
+    state: AnthropicStreamState,
+) -> Iterator[str]:
+    """Shape a buffered backend result as one valid Anthropic SSE sequence."""
+    _set_anthropic_usage(state, envelope.get("usage") or {})
+    state.stop_reason = str(envelope.get("stop_reason") or "end_turn")
+    yield from _start_anthropic_stream(state)
+    yield from _text_delta(state, str(envelope.get("result") or ""))
+    yield from _finish_anthropic_stream(state)
+
+
+def anthropic_stream_error(exc: Exception) -> str:
+    """Return the Anthropic error event used after an SSE response has begun."""
+    return _anthropic_sse({
+        "type": "error",
+        "error": {"type": "api_error", "message": str(exc)},
+    })
 
 
 # ---- shared content-block helpers (unchanged shape) ----

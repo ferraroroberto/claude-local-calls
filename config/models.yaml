@@ -672,7 +672,7 @@ models:
     # Every member cross-lists whisper in its `enabled:` (required — see
     # model_failover.eligible_chain) and must pre-stage weights + a built
     # whisper-server via `python -m src.install --fix`.
-    hosts: [gaming, mac-mini-m4, {id: tower, cpu: true}]
+    hosts: [{id: tower, cpu: true}, gaming, mac-mini-m4]
     engine: whisper-server
     port: 8090
     # large-v3-turbo fp16 ≈ 2000 MB VRAM (docs/whisper-turbo-vs-large-v3.md §VRAM).

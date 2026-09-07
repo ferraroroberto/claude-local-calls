@@ -6,6 +6,11 @@ Used by the hub when routing to local Qwen / GLM backends. Helpers:
 - ``call_openai_chat_stream()``: POST with ``stream: true``, yield raw
   SSE byte chunks from the upstream (used to proxy SSE through the hub
   without translating shapes).
+- ``anthropic_tools_to_openai()`` / ``anthropic_tool_choice_to_openai()``:
+  translate an Anthropic ``tools`` / ``tool_choice`` request into
+  llama-server's OpenAI function-calling parameters (#552).
+- ``openai_tool_use_blocks()``: the inverse — an upstream response's
+  ``tool_calls`` as Anthropic ``tool_use`` content blocks.
 - ``openai_to_anthropic_envelope()``: shape the response into the same
   dict the existing claude-path code translates into an Anthropic
   ``/v1/messages`` response.
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
@@ -34,15 +40,62 @@ class UpstreamError(RuntimeError):
     pass
 
 
+def _block_get(block: Any, key: str) -> Any:
+    """Read one field off a content block that may be a dict or a model."""
+    if isinstance(block, dict):
+        return block.get(key)
+    return getattr(block, key, None)
+
+
+def _tool_result_to_text(content: Any) -> str:
+    """Flatten an Anthropic ``tool_result`` payload into OpenAI string content.
+
+    Anthropic allows a ``tool_result`` to carry either a plain string or a
+    list of content blocks; OpenAI's ``tool`` message takes a string. Image
+    and document blocks are named rather than dropped silently — the local
+    backends are text-only, and a caller who sent a screenshot back as a
+    tool result should see that said so, not an answer that quietly ignored
+    it.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+            btype = _block_get(block, "type")
+            if btype == "text":
+                parts.append(str(_block_get(block, "text") or ""))
+            elif btype in ("image", "document"):
+                parts.append(f"[{btype} omitted: this backend is text-only]")
+        return "\n".join(parts)
+    return json.dumps(content, ensure_ascii=False)
+
+
 def anthropic_to_openai_messages(
     messages: List[Dict[str, Any]],
     system: Optional[str],
 ) -> List[Dict[str, Any]]:
     """Flatten Anthropic message blocks into OpenAI-shape messages.
 
-    Anthropic allows `content` to be a list of content blocks; OpenAI
-    expects a string for text-only messages. This only handles text
-    blocks; images/tool_use are dropped in phase 1.
+    Anthropic allows ``content`` to be a list of content blocks; OpenAI
+    expects a string for text-only messages. Text, ``tool_use`` and
+    ``tool_result`` blocks are translated (#552); image/document blocks are
+    rejected before reaching here by the caller's text-only guard.
+
+    Two block types change the message *count*, not just its shape:
+
+    - ``tool_use`` blocks on an assistant turn become that message's
+      ``tool_calls`` array.
+    - ``tool_result`` blocks arrive on an Anthropic **user** turn, but
+      OpenAI models them as their own ``{"role": "tool"}`` messages. One
+      user message carrying N results therefore expands into N tool
+      messages, emitted *before* any user text from the same turn so each
+      one still directly follows the assistant turn that called it.
     """
     out: List[Dict[str, Any]] = []
     if system:
@@ -50,16 +103,106 @@ def anthropic_to_openai_messages(
     for m in messages:
         role = m.get("role", "user")
         content = m.get("content", "")
-        if isinstance(content, list):
-            parts: List[str] = []
-            for block in content:
-                btype = (block.get("type") if isinstance(block, dict) else getattr(block, "type", None))
-                btext = (block.get("text") if isinstance(block, dict) else getattr(block, "text", None))
-                if btype == "text" and btext:
-                    parts.append(btext)
-            content = "\n".join(parts)
-        out.append({"role": role, "content": content or ""})
+        if not isinstance(content, list):
+            out.append({"role": role, "content": content or ""})
+            continue
+
+        text_parts: List[str] = []
+        tool_calls: List[Dict[str, Any]] = []
+        tool_messages: List[Dict[str, Any]] = []
+        for block in content:
+            btype = _block_get(block, "type")
+            if btype == "text":
+                btext = _block_get(block, "text")
+                if btext:
+                    text_parts.append(str(btext))
+            elif btype == "tool_use":
+                tool_calls.append({
+                    "id": str(_block_get(block, "id") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(_block_get(block, "name") or ""),
+                        "arguments": json.dumps(
+                            _block_get(block, "input") or {}, ensure_ascii=False
+                        ),
+                    },
+                })
+            elif btype == "tool_result":
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": str(_block_get(block, "tool_use_id") or ""),
+                    "content": _tool_result_to_text(_block_get(block, "content")),
+                })
+
+        out.extend(tool_messages)
+        text = "\n".join(text_parts)
+        if tool_calls:
+            out.append({"role": role, "content": text, "tool_calls": tool_calls})
+        elif text or not tool_messages:
+            # A turn that carried nothing but tool results adds no message of
+            # its own — an empty user turn after them reads as a new prompt.
+            out.append({"role": role, "content": text})
     return out
+
+
+def anthropic_tools_to_openai(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Translate Anthropic tool definitions into OpenAI function definitions.
+
+    Raises ``ValueError`` on a definition the local backends cannot serve;
+    the caller turns that into a 400 (these are client errors, unlike
+    ``UpstreamError``'s 502).
+    """
+    out: List[Dict[str, Any]] = []
+    for tool in tools or []:
+        name = tool.get("name")
+        if not name:
+            raise ValueError("every entry in 'tools' needs a 'name'")
+        schema = tool.get("input_schema")
+        if not isinstance(schema, dict):
+            raise ValueError(
+                f"tool {name!r} has no 'input_schema' object — Anthropic's "
+                "server-side tools have no local equivalent. Send a client "
+                "tool with a JSON-Schema 'input_schema' instead."
+            )
+        function: Dict[str, Any] = {"name": str(name), "parameters": schema}
+        if tool.get("description"):
+            function["description"] = str(tool["description"])
+        out.append({"type": "function", "function": function})
+    return out
+
+
+# Anthropic's tool_choice types vs OpenAI's. "any" means *some* tool must be
+# called, which is OpenAI's "required"; Anthropic's "tool" names one, which
+# OpenAI models as an object rather than a keyword.
+_TOOL_CHOICE_KEYWORDS = {"auto": "auto", "any": "required", "none": "none"}
+
+
+def anthropic_tool_choice_to_openai(choice: Any) -> Any:
+    """Translate an Anthropic ``tool_choice`` into OpenAI's equivalent.
+
+    Returns ``None`` when the caller sent none, so the parameter is omitted
+    entirely rather than pinned to a default the upstream may treat
+    differently. Raises ``ValueError`` on an unusable choice.
+    """
+    if choice is None:
+        return None
+    if isinstance(choice, str):
+        keyword = _TOOL_CHOICE_KEYWORDS.get(choice)
+        if keyword is None:
+            raise ValueError(f"unsupported tool_choice {choice!r}")
+        return keyword
+    if not isinstance(choice, dict):
+        raise ValueError(f"tool_choice must be an object, got {type(choice).__name__}")
+    ctype = str(choice.get("type") or "")
+    if ctype == "tool":
+        name = choice.get("name")
+        if not name:
+            raise ValueError("tool_choice of type 'tool' requires a 'name'")
+        return {"type": "function", "function": {"name": str(name)}}
+    keyword = _TOOL_CHOICE_KEYWORDS.get(ctype)
+    if keyword is None:
+        raise ValueError(f"unsupported tool_choice type {ctype!r}")
+    return keyword
 
 
 def call_openai_chat(
@@ -409,17 +552,82 @@ _STOP_MAP = {
 }
 
 
+def openai_tool_use_blocks(resp: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Anthropic ``tool_use`` blocks for an OpenAI response's tool calls.
+
+    Anthropic's ``input`` is a decoded object while OpenAI's ``arguments``
+    is a JSON *string*, so this is the one place the arguments must parse.
+    Malformed arguments raise ``UpstreamError`` (502) rather than degrading
+    to ``{}`` — an empty-input tool call is a plausible-looking wrong answer
+    that the caller would execute.
+    """
+    choices = resp.get("choices") or []
+    if not choices:
+        return []
+    message = choices[0].get("message") or {}
+    blocks: List[Dict[str, Any]] = []
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        name = function.get("name")
+        if not name:
+            raise UpstreamError(
+                f"upstream tool call carries no function name: {str(call)[:200]}"
+            )
+        raw = function.get("arguments")
+        if isinstance(raw, dict):
+            parsed: Any = raw
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise UpstreamError(
+                    f"upstream tool call {name!r} has unparseable arguments: {e}"
+                ) from e
+        else:
+            # A no-argument tool legitimately serialises as "" or "{}".
+            parsed = {}
+        if not isinstance(parsed, dict):
+            raise UpstreamError(
+                f"upstream tool call {name!r} arguments are not a JSON object"
+            )
+        blocks.append({
+            "type": "tool_use",
+            "id": str(call.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"),
+            "name": str(name),
+            "input": parsed,
+        })
+    return blocks
+
+
 def openai_to_anthropic_envelope(resp: Dict[str, Any]) -> Dict[str, Any]:
     """Shape an OpenAI response into the envelope src.server consumes.
 
-    The hub's `_envelope_to_anthropic` expects `{"result": str,
-    "stop_reason": str, "usage": {...}}`. This builds exactly that.
+    The hub's ``_envelope_to_anthropic`` reads ``{"result": str,
+    "content": [block, ...], "stop_reason": str, "usage": {...}}``.
+    ``result`` stays the plain-text rendering used for logging and the
+    observability payload; ``content`` carries the real block list so a
+    ``tool_use`` response survives the trip (#552). The CLI backends emit
+    no ``content`` key and fall back to a single text block.
     """
     usage = resp.get("usage") or {}
     finish = (resp.get("choices") or [{}])[0].get("finish_reason") or "stop"
+    text = openai_response_text(resp)
+    tool_blocks = openai_tool_use_blocks(resp)
+
+    content: List[Dict[str, Any]] = []
+    if text:
+        content.append({"type": "text", "text": text})
+    content.extend(tool_blocks)
+    if not content:
+        content.append({"type": "text", "text": ""})
+
+    # llama-server does not always set finish_reason="tool_calls" when it
+    # emits one, so the presence of a block is the authoritative signal.
+    stop_reason = "tool_use" if tool_blocks else _STOP_MAP.get(finish, "end_turn")
     return {
-        "result": openai_response_text(resp),
-        "stop_reason": _STOP_MAP.get(finish, "end_turn"),
+        "result": text,
+        "content": content,
+        "stop_reason": stop_reason,
         "usage": {
             "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
             "output_tokens": int(usage.get("completion_tokens", 0) or 0),

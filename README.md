@@ -2165,11 +2165,34 @@ whose port isn't reachable, and reports per-model pass/fail.
   but their answer arrives as one buffered text delta.
 - Multi-turn chats are flattened into a single prompt for `claude -p`.
   (The local backends handle multi-turn natively through llama-server.)
-- Tool-use translation across Anthropic ↔ OpenAI shapes is not
-  implemented for qwen/glm. OpenAI-shape callers get native tool calls
-  from llama-server's `--jinja` templates; Anthropic-shape callers to
-  qwen/glm are text-only for now. Claude tool use passes through
-  unchanged.
+- **Tool use works on both shapes for the local backends** (issue #552).
+  OpenAI-shape callers get native tool calls from llama-server's
+  `--jinja` templates; Anthropic-shape callers send `tools` /
+  `tool_choice` on `POST /v1/messages` and receive `tool_use` content
+  blocks with `stop_reason: "tool_use"`, buffered or streamed
+  (`content_block_start` → `input_json_delta` → `content_block_stop`).
+  Feed the block back as a `tool_result` to continue the round trip. Two
+  translation notes: an Anthropic user turn carrying N `tool_result`
+  blocks becomes N OpenAI `tool` messages, and Anthropic's server-side
+  tools (no `input_schema`) are refused with a 400 since they have no
+  local equivalent. Streamed tool arguments are accumulated and replayed
+  as one complete `input_json_delta` — Anthropic keeps one content block
+  open at a time while OpenAI may interleave calls, and llama-server
+  parses tool calls out of the finished generation anyway. **The CLI
+  backends refuse tool use with a 400:** `claude-*` / `gemini-*` dispatch
+  flattens a conversation to one text prompt, so `tools` and `tool_use` /
+  `tool_result` blocks have nowhere to go — answering in prose instead
+  would be a well-formed wrong answer (same reasoning as #474).
+  - **Caveat — `tool_choice: {"type": "any"}` fails on the thinking-capable
+    local models.** It translates to OpenAI's `tool_choice: "required"`,
+    which llama-server rejects when the chat template opens a `<think>`
+    block (`Failed to initialize samplers: Unexpected empty grammar stack
+    after accepting piece: <think>`). This is a llama-server
+    grammar/template limitation, not a hub bug — a direct POST to the
+    backend's own `:8088/v1/chat/completions` returns the identical error —
+    so the hub surfaces the upstream message verbatim rather than silently
+    downgrading the choice. Use `auto` (or a no-think model id such as
+    `qwen3.5-4b-nothink`) if you need forced tool calling.
 - **Image and document content blocks are supported on the `claude-*`
   and `gemini-*` subscription paths** — the hub base64-decodes each
   `image` / `document` block to a per-request temp dir, adds that dir to

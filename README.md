@@ -1602,6 +1602,17 @@ msg = client.messages.create(
 )
 print(msg.content[0].text)
 
+# Stream through the normal Anthropic SDK on Claude or a llama-server model.
+with client.messages.stream(
+    model="claude_haiku",
+    max_tokens=128,
+    messages=[{"role": "user", "content": "Tell me a short story"}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+    final = stream.get_final_message()
+    print(f"\n{final.usage.output_tokens} output tokens")
+
 # Or address the role directly — survives future /swap-model rotations
 # unchanged. `agentic_light` and `agentic_heavy` both work the same way.
 msg = client.messages.create(
@@ -2145,13 +2156,13 @@ whose port isn't reachable, and reports per-model pass/fail.
 
 ## Limitations (intentional — lightweight)
 
-- **Partial streaming.** `POST /v1/chat/completions` with
-  `stream: true` is fully supported for local backends — the hub
-  proxies llama-server's SSE through, scrubbing `<think>...</think>`
-  blocks from reasoning models (qwen / glm) so OpenAI-shape clients
-  see only the final answer. The Anthropic-shape `POST /v1/messages`
-  still returns a single JSON object when `stream: true` (Anthropic
-  event translation is on the backlog below).
+- **Streaming.** `POST /v1/chat/completions` proxies llama-server SSE through,
+  and `POST /v1/messages` emits the Anthropic event sequence expected by
+  `client.messages.stream(...)`. Claude text arrives incrementally from the
+  CLI's `stream-json` output; llama-server deltas are translated while
+  scrubbing `<think>...</think>` blocks. The current `agy` adapter has no
+  incremental source, so Gemini requests still receive valid Anthropic SSE
+  but their answer arrives as one buffered text delta.
 - Multi-turn chats are flattened into a single prompt for `claude -p`.
   (The local backends handle multi-turn natively through llama-server.)
 - Tool-use translation across Anthropic ↔ OpenAI shapes is not

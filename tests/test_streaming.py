@@ -1,4 +1,4 @@
-"""Tests for SSE streaming and ``<think>`` stripping in the OpenAI shape.
+"""Tests for SSE streaming and ``<think>`` stripping in both API shapes.
 
 Covers:
 
@@ -12,12 +12,16 @@ Covers:
   (``text/event-stream``) and proxies cleaned chunks.
 - ``/v1/chat/completions`` non-stream: response has think blocks
   removed.
+- ``/v1/messages`` with ``stream=true``: Claude CLI and llama-server events
+  become ordered, text-only Anthropic SSE without changing buffered calls.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from io import StringIO
 from typing import Iterator, List
 
 os.environ.setdefault("LOCAL_LLM_HUB_HOST", "tower")
@@ -26,7 +30,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src import openai_upstream as upstream_mod
+from src import claude_cli as claude_cli_mod
 from src import server as server_mod
+from src.chat_translation import AnthropicStreamState, iter_claude_anthropic_sse
+from src.hub_observability import OBS
 from src.openai_upstream import (
     ThinkStripper,
     clean_openai_response,
@@ -216,6 +223,421 @@ def test_iter_cleaned_sse_flushes_trailing_tag_lookalike_before_done():
         delta = obj["choices"][0].get("delta", {})
         seen_content += delta.get("content") or ""
     assert seen_content == "Answer: done.</p>"
+
+
+# ---- Anthropic Messages SSE ----
+
+def _anthropic_data(body: str) -> List[dict]:
+    return [
+        json.loads(line[len("data:"):].strip())
+        for line in body.splitlines()
+        if line.startswith("data:")
+    ]
+
+
+def _claude_stream_records(*texts: str) -> Iterator[dict]:
+    yield {
+        "type": "stream_event",
+        "event": {
+            "type": "message_start",
+            "message": {
+                "id": "msg_cli",
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 3,
+                    "cache_creation_input_tokens": 4,
+                },
+            },
+        },
+    }
+    yield {
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "private"},
+        },
+    }
+    for text in texts:
+        yield {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": text},
+            },
+        }
+    yield {
+        "type": "stream_event",
+        "event": {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 7},
+        },
+    }
+    yield {"type": "stream_event", "event": {"type": "message_stop"}}
+
+
+def test_claude_stream_filters_wrapper_and_implicit_thinking():
+    state = AnthropicStreamState("claude_haiku")
+    body = "".join(iter_claude_anthropic_sse(
+        _claude_stream_records("Hello ", "world"), state,
+    ))
+    events = _anthropic_data(body)
+
+    assert [event["type"] for event in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert events[0]["message"]["id"] == "msg_cli"
+    assert events[0]["message"]["model"] == "claude_haiku"
+    assert "private" not in body
+    assert state.text == "Hello world"
+    assert state.input_tokens == 12
+    assert state.output_tokens == 7
+    assert state.cache_read_tokens == 3
+    assert state.cache_write_tokens == 4
+
+
+def test_messages_claude_streaming_http_contract(monkeypatch):
+    captured: dict = {}
+
+    def fake_stream(prompt, *, model=None, system=None, attachments=None,
+                    timeout=600.0) -> Iterator[dict]:
+        captured.update(prompt=prompt, model=model, system=system)
+        yield from _claude_stream_records("Hello ", "Claude")
+
+    monkeypatch.setattr(server_mod, "call_claude_stream", fake_stream)
+    client = TestClient(server_mod.app)
+    with client.stream(
+        "POST",
+        "/v1/messages",
+        json={
+            "model": "claude_haiku",
+            "stream": True,
+            "max_tokens": 20,
+            "system": "Be terse",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        body = "".join(response.iter_text())
+
+    events = _anthropic_data(body)
+    deltas = [
+        event["delta"]["text"]
+        for event in events
+        if event["type"] == "content_block_delta"
+    ]
+    assert deltas == ["Hello ", "Claude"]
+    assert captured == {
+        "prompt": "hi",
+        "model": "claude-haiku-4-5",
+        "system": "Be terse",
+    }
+    record = next(
+        item for item in OBS.recent_requests() if item["model"] == "claude_haiku"
+    )
+    assert record["in_tok"] == 12
+    assert record["out_tok"] == 7
+    assert record["stop_reason"] == "end_turn"
+
+
+def test_messages_openai_stream_translates_and_strips_thinking(monkeypatch):
+    captured: dict = {}
+
+    def fake_stream(base_url, model, messages, *, max_tokens=None, temperature=None,
+                    timeout=600.0, extra=None, headers=None) -> Iterator[str]:
+        captured["extra"] = extra
+        usage = {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+        }
+        yield from _sse_lines(
+            _delta("<think>hidden"),
+            _delta(" plan</think>Hello "),
+            _delta("local"),
+            usage,
+        )
+
+    monkeypatch.setattr(server_mod, "_ensure_backend_ready", lambda model: None)
+    monkeypatch.setattr(server_mod, "call_openai_chat_stream", fake_stream)
+    client = TestClient(server_mod.app)
+    with client.stream(
+        "POST",
+        "/v1/messages",
+        json={
+            "model": "qwen3.5-4b",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    ) as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+
+    events = _anthropic_data(body)
+    assert [event["type"] for event in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert "hidden" not in body
+    assert "".join(
+        event["delta"]["text"]
+        for event in events
+        if event["type"] == "content_block_delta"
+    ) == "Hello local"
+    assert events[-2]["usage"]["output_tokens"] == 3
+    assert events[-2]["delta"]["stop_reason"] == "end_turn"
+    assert captured["extra"] == {"stream_options": {"include_usage": True}}
+
+
+def test_messages_stream_failure_is_anthropic_error_event(monkeypatch):
+    def fake_stream(*args, **kwargs) -> Iterator[dict]:
+        raise server_mod.ClaudeCLIError("stream exploded")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(server_mod, "call_claude_stream", fake_stream)
+    client = TestClient(server_mod.app)
+    with client.stream(
+        "POST",
+        "/v1/messages",
+        json={
+            "model": "claude_haiku",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert _anthropic_data(body) == [{
+        "type": "error",
+        "error": {"type": "api_error", "message": "stream exploded"},
+    }]
+
+
+def test_messages_non_streaming_remains_buffered(monkeypatch):
+    monkeypatch.setattr(server_mod, "_run_claude_backend", lambda model, req: {
+        "result": "buffered",
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    })
+    response = TestClient(server_mod.app).post(
+        "/v1/messages",
+        json={
+            "model": "claude_haiku",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["content"] == [{"type": "text", "text": "buffered"}]
+
+
+class _FakeClaudeProcess:
+    def __init__(self, stdout: str) -> None:
+        self.stdin = StringIO()
+        self.stdout = StringIO(stdout)
+        self.stderr = StringIO()
+        self.return_code = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return self.return_code
+
+    def wait(self, timeout=None):
+        if self.return_code is None:
+            self.return_code = 0
+        return self.return_code
+
+    def terminate(self):
+        self.terminated = True
+        self.return_code = -15
+
+    def kill(self):
+        self.killed = True
+        self.return_code = -9
+
+
+def test_claude_stream_disconnect_terminates_owned_process(monkeypatch):
+    process = _FakeClaudeProcess('{"type":"stream_event","event":{"type":"message_start"}}\n')
+    captured: dict = {}
+
+    def fake_popen(*args, **kwargs):
+        captured.update(kwargs)
+        return process
+
+    monkeypatch.setattr(claude_cli_mod.subprocess, "Popen", fake_popen)
+    records = claude_cli_mod.call_claude_stream("hi")
+    assert next(records)["type"] == "stream_event"
+    records.close()
+
+    assert process.terminated
+    assert captured["creationflags"] == claude_cli_mod.NO_WINDOW
+
+
+async def _disconnect_after_first_body(response) -> None:
+    body_started = asyncio.Event()
+    request_sent = False
+
+    async def receive():
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await body_started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            body_started.set()
+            await asyncio.Event().wait()
+
+    await response(
+        {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}},
+        receive,
+        send,
+    )
+
+
+def test_messages_http_disconnect_closes_claude_stream(monkeypatch):
+    class CloseAwareRecords:
+        def __init__(self) -> None:
+            self.closed = False
+            self.sent_start = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if not self.sent_start:
+                self.sent_start = True
+                return {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "message_start",
+                        "message": {"id": "msg_disconnect", "usage": {}},
+                    },
+                }
+            return {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "more"},
+                },
+            }
+
+        def close(self) -> None:
+            self.closed = True
+
+    records = CloseAwareRecords()
+    monkeypatch.setattr(server_mod, "call_claude_stream", lambda *a, **k: records)
+    request = server_mod.MessagesRequest(
+        model="claude_haiku",
+        stream=True,
+        max_tokens=20,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    response = server_mod._stream_anthropic_response(
+        server_mod._resolve(request.model),
+        request,
+        ctx=None,
+        span=None,
+        client_id="test",
+        start_ns=0,
+    )
+
+    asyncio.run(_disconnect_after_first_body(response))
+    assert records.closed
+
+
+def test_messages_http_disconnect_finishes_on_demand_stream(monkeypatch):
+    class CloseAwareRaw:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return 'data: {"choices":[{"delta":{"content":"more"}}]}\n\n'
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Lease:
+        def __init__(self) -> None:
+            self.finished = False
+
+        def start(self):
+            return self
+
+        def finish(self) -> None:
+            self.finished = True
+
+    raw = CloseAwareRaw()
+    lease = Lease()
+    monkeypatch.setattr(server_mod, "_ensure_backend_ready", lambda model: None)
+    monkeypatch.setattr(server_mod, "call_openai_chat_stream", lambda *a, **k: raw)
+    monkeypatch.setattr(server_mod._on_demand, "tracking", lambda *a, **k: lease)
+    request = server_mod.MessagesRequest(
+        model="qwen3.5-4b",
+        stream=True,
+        max_tokens=20,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    response = server_mod._stream_anthropic_response(
+        server_mod._resolve(request.model),
+        request,
+        ctx=None,
+        span=None,
+        client_id="test",
+        start_ns=0,
+    )
+
+    asyncio.run(_disconnect_after_first_body(response))
+    assert raw.closed
+    assert lease.finished
+
+
+def test_claude_stream_timeout_has_distinct_error_and_kills(monkeypatch):
+    process = _FakeClaudeProcess("")
+
+    class ImmediateTimer:
+        daemon = False
+
+        def __init__(self, timeout, callback):
+            self.callback = callback
+
+        def start(self):
+            self.callback()
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(claude_cli_mod.subprocess, "Popen", lambda *a, **k: process)
+    monkeypatch.setattr(claude_cli_mod.threading, "Timer", ImmediateTimer)
+
+    with pytest.raises(claude_cli_mod.ClaudeCLIError, match="timed out after 3s"):
+        list(claude_cli_mod.call_claude_stream("hi", timeout=3))
+    assert process.killed
 
 
 # ---- end-to-end against /v1/chat/completions ----

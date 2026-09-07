@@ -34,10 +34,10 @@ Caveats: image content blocks work on the claude-* and gemini-* paths
 (decoded to a per-request temp dir); local llama-server backends are
 text-only and 400 on image input. No tool_use round-trip on the
 Anthropic shape for non-claude backends (OpenAI-shape callers get tool
-use natively from llama-server). Streaming: ``/v1/chat/completions``
-proxies upstream SSE through (with ``<think>`` blocks stripped for
-reasoning models); ``/v1/messages`` still returns a single JSON for
-``stream=true`` until the Anthropic event translation lands.
+use natively from llama-server). Both chat routes stream SSE:
+``/v1/chat/completions`` proxies upstream OpenAI events, while
+``/v1/messages`` emits Anthropic events from Claude CLI or translated
+llama-server deltas. Both scrub implicit reasoning from text output.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -61,21 +62,30 @@ try:
 except ImportError:
     pass
 
+import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
+from starlette.types import Receive, Scope, Send
 
 from .anthropic_errors import install_anthropic_error_handlers
 from .chat_translation import (
+    AnthropicStreamState,
     MessagesRequest,
+    _extract_media_blocks,
     _flatten_messages,
     _openai_messages_to_anthropic,
     _remote_headers,
     _run_claude_backend,
     _run_gemini_backend,
     _run_openai_backend,
+    _system_to_text,
+    anthropic_stream_error,
+    iter_buffered_anthropic_sse,
+    iter_claude_anthropic_sse,
+    iter_openai_anthropic_sse,
 )
-from .claude_cli import ClaudeCLIError, call_claude
+from .claude_cli import ClaudeCLIError, call_claude, call_claude_stream
 from .cors_policy import install_cors
 from .gemini_cli import GeminiCLIError, call_gemini
 from .host_profile import hub_bind_host, hub_port
@@ -107,6 +117,7 @@ from .server_images import router as _images_router
 from .server_otel_receiver import router as _otel_receiver_router
 from .openai_upstream import (
     UpstreamError,
+    anthropic_to_openai_messages,
     call_openai_chat,
     call_openai_chat_stream,
     clean_openai_response,
@@ -337,11 +348,226 @@ def _reject_non_chat_backend(model: Model, requested_name: str) -> Optional[HTTP
     return None
 
 
-@app.post("/v1/messages")
-def messages(req: MessagesRequest, request: Request) -> JSONResponse:
-    if req.stream:
-        logger.warning("stream=true requested - returning non-streaming response")
+def _close_if_supported(iterator: Any) -> None:
+    """Close a streaming iterator when its concrete type owns resources."""
+    close = getattr(iterator, "close", None)
+    if close is not None:
+        close()
 
+
+class _ClosingStreamingResponse(StreamingResponse):
+    """Ensure Starlette closes a synchronous stream after client disconnect."""
+
+    def __init__(self, content: Any, **kwargs: Any) -> None:
+        self._content_to_close = content
+        super().__init__(content, **kwargs)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Starlette 1.0 cancels its threadpool adapter on http.disconnect
+            # without closing the wrapped synchronous iterator. Shield this
+            # cleanup so owned CLI processes and on-demand leases end before
+            # the ASGI response returns.
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(
+                    _close_if_supported,
+                    self._content_to_close,
+                )
+
+
+def _stream_anthropic_response(
+    model: Model,
+    req: MessagesRequest,
+    *,
+    ctx: Any,
+    span: Any,
+    client_id: str,
+    start_ns: int,
+) -> StreamingResponse:
+    """Return Anthropic Messages SSE for each supported chat backend."""
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="messages must not be empty")
+    if (reject := _reject_non_chat_backend(model, req.model)) is not None:
+        raise reject
+
+    remote: Optional[str] = None
+    base_url: Optional[str] = None
+    openai_messages: List[Dict[str, Any]] = []
+    if model.backend == "openai":
+        if any(
+            isinstance(message.content, list)
+            and any(block.type in ("image", "document") for block in message.content)
+            for message in req.messages
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"backend {model.id!r} ({model.display_name}) is text-only. "
+                    "Route image/document requests to a claude-* or gemini-* "
+                    "model instead."
+                ),
+            )
+        _ensure_backend_ready(model)
+        remote = remote_base_url(model)
+        base_url = f"{remote}/v1" if remote else model.url
+        if not base_url:
+            raise HTTPException(status_code=500, detail=f"model {model.id} has no url")
+        openai_messages = anthropic_to_openai_messages(
+            [message.model_dump() for message in req.messages],
+            _system_to_text(req.system),
+        )
+    elif model.backend not in ("claude", "gemini"):
+        raise HTTPException(status_code=500, detail=f"unknown backend {model.backend!r}")
+
+    state = AnthropicStreamState(req.model)
+
+    def event_stream() -> Any:
+        first_token_ns: Optional[int] = None
+        error_type = ""
+        track = None
+        try:
+            if model.backend == "claude":
+                system = _system_to_text(req.system)
+                with _extract_media_blocks(req.messages) as (messages, attachments):
+                    prompt = _flatten_messages(messages)
+                    with ExitStack() as streams:
+                        records = call_claude_stream(
+                            prompt,
+                            model=model.display_name,
+                            system=system,
+                            attachments=attachments or None,
+                        )
+                        streams.callback(_close_if_supported, records)
+                        events = iter_claude_anthropic_sse(records, state)
+                        streams.callback(_close_if_supported, events)
+                        for event in events:
+                            if first_token_ns is None and state.text_parts:
+                                first_token_ns = time.monotonic_ns()
+                                if span is not None and hasattr(span, "add_event"):
+                                    with _safe_span("first_token"):
+                                        ttft_ms = (first_token_ns - start_ns) / 1e6
+                                        span.add_event(
+                                            "first_token", attributes={"latency_ms": ttft_ms}
+                                        )
+                                        span.set_attribute(
+                                            "gen_ai.response.time_to_first_token_ms", ttft_ms
+                                        )
+                            yield event
+            elif model.backend == "openai":
+                track = _on_demand.tracking(model, remote).start()
+                extra = dict(model.inject_extra or {})
+                extra["stream_options"] = {"include_usage": True}
+                with ExitStack() as streams:
+                    raw = call_openai_chat_stream(
+                        str(base_url),
+                        model=model.id if remote else model.display_name,
+                        messages=openai_messages,
+                        max_tokens=req.max_tokens,
+                        temperature=req.temperature,
+                        extra=extra,
+                        headers=_remote_headers(model) if remote else None,
+                    )
+                    streams.callback(_close_if_supported, raw)
+                    cleaned = iter_cleaned_sse(raw)
+                    streams.callback(_close_if_supported, cleaned)
+                    events = iter_openai_anthropic_sse(cleaned, state)
+                    streams.callback(_close_if_supported, events)
+                    for event in events:
+                        if first_token_ns is None and state.text_parts:
+                            first_token_ns = time.monotonic_ns()
+                            if span is not None and hasattr(span, "add_event"):
+                                with _safe_span("first_token"):
+                                    ttft_ms = (first_token_ns - start_ns) / 1e6
+                                    span.add_event(
+                                        "first_token", attributes={"latency_ms": ttft_ms}
+                                    )
+                                    span.set_attribute(
+                                        "gen_ai.response.time_to_first_token_ms", ttft_ms
+                                    )
+                        yield event
+            else:
+                envelope = _run_gemini_backend(model, req)
+                yield from iter_buffered_anthropic_sse(envelope, state)
+
+            last_ns = time.monotonic_ns()
+            if span is not None and hasattr(span, "add_event"):
+                with _safe_span("last_token"):
+                    span.add_event(
+                        "last_token",
+                        attributes={"latency_ms": (last_ns - start_ns) / 1e6},
+                    )
+                    if first_token_ns is not None and state.output_tokens > 0:
+                        seconds = max(1e-6, (last_ns - first_token_ns) / 1e9)
+                        span.set_attribute(
+                            "gen_ai.response.tokens_per_second",
+                            state.output_tokens / seconds,
+                        )
+        except HTTPException as exc:
+            error_type = f"http_{exc.status_code}"
+            logger.error("Anthropic stream error: %s", exc.detail)
+            yield anthropic_stream_error(Exception(str(exc.detail)))
+        except (ClaudeCLIError, GeminiCLIError, UpstreamError) as exc:
+            error_type = "upstream_error"
+            logger.error("Anthropic stream error: %s", exc)
+            yield anthropic_stream_error(exc)
+        finally:
+            if track is not None:
+                track.finish()
+            if ctx is not None:
+                ctx.in_tok = state.input_tokens
+                ctx.out_tok = state.output_tokens
+                ctx.cache_read_tok = state.cache_read_tokens
+                ctx.cache_write_tok = state.cache_write_tokens
+                ctx.stop_reason = state.stop_reason
+                if error_type:
+                    ctx.error_detail = error_type
+            set_genai_response_attrs(
+                span,
+                input_tokens=state.input_tokens,
+                output_tokens=state.output_tokens,
+                finish_reason=state.stop_reason,
+                response_id=state.message_id,
+            )
+            try:
+                prompt_preview = _flatten_messages(req.messages)
+            except Exception:  # noqa: BLE001
+                prompt_preview = ""
+            set_genai_payload(span, prompt_preview, state.text)
+            record_genai_metrics(
+                model=req.model,
+                backend=model.backend,
+                route="/v1/messages",
+                client_id=client_id,
+                duration_ms=(time.monotonic_ns() - start_ns) / 1e6,
+                input_tokens=state.input_tokens,
+                output_tokens=state.output_tokens,
+                error_type=error_type,
+            )
+            logger.info(
+                "<- stream in=%d out=%d (cache_r=%d cache_w=%d) stop=%s backend=%s",
+                state.input_tokens,
+                state.output_tokens,
+                state.cache_read_tokens,
+                state.cache_write_tokens,
+                state.stop_reason,
+                model.backend,
+            )
+
+    return _ClosingStreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/v1/messages")
+def messages(req: MessagesRequest, request: Request) -> Response:
     model = _resolve(req.model)
     ctx = getattr(request.state, "obs_ctx", None)
     if ctx is not None:
@@ -363,6 +589,27 @@ def messages(req: MessagesRequest, request: Request) -> JSONResponse:
 
     error_type = ""
     start_ns = time.monotonic_ns()
+    if req.stream:
+        try:
+            return _stream_anthropic_response(
+                model,
+                req,
+                ctx=ctx,
+                span=span,
+                client_id=client_id,
+                start_ns=start_ns,
+            )
+        except HTTPException as exc:
+            record_genai_metrics(
+                model=req.model,
+                backend=model.backend,
+                route="/v1/messages",
+                client_id=client_id,
+                duration_ms=(time.monotonic_ns() - start_ns) / 1e6,
+                error_type=f"http_{exc.status_code}",
+            )
+            raise
+
     try:
         if model.backend == "claude":
             env = _run_claude_backend(model, req)

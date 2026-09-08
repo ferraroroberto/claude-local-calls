@@ -23,6 +23,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import mimetypes
+import re
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -598,7 +600,13 @@ def _extract_media_blocks(
                 if stype == "base64":
                     data_b64 = src.get("data") or ""
                     media = src.get("media_type", default_media)
-                    ext = _EXT_BY_MEDIA_TYPE.get(media, "bin")
+                    supplied_suffix = Path(str(src.get("filename") or "")).suffix
+                    supplied_ext = supplied_suffix.lstrip(".").lower()
+                    ext = (
+                        supplied_ext
+                        if re.fullmatch(r"[a-z0-9]{1,12}", supplied_ext)
+                        else _EXT_BY_MEDIA_TYPE.get(media, "bin")
+                    )
                     fname = f"{stem}_{len(attachment_paths)}.{ext}"
                     fpath = td_path / fname
                     try:
@@ -659,14 +667,12 @@ def _openai_messages_to_anthropic(
     reuse ``_flatten_messages`` instead of hand-rolling its own prompt
     scaffold (issue #195 — the two routes previously diverged silently).
 
-    Non-text content parts (``image_url``, ``input_audio``, ``file``, …) are
-    **refused with a 400** rather than dropped (issue #474). This route
-    flattens a conversation down to a single text prompt for the claude /
-    gemini CLI dispatch, so silently keeping only the ``text`` parts returned a
-    well-formed 200 that answered a question the caller never asked. Refusing
-    loudly matches ``_run_openai_backend``'s guard for the same input on the
-    Anthropic-shape route; media for these backends goes to ``/v1/messages``,
-    which carries it through ``_extract_media_blocks``.
+    Inline OpenAI ``file`` parts become Anthropic-style ``document`` blocks so
+    the caller can reuse ``_extract_media_blocks`` and the existing CLI
+    attachment path (#554). Other non-text parts (``image_url``,
+    ``input_audio``, …) are **refused with a 400** rather than dropped (issue
+    #474): silently keeping only text would return a well-formed answer to a
+    request the caller never made.
     """
     sys_text: Optional[str] = None
     turns: List[Message] = []
@@ -674,10 +680,22 @@ def _openai_messages_to_anthropic(
         role = m.get("role", "user")
         content = m.get("content", "")
         if isinstance(content, list):
+            normalized: List[ContentBlock] = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    normalized.append(
+                        ContentBlock(type="text", text=part.get("text", ""))
+                    )
+                elif isinstance(part, dict) and part.get("type") == "file":
+                    normalized.append(_openai_file_to_document(part, model_label))
+
             unsupported = sorted({
                 str(p.get("type") or "unknown") if isinstance(p, dict) else type(p).__name__
                 for p in content
-                if not (isinstance(p, dict) and p.get("type") == "text")
+                if not (
+                    isinstance(p, dict)
+                    and p.get("type") in ("text", "file")
+                )
             })
             if unsupported:
                 who = f"{model_label!r} " if model_label else ""
@@ -686,18 +704,104 @@ def _openai_messages_to_anthropic(
                     detail=(
                         f"backend {who}cannot accept {', '.join(unsupported)} content "
                         "on /v1/chat/completions — this route flattens messages to a "
-                        "text prompt. Send image/document input to POST /v1/messages "
-                        "instead."
+                        "text prompt. Use text/file parts here or send the media input "
+                        "to POST /v1/messages instead."
                     ),
                 )
-            content = "\n".join(
-                p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
-            )
+            content = normalized
         if role == "system":
-            sys_text = content
+            if isinstance(content, list):
+                if any(block.type == "document" for block in content):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="file content parts are only supported in user messages",
+                    )
+                sys_text = _content_to_text(content)
+            else:
+                sys_text = content
         else:
             turns.append(Message(role=role, content=content))
     return turns, sys_text
+
+
+def _openai_file_to_document(
+    part: Dict[str, Any],
+    model_label: Optional[str],
+) -> ContentBlock:
+    """Validate one Chat Completions ``file`` part and normalize it.
+
+    ``file_id`` would require a local file-store contract and ``file_url``
+    would require an authenticated fetch policy, neither of which this hub
+    exposes. Inline bytes are safe to support because the existing document
+    extractor owns their request-scoped lifetime and uses its own filename.
+    """
+    who = f"backend {model_label!r} " if model_label else "this backend "
+    payload = part.get("file")
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{who}received a file content part without a file object",
+        )
+    if payload.get("file_id"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{who}cannot resolve file_id: this hub has no /v1/files store",
+        )
+    if payload.get("file_url"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{who}cannot fetch file_url: send inline file_data instead",
+        )
+
+    filename = payload.get("filename")
+    if not isinstance(filename, str) or not filename.strip():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{who}requires filename for an inline file content part",
+        )
+    file_data = payload.get("file_data")
+    if not isinstance(file_data, str) or not file_data.strip():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{who}requires inline file_data; file_id and file_url are unsupported",
+        )
+
+    media_type = (
+        mimetypes.guess_type(Path(filename).name)[0]
+        or "application/octet-stream"
+    )
+    encoded = file_data.strip()
+    if encoded.startswith("data:"):
+        match = re.fullmatch(r"data:([^;,]+);base64,(.*)", encoded, flags=re.DOTALL)
+        if match is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{who}received malformed file_data data URL",
+            )
+        media_type = match.group(1)
+        encoded = match.group(2)
+
+    encoded = re.sub(r"\s+", "", encoded)
+    try:
+        base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{who}received invalid base64 file_data: {exc}",
+        )
+
+    return ContentBlock(
+        type="document",
+        source={
+            "type": "base64",
+            "media_type": media_type,
+            "data": encoded,
+            # _extract_media_blocks uses only a validated suffix from this
+            # untrusted name; the caller's directories/basename never reach
+            # disk. This preserves useful extensions such as .docx and .py.
+            "filename": Path(filename).name,
+        },
+    )
 
 
 # ---- routing ----

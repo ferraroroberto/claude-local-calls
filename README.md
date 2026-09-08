@@ -2207,13 +2207,15 @@ whose port isn't reachable, and reports per-model pass/fail.
   Local `llama-server` backends (`qwen3.5-*`, `gemma4-*`) are text-only
   and return 400 with a hint to retry on a subscription model. URL
   sources degrade to a text reference (not fetched). Extended-thinking
-  blocks are still dropped at the shape boundary. **Media only travels on
-  the Anthropic shape:** `POST /v1/chat/completions` flattens a
-  conversation to a single text prompt for the `claude-*` / `gemini-*`
-  CLI dispatch, so an OpenAI-shape `image_url` (or any other non-`text`
-  content part) is refused with a 400 pointing at `/v1/messages` — it
-  used to be dropped silently and answered as if the text were the whole
-  question (issue #474).
+  blocks are still dropped at the shape boundary. **OpenAI-shape inline
+  documents are supported too:** on `POST /v1/chat/completions`, send a
+  `file` content part with `filename` and either raw-base64 `file_data` or
+  a `data:<media-type>;base64,...` URL. It reaches the same request-scoped
+  attachment path. `file_id` (no local `/v1/files` store), `file_url`
+  (no authenticated fetch contract), and `image_url` remain explicit 400s;
+  use Anthropic-shape `/v1/messages` for image input. Other non-`text` /
+  non-`file` OpenAI content parts are also refused rather than silently
+  dropped (issue #474).
 - Token counts reflect what each backend reports in its response. The
   `agy` CLI does not surface token counts, so usage on the `gemini-*`
   path is reported as zero.

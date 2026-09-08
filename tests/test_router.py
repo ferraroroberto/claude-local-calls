@@ -7,10 +7,13 @@ routing is already covered by test_server.py.
 
 from __future__ import annotations
 
+import base64
 import os
+from pathlib import Path
 
 os.environ.setdefault("LOCAL_LLM_HUB_HOST", "tower")
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src import chat_translation as chat_translation_mod
@@ -333,6 +336,112 @@ def test_chat_completions_refuses_image_url_instead_of_dropping_it(monkeypatch):
     assert "image_url" in r.json()["detail"]
     assert "/v1/messages" in r.json()["detail"]
     # The backend was never reached — no silent partial answer.
+    assert called["n"] == 0
+
+
+@pytest.mark.parametrize(
+    ("model", "backend_attr", "filename", "file_data", "expected_suffix"),
+    [
+        (
+            "claude-haiku-4-5",
+            "call_claude",
+            "../../report.docx",
+            base64.b64encode(b"tiny pdf").decode(),
+            ".docx",
+        ),
+        (
+            "Gemini 3.6 Flash",
+            "call_gemini",
+            "report.pdf",
+            "data:application/pdf;base64," + base64.b64encode(b"tiny pdf").decode(),
+            ".pdf",
+        ),
+    ],
+)
+def test_chat_completions_dispatches_inline_file_to_cli_backend(
+    monkeypatch, model, backend_attr, filename, file_data, expected_suffix,
+):
+    captured = {}
+
+    def fake_call(prompt, *, model=None, system=None, attachments=None, timeout=600.0):
+        path = Path(attachments[0])
+        captured.update({
+            "prompt": prompt,
+            "system": system,
+            "path": path,
+            "bytes": path.read_bytes(),
+            "suffix": path.suffix,
+        })
+        return {
+            "type": "result", "is_error": False, "result": "document-ok",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 2, "output_tokens": 1},
+        }
+
+    monkeypatch.setattr(server_mod, backend_attr, fake_call)
+    r = TestClient(server_mod.app).post(
+        "/v1/chat/completions",
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Read carefully."},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "file",
+                            "file": {"filename": filename, "file_data": file_data},
+                        },
+                        {"type": "text", "text": "Summarize this document."},
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["choices"][0]["message"]["content"] == "document-ok"
+    assert captured["prompt"] == "Summarize this document."
+    assert captured["system"] == "Read carefully."
+    assert captured["bytes"] == b"tiny pdf"
+    assert captured["suffix"] == expected_suffix
+    assert captured["path"].name.startswith("doc_0.")
+    assert not captured["path"].exists()
+
+
+@pytest.mark.parametrize(
+    ("file_payload", "message"),
+    [
+        ({"file_id": "file-123", "filename": "report.pdf"}, "file_id"),
+        ({"file_url": "https://example.com/report.pdf", "filename": "report.pdf"}, "file_url"),
+        ({"filename": "report.pdf"}, "file_data"),
+        ({"filename": "report.pdf", "file_data": "%%%"}, "invalid base64"),
+        ({"file_data": base64.b64encode(b"pdf").decode()}, "filename"),
+    ],
+)
+def test_chat_completions_rejects_unsupported_or_invalid_file(
+    monkeypatch, file_payload, message,
+):
+    called = {"n": 0}
+
+    def fake_call(*args, **kwargs):
+        called["n"] += 1
+        raise AssertionError("backend must not run")
+
+    monkeypatch.setattr(server_mod, "call_claude", fake_call)
+    r = TestClient(server_mod.app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "claude-haiku-4-5",
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "file", "file": file_payload}],
+            }],
+        },
+    )
+
+    assert r.status_code == 400, r.text
+    assert message in r.json()["detail"]
     assert called["n"] == 0
 
 

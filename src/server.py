@@ -30,7 +30,7 @@ Shapes exposed:
                                - image gen/edit (`server_images.py`);
                                  edits are gemini-only
 
-Caveats: image content blocks work on the claude-* and gemini-* paths
+Caveats: image and document content blocks work on the claude-* and gemini-* paths
 (decoded to a per-request temp dir); local llama-server backends are
 text-only and 400 on image input. No tool_use round-trip on the
 Anthropic shape for non-claude backends (OpenAI-shape callers get tool
@@ -962,23 +962,33 @@ def chat_completions(req: ChatCompletionRequest, request: Request) -> Response:
     try:
         if model.backend in ("claude", "gemini"):
             # Normalize OpenAI-shape dict messages to Message objects and
-            # flatten with the same helper /v1/messages uses (issue #195),
-            # so both routes produce the same prompt shape for the same
-            # conversation instead of two independently-maintained scaffolds.
+            # flatten with the same helper /v1/messages uses (issue #195).
+            # Inline file parts become document blocks here, then reuse the
+            # request-scoped attachment extractor used by /v1/messages (#554).
             try:
                 turns, sys_text = _openai_messages_to_anthropic(
                     req.messages, model_label=model.id,
                 )
+                with _extract_media_blocks(turns) as (text_turns, attachments):
+                    prompt = _flatten_messages(text_turns) if text_turns else ""
+                    if model.backend == "claude":
+                        env = call_claude(
+                            prompt,
+                            model=model.display_name,
+                            system=sys_text,
+                            attachments=attachments or None,
+                        )
+                    else:
+                        env = call_gemini(
+                            prompt,
+                            model=model.display_name,
+                            system=sys_text,
+                            attachments=attachments or None,
+                        )
             except HTTPException:
-                # Non-text content parts are refused, not dropped (#474).
+                # Unsupported or malformed media is refused before dispatch.
                 error_type = "http_400"
                 raise
-            prompt = _flatten_messages(turns) if turns else ""
-            try:
-                if model.backend == "claude":
-                    env = call_claude(prompt, model=model.display_name, system=sys_text)
-                else:
-                    env = call_gemini(prompt, model=model.display_name, system=sys_text)
             except (ClaudeCLIError, GeminiCLIError) as e:
                 error_type = "upstream_cli_error"
                 raise HTTPException(status_code=502, detail=str(e))
